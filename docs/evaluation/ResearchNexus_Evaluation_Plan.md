@@ -262,4 +262,24 @@ The four contribution claims are considered evidenced iff, on D-RN-E2E and the r
 
 Failing (1)–(3) is a gate on the corresponding contribution claim, not a reason to overclaim.
 
+---
+
+## 15. IEEE BigData 2024 traceability — provenance completeness (a Phase 2 precursor metric)
+
+Full trace: IEEE limitation → ResearchNexus solution → required data → future implementation phase → evaluation metric is recorded in `docs/architecture/ResearchNexus_Implementation_Architecture.md` §9. Summary:
+
+- **Limitation tracked:** Ahad et al., *"Empowering Meta-Analysis: Leveraging Large Language Models for Scientific Synthesis,"* IEEE BigData 2024 (DOI 10.1109/BigData62323.2024.10825310; arXiv:2411.10878) describes fine-tuned-LLM+RAG generation of meta-analysis narrative text, evaluated for overall relevance (87.6% human-rated relevant) — not a structured, per-claim, auditable evidence trail across the source papers, and not an explicit research-gap-identification step. (Characterisation from the abstract/arXiv metadata; the IEEE-Xplore full text was not reviewed.)
+- **Gates §7 (Gap detection)** above: evidence-support rate, hallucination rate, expert relevance, confidence calibration all depend on the gap engine being able to resolve every claim to a real span.
+
+**New precursor metric — provenance completeness (measurable starting now, in Phase 2, before the gap engine exists in Phase 11):**
+
+| Metric | Definition | How it's checked |
+|---|---|---|
+| Chunk round-trip integrity | `full_text[chunk.char_start:chunk.char_end] == chunk.text` for every non-table chunk | asserted directly in `backend/tests/unit/test_chunker.py` (`test_all_non_table_chunks_round_trip_to_full_text`, `test_real_fixture_end_to_end_chunking`) and holds by construction in `app/services/ingest/chunker.py` |
+| Table anchoring rate | fraction of `TableBlock`s whose provenance anchor is the real caption span (`full_text.find(caption)` hit) rather than the page-start fallback | computable from `app/services/ingest/chunker.py::_anchor_table`; not yet aggregated into a report (Phase 11 will report it per workspace) |
+| Section attribution completeness | fraction of `PaperChunk`s with a non-null `section` (body/abstract chunks always have one; only `TABLE` chunks are expected to be null) | `app/domain/chunk.py` schema + `app/services/ingest/chunker.py` |
+| Confidence-weighted evidence eligibility | fraction of ingested papers with `parse_confidence != LOW`, i.e. eligible to contribute *high-confidence* evidence to a future gap matrix | `app/services/ingest/confidence.py`; asserted per-fixture in `backend/tests/unit/test_pipeline.py` |
+
+These are **not** a substitute for the Phase 11 gap-quality metrics (§7) — they are the necessary precondition, verified now so that when Phase 11 is built, "no evidence found" is never caused by a Phase 2 provenance gap.
+
 *Design only. No evaluation code, datasets, or CI jobs are created by this document. Every metric is defined with a source; no numbers are fabricated. No facial-recognition / attendance content appears anywhere.*

@@ -410,12 +410,45 @@ researchnexus/
 
 ---
 
-## 8. Cross-references
+## 9. Research contribution traceability — IEEE BigData 2024 limitation → ResearchNexus
+
+ResearchNexus's research-gap workflow (contribution area 3, review §21) is tracked against a specific limitation in a specific published paper, not asserted in the abstract. Verified against the paper's official record and arXiv preprint (title, authors, venue and DOI confirmed on IEEE Xplore and arXiv; the limitation characterisation below is drawn from the abstract and arXiv metadata only — the full IEEE-Xplore-paywalled text was not reviewed, and this is stated explicitly rather than guessed).
+
+**Source paper.** Ahad, J. I., Sultan, R. M., Kaikobad, A., Rahman, F., Amin, M. R., Mohammed, N., Rahman, S. *"Empowering Meta-Analysis: Leveraging Large Language Models for Scientific Synthesis."* 2024 IEEE International Conference on Big Data (IEEE BigData). DOI: 10.1109/BigData62323.2024.10825310. Preprint: arXiv:2411.10878. — verified YES (IEEE Xplore document 10825310; arXiv record matches title/authors/venue).
+
+**What it does (per the abstract).** Fine-tunes an LLM on scientific-document data, combined with Retrieval-Augmented Generation and a novel "Inverse Cosine Distance" (ICD) fine-tuning loss, to automatically generate meta-analysis synthesis text from multiple studies. Reports human evaluation of 87.6% "relevant" meta-analysis abstracts, with irrelevancy reduced from 4.56% to 1.9% versus baselines.
+
+**Target limitation this project tracks.** The paper's abstract and available metadata describe a pipeline that *generates synthesised meta-analysis narrative text* and evaluates it for overall *relevance*; they do not describe (a) a structured, per-claim evidence object, (b) an audit trail linking a synthesised statement back to an exact span in a specific source paper, or (c) an explicit research-gap-identification step distinguishing "what these papers agree on" from "what none of them address." In other words: **no explicit, auditable, evidence-backed research-gap identification workflow across multiple papers** is described. This framing is this project's characterisation of an adjacent, unaddressed problem — not a quoted claim from the paper — and is flagged as such.
+
+**ResearchNexus solution.** The structured `ResearchGap` object (`ResearchNexus_Data_Model.md` §8; Roadmap Phase 11): cross-paper matrix → rule-derived candidates (`METHOD_GAP` / `DATASET_GAP` / `EVALUATION_GAP` / `CONTRADICTION` / …) → evidence assembly requiring ≥2 supporting papers → constrained LLM articulation (may not introduce an unsupported claim) → Self-RAG-style self-support check → deterministic confidence band → human accept/reject. Every `GapEvidence` entry carries a `SourceSpan` (`paper_id`, `section`, `page`, exact `char_start`/`char_end`, `quote`) — the audit trail the source paper's approach does not provide.
+
+**Required data (why this constrains Phase 2, implemented now).** The gap workflow is only buildable later if ingestion preserves, today:
+
+| Data preserved by Phase 2 | Domain type / table | Why the gap workflow needs it |
+|---|---|---|
+| Exact character-offset provenance per chunk | `PaperChunk.char_start/char_end` → `paper_chunks` | every `GapEvidence.span` must resolve to real, verifiable text |
+| Section identity per chunk | `PaperChunk.section`/`section_order` | builds the matrix's rows/columns (method, dataset, limitation, per section) |
+| Table blocks with captions, anchored | `TableBlock` → part of `papers.tables` | dataset/metric evidence for `DATASET_GAP`/`EVALUATION_GAP` candidates |
+| Segmented reference list | `RawReference` → `papers.references` | future citation-based cross-paper linking and contradiction evidence |
+| Deterministic, rule-based parse confidence | `ParsedDocument.parse_confidence` → `papers.parse_confidence` | weights how much a paper's evidence should be trusted in the matrix |
+
+Phase 2 (`backend/app/services/ingest/*`, `backend/app/domain/{paper,chunk}.py`) implements exactly this and nothing more — it does **not** implement matrix-building, candidate rules, or gap articulation.
+
+**Future implementation phase.** Roadmap Phase 11 ("Research-gap objects"), building on Phase 13 (per-workspace research graph, which the matrix is a projection of). Not implemented in Phase 2.
+
+**Evaluation metric.** `docs/evaluation/ResearchNexus_Evaluation_Plan.md` §7 (Gap detection): evidence-support rate (target 1.0), hallucination rate (≤0.02/gap), expert relevance rate (≥0.6), confidence calibration — plus a new Phase-2-precursor metric, **provenance completeness**, defined and tested now (§10 below).
+
+---
+
+## 10. Cross-references
 
 - **Data structures & DB:** `docs/architecture/ResearchNexus_Data_Model.md`
 - **Endpoints:** `docs/architecture/ResearchNexus_API_Specification.md`
 - **Build order, acceptance criteria, MVP vs research split:** `docs/architecture/ResearchNexus_Implementation_Roadmap.md`
 - **Metrics, ablations A1–A13, baselines B1–B9, composite W:** `docs/evaluation/ResearchNexus_Evaluation_Plan.md`
 - **UX detail & security narrative:** `docs/architecture/ResearchNexus_Seed_Paper_Research_Trail.md` §2, §21
+- **IEEE-limitation traceability:** §9 above
 
-*No application source code is created by this document. Every non-obvious decision above is traceable to the literature review, the abstract's stated requirements, or a stated engineering rationale. No facial-recognition / attendance content appears anywhere.*
+**Phase 2 implementation status (2026-09-05).** PDF ingestion is implemented and tested at `backend/` — see `backend/app/services/ingest/*`, `backend/app/domain/{paper,chunk,jobs}.py`, `backend/app/db/*`, `backend/app/routers/{papers,jobs,health}.py`. 106 tests pass (`pytest`), `ruff check .` and `mypy app tests` are clean. Embeddings/FAISS interfaces (`backend/app/retrieval/*`) are prepared per §7 but not yet wired into the pipeline, per plan.
+
+*No application source code is created by **this document** (the code itself lives under `backend/`, produced alongside it per the user's explicit Phase 2 instruction). Every non-obvious decision above is traceable to the literature review, the abstract's stated requirements, a specific paper's limitation, or a stated engineering rationale. No facial-recognition / attendance content appears anywhere.*
