@@ -2,8 +2,11 @@
 
 Env-only configuration (no secrets in code), per the global CLAUDE.md rule
 and docs/architecture/ResearchNexus_Implementation_Architecture.md §7.
-Phase 2 only needs the ingestion-related limits; auth/LLM/BYOK settings are
-Phase 1/9 scope and are intentionally not added here.
+`jwt_secret`/`key_vault_secret` default to `None` rather than a placeholder
+value: nothing here should look like a working secret. Code that actually
+needs one (app/security/jwt.py, app/security/key_vault.py) raises a typed,
+clear error when it is unset, the same lazy-optional pattern already used
+for the embeddings/FAISS backends in app/retrieval/*.
 """
 
 from __future__ import annotations
@@ -31,6 +34,19 @@ class Settings(BaseSettings):
     # Chunking (Architecture §3 S3 / Data Model §6)
     chunk_target_tokens: int = 750
     chunk_overlap_tokens: int = 100
+
+    # Auth (Roadmap Phase 1 / Task 1 item 2-3): dev JWT signing.
+    jwt_secret: str | None = None
+    jwt_algorithm: str = "HS256"
+    jwt_expires_minutes: int = 1440
+
+    # BYOK key vault (Roadmap Phase 1 / Task 1 item 4): a Fernet key.
+    key_vault_secret: str | None = None
+
+    # ResearchProfile extraction (Roadmap Phase 3 / Architecture §3 S4): a
+    # char budget standing in for a token budget on the LLM prompt, same
+    # "no tokenizer dependency" rationale as chunk_target_tokens above.
+    profile_max_context_chars: int = 20_000
 
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"

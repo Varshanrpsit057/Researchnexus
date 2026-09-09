@@ -1,9 +1,14 @@
-"""`POST /api/v1/papers/upload` and `GET /api/v1/papers/{paper_id}` -- see
-docs/architecture/ResearchNexus_API_Specification.md §4.
+"""`POST /api/v1/papers/upload`, `GET /api/v1/papers/{paper_id}` (Phase 2),
+`POST /api/v1/papers/{paper_id}/analyze` and `PATCH /api/v1/papers/{paper_id}/
+profile` (Phase 3) -- see docs/architecture/ResearchNexus_API_Specification.md
+§4.
 
 Upload validation (Stage S1) runs synchronously so the client gets an
 immediate, specific error (413/415/422); the heavier structural parse +
-chunking (Stage S2/S3) runs as a background job."""
+chunking (Stage S2/S3) runs as a background job. `analyze` (Stage S4) is
+synchronous (API spec: "usually < 15 s"); the optional async/202 fallback
+for a slow provider is not implemented -- the spec marks it as conditional
+("may return 202 + job"), not required."""
 
 from __future__ import annotations
 
@@ -15,9 +20,13 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db import repository as repo
 from app.db.session import get_db, get_session_factory
+from app.deps import CurrentUser
 from app.domain.jobs import Job, JobKind
 from app.jobs.runner import new_id, run_ingest_job
+from app.llm.client import LlmProviderError
 from app.security.pdf_sanitizer import PdfValidationError, validate_upload
+from app.services.profile.pipeline import NoWorkingLlmKey, run_profile_extraction
+from app.services.profile.validator import ProfilePatchRequest, apply_patch
 
 router = APIRouter(prefix="/api/v1/papers", tags=["papers"])
 
@@ -100,3 +109,46 @@ def get_paper(paper_id: str, db: DbSession) -> dict[str, object]:
         "tables": [{"caption": t.get("caption"), "page": t["page"]} for t in paper.tables],
         "warnings": paper.warnings,
     }
+
+
+@router.post("/{paper_id}/analyze")
+async def analyze_paper(paper_id: str, db: DbSession, settings: AppSettings, current_user: CurrentUser) -> dict[str, object]:
+    paper = repo.get_paper(db, paper_id)
+    if paper is None:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "paper not found"}})
+    if not paper.has_full_text:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "conflict", "message": "paper has no extracted text yet"}},
+        )
+
+    try:
+        result = await run_profile_extraction(db, paper, current_user, settings)
+    except NoWorkingLlmKey as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "llm_key_required", "message": "no working LLM provider key saved"}},
+        ) from e
+    except LlmProviderError as e:
+        raise HTTPException(status_code=502, detail={"error": {"code": "provider_error", "message": str(e)}}) from e
+
+    return {
+        "profile": result.profile.model_dump(mode="json"),
+        "extraction_confidence": result.profile.extraction_confidence.value,
+        "warnings": result.warnings,
+    }
+
+
+@router.patch("/{paper_id}/profile")
+def patch_profile(
+    paper_id: str, body: ProfilePatchRequest, db: DbSession, current_user: CurrentUser
+) -> dict[str, object]:
+    existing = repo.get_profile(db, paper_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "not_found", "message": "no profile exists for this paper -- call analyze first"}},
+        )
+    patched = apply_patch(existing, **body.model_dump())
+    stored = repo.upsert_profile(db, patched)
+    return {"profile": stored.model_dump(mode="json")}
