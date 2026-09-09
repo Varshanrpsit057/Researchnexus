@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # "no tokenizer dependency" rationale as chunk_target_tokens above.
     profile_max_context_chars: int = 20_000
 
+    # External scholarly APIs (Roadmap Phase 4 / Architecture §1.1 row H):
+    # resilience knobs for the arXiv/OpenAlex/S2/Crossref clients.
+    external_timeout_s: float = 15.0
+    external_max_retries: int = 3
+    external_backoff_base_s: float = 0.5
+    external_cache_ttl_s: float = 300.0
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

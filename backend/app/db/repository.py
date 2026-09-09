@@ -8,12 +8,29 @@ concern, separate from parsing logic).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import ApiKeyORM, JobORM, PaperChunkORM, PaperORM, ResearchProfileORM, UserORM
+from app.db.models import (
+    ApiKeyORM,
+    JobORM,
+    PaperChunkORM,
+    PaperORM,
+    ResearchProfileORM,
+    SearchCandidateORM,
+    SearchRunORM,
+    UserORM,
+)
+from app.domain.candidate import (
+    CitationRelationship,
+    DiscoveryStrategy,
+    NormalizedCandidate,
+    PaperCandidate,
+    SearchRun,
+)
 from app.domain.chunk import ChunkKind, PaperChunk
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
@@ -349,3 +366,202 @@ def get_profile(db: Session, paper_id: str, workspace_id: str | None = None) -> 
         select(ResearchProfileORM).where(ResearchProfileORM.paper_id == paper_id, workspace_clause)
     ).scalar_one_or_none()
     return _profile_domain_from_orm(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Academic search (Phase 4): discovered papers + search runs + candidates
+# ---------------------------------------------------------------------------
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:20]}"
+
+
+def upsert_discovered_paper(db: Session, cand: NormalizedCandidate) -> str:
+    """Link a normalised candidate to the global `papers` table, deduping by
+    DOI -> versionless arXiv id -> normalised-title hash (Architecture §2).
+    A new row is `source="discovery"`, `has_full_text=False`; an existing
+    row only has its *empty* fields filled, never its richer data
+    overwritten."""
+    doi = cand.external_ids.get("doi")
+    arxiv_id = cand.external_ids.get("arxiv")
+
+    row: PaperORM | None = None
+    if doi:
+        row = db.execute(select(PaperORM).where(PaperORM.doi == doi)).scalar_one_or_none()
+    if row is None and arxiv_id:
+        row = db.execute(select(PaperORM).where(PaperORM.arxiv_id == arxiv_id)).scalar_one_or_none()
+    if row is None:
+        row = db.execute(select(PaperORM).where(PaperORM.title_hash == cand.title_hash)).scalar_one_or_none()
+
+    if row is None:
+        row = PaperORM(
+            id=_new_id("pap"),
+            doi=doi,
+            arxiv_id=arxiv_id,
+            title=cand.title,
+            title_hash=cand.title_hash,
+            authors=list(cand.authors),
+            year=cand.year,
+            venue=cand.venue,
+            abstract=cand.abstract,
+            url=cand.url,
+            has_full_text=False,
+            source="discovery",
+        )
+        db.add(row)
+    else:
+        if row.doi is None and doi:
+            row.doi = doi
+        if row.arxiv_id is None and arxiv_id:
+            row.arxiv_id = arxiv_id
+        if not row.authors and cand.authors:
+            row.authors = list(cand.authors)
+        if row.year is None and cand.year is not None:
+            row.year = cand.year
+        if row.venue is None and cand.venue:
+            row.venue = cand.venue
+        if row.abstract is None and cand.abstract:
+            row.abstract = cand.abstract
+        if row.url is None and cand.url:
+            row.url = cand.url
+    db.commit()
+    db.refresh(row)
+    return row.id
+
+
+def _search_run_domain_from_orm(row: SearchRunORM) -> SearchRun:
+    counts = row.counts or {}
+    return SearchRun(
+        run_id=row.id,
+        owner_id=row.owner_id,
+        workspace_id=row.workspace_id,
+        seed_paper_id=row.seed_paper_id,
+        strategies_requested=[DiscoveryStrategy(s) for s in row.strategies_requested],
+        strategies_succeeded=[DiscoveryStrategy(s) for s in row.strategies_succeeded],
+        strategies_failed=[DiscoveryStrategy(s) for s in row.strategies_failed],
+        filters=dict(row.filters or {}),
+        extra_citation_hop_used=row.extra_citation_hop_used,
+        candidate_count_raw=counts.get("raw", 0),
+        candidate_count_after_dedupe=counts.get("after_dedupe", 0),
+        candidate_count_after_filter=counts.get("after_filter", 0),
+        tokens_prompt=row.tokens_prompt,
+        tokens_completion=row.tokens_completion,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+    )
+
+
+def create_search_run(db: Session, run: SearchRun) -> SearchRun:
+    db.add(
+        SearchRunORM(
+            id=run.run_id,
+            owner_id=run.owner_id,
+            workspace_id=run.workspace_id,
+            seed_paper_id=run.seed_paper_id,
+            strategies_requested=[s.value for s in run.strategies_requested],
+            strategies_succeeded=[s.value for s in run.strategies_succeeded],
+            strategies_failed=[s.value for s in run.strategies_failed],
+            filters=run.filters,
+            extra_citation_hop_used=run.extra_citation_hop_used,
+            counts={
+                "raw": run.candidate_count_raw,
+                "after_dedupe": run.candidate_count_after_dedupe,
+                "after_filter": run.candidate_count_after_filter,
+            },
+            tokens_prompt=run.tokens_prompt,
+            tokens_completion=run.tokens_completion,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+        )
+    )
+    db.commit()
+    return run
+
+
+def get_search_run(db: Session, run_id: str) -> SearchRun | None:
+    row = db.get(SearchRunORM, run_id)
+    return _search_run_domain_from_orm(row) if row else None
+
+
+def add_search_candidate(
+    db: Session,
+    *,
+    candidate_id: str,
+    run_id: str,
+    paper_id: str,
+    discovery_methods: list[DiscoveryStrategy],
+    possible_duplicate_of: str | None,
+    provenance: dict,
+    filter_kept: bool = True,
+    raw_signals: dict | None = None,
+    citation_relationship: CitationRelationship = CitationRelationship.NONE,
+    citation_hops: int | None = None,
+    filter_reasons: list[str] | None = None,
+) -> None:
+    db.add(
+        SearchCandidateORM(
+            id=candidate_id,
+            run_id=run_id,
+            paper_id=paper_id,
+            discovery_methods=[m.value for m in discovery_methods],
+            citation_relationship=citation_relationship.value,
+            citation_hops=citation_hops,
+            raw_signals=raw_signals or {},
+            possible_duplicate_of=possible_duplicate_of,
+            filter_kept=filter_kept,
+            filter_reasons=filter_reasons or [],
+            provenance=provenance,
+        )
+    )
+    db.commit()
+
+
+def _paper_external_ids(paper: PaperORM | None) -> dict[str, str]:
+    if paper is None:
+        return {}
+    ids: dict[str, str] = {}
+    if paper.doi:
+        ids["doi"] = paper.doi
+    if paper.arxiv_id:
+        ids["arxiv"] = paper.arxiv_id
+    return ids
+
+
+def get_search_candidates(db: Session, run_id: str) -> list[PaperCandidate]:
+    rows = (
+        db.execute(
+            select(SearchCandidateORM).where(SearchCandidateORM.run_id == run_id).order_by(SearchCandidateORM.id)
+        )
+        .scalars()
+        .all()
+    )
+    out: list[PaperCandidate] = []
+    for r in rows:
+        paper = db.get(PaperORM, r.paper_id)
+        out.append(
+            PaperCandidate(
+                candidate_id=r.id,
+                run_id=r.run_id,
+                external_ids=_paper_external_ids(paper),
+                title=paper.title if paper else "",
+                authors=list(paper.authors) if paper and paper.authors else [],
+                year=paper.year if paper else None,
+                abstract=paper.abstract if paper else None,
+                venue=paper.venue if paper else None,
+                url=paper.url if paper else None,
+                discovery_methods=[DiscoveryStrategy(m) for m in r.discovery_methods],
+                citation_relationship=CitationRelationship(r.citation_relationship),
+                citation_hops=r.citation_hops,
+                preliminary_rank=r.preliminary_rank,
+                possible_duplicate_of=r.possible_duplicate_of,
+                filter_kept=r.filter_kept,
+                filter_reasons=list(r.filter_reasons or []),
+            )
+        )
+    return out
+
+
+def get_search_candidate_provenance(db: Session, run_id: str) -> dict[str, dict]:
+    rows = db.execute(select(SearchCandidateORM).where(SearchCandidateORM.run_id == run_id)).scalars().all()
+    return {r.id: dict(r.provenance or {}) for r in rows}

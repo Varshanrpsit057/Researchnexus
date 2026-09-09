@@ -27,7 +27,10 @@ def test_alembic_upgrade_head_creates_expected_tables(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    assert {"papers", "paper_chunks", "jobs", "users", "api_keys", "research_profiles", "alembic_version"} <= tables
+    assert {
+        "papers", "paper_chunks", "jobs", "users", "api_keys", "research_profiles",
+        "search_runs", "search_candidates", "alembic_version",
+    } <= tables
 
 
 def test_alembic_downgrade_removes_tables(tmp_path: Path) -> None:
@@ -51,3 +54,5 @@ def test_alembic_downgrade_removes_tables(tmp_path: Path) -> None:
     assert "users" not in tables
     assert "api_keys" not in tables
     assert "research_profiles" not in tables
+    assert "search_runs" not in tables
+    assert "search_candidates" not in tables

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "researchnexus-backend"
 version = "0.1.0"
-description = "ResearchNexus backend (Phase 1: auth/BYOK; Phase 2: PDF ingestion; Phase 3: ResearchProfile extraction)"
+description = "ResearchNexus backend (Phases 1-5: auth/BYOK, ingestion, profile extraction, academic search, discovery)"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115",
@@ -22,6 +22,7 @@ dependencies = [
   "structlog>=24.1",
   "python-jose[cryptography]>=3.3",
   "cryptography>=42.0",
+  "defusedxml>=0.7",
 ]
 
 # Heavy/optional retrieval backends. Kept OUT of the default install so Phase 2

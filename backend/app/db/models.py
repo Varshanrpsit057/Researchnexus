@@ -1,11 +1,11 @@
-"""SQLAlchemy ORM models for Phases 1-3.
+"""SQLAlchemy ORM models for Phases 1-4.
 
-Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs` and
-`research_profiles` tables in docs/architecture/ResearchNexus_Data_Model.md
-§13, scoped to what auth/BYOK, PDF ingestion, and profile extraction need.
-Other columns from that spec (doi/openalex/s2 resolution, workspace scoping,
-tenant `owner_id` on papers, etc.) belong to later phases and are added when
-those phases need them, not speculatively here.
+Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
+`research_profiles`, `search_runs` and `search_candidates` tables in
+docs/architecture/ResearchNexus_Data_Model.md §13, scoped to what auth/
+BYOK, PDF ingestion, profile extraction, and academic search need. Other
+columns from that spec belong to later phases and are added when those
+phases need them, not speculatively here.
 """
 
 from __future__ import annotations
@@ -130,3 +130,44 @@ class ResearchProfileORM(Base):
     extraction_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class SearchRunORM(Base):
+    __tablename__ = "search_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    seed_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    strategies_requested: Mapped[list] = mapped_column(JSON, default=list)
+    strategies_succeeded: Mapped[list] = mapped_column(JSON, default=list)
+    strategies_failed: Mapped[list] = mapped_column(JSON, default=list)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    extra_citation_hop_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SearchCandidateORM(Base):
+    __tablename__ = "search_candidates"
+    __table_args__ = (UniqueConstraint("run_id", "paper_id", name="ux_search_candidates_run_paper"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), ForeignKey("search_runs.id", ondelete="CASCADE"), index=True)
+    paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    discovery_methods: Mapped[list] = mapped_column(JSON, default=list)
+    citation_relationship: Mapped[str] = mapped_column(String(32), default="none")
+    citation_hops: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_signals: Mapped[dict] = mapped_column(JSON, default=dict)
+    preliminary_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    possible_duplicate_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filter_kept: Mapped[bool] = mapped_column(Boolean, default=True)
+    filter_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    # Phase 4 addition (not in Data Model §13's column list): the
+    # normalisation audit trail -- which sources contributed and how each
+    # metadata conflict was resolved (Roadmap Phase 4: "provenance/source
+    # tracking").
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
