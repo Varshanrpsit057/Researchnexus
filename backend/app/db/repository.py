@@ -19,6 +19,7 @@ from app.db.models import (
     JobORM,
     PaperChunkORM,
     PaperORM,
+    PaperRelationshipORM,
     RankedPaperORM,
     ResearchProfileORM,
     SearchCandidateORM,
@@ -37,6 +38,7 @@ from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
 from app.domain.profile import Confidence, ResearchProfile
 from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
+from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
 from app.domain.user import ApiKeyRecord, ApiKeyStatus, LlmProvider, User
 from app.security.pdf_sanitizer import PdfFileMeta
 
@@ -631,3 +633,96 @@ def get_ranked_papers(db: Session, run_id: str) -> list[RankedPaper]:
         .all()
     )
     return [_ranked_paper_domain_from_orm(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Typed research trail (Phase 7): paper_relationships, run-scoped
+# ---------------------------------------------------------------------------
+
+
+def _trail_edge_domain_from_orm(row: PaperRelationshipORM) -> TrailEdge:
+    return TrailEdge(
+        edge_id=row.id,
+        run_id=row.run_id,
+        workspace_id=row.workspace_id,
+        source_paper_id=row.source_paper_id,
+        target_paper_id=row.target_paper_id,
+        relationship_type=RelationshipType(row.relationship_type),
+        detection_method=DetectionMethod(row.detection_method),
+        rule_fired=row.rule_fired,
+        llm_confirmed=row.llm_confirmed,
+        evidence=[Evidence.model_validate(e) for e in (row.evidence or [])],
+        supporting_references=list(row.supporting_references or []),
+        confidence=Confidence(row.confidence),
+        confidence_basis=dict(row.confidence_basis or {}),
+        user_state=row.user_state,
+        created_at=row.created_at,
+    )
+
+
+def save_trail_edges(db: Session, run_id: str, edges: list[TrailEdge]) -> None:
+    """Replace this run's non-rejected trail edges. Rows a user has
+    `rejected` are kept untouched (the builder already skips those keys, so
+    a rejected edge is never re-proposed on a re-run)."""
+    keep_ids = {e.edge_id for e in edges}
+    for row in db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.run_id == run_id)).scalars().all():
+        if row.user_state == UserState.REJECTED.value:
+            continue
+        if row.id not in keep_ids:
+            db.delete(row)
+
+    for edge in edges:
+        existing = db.get(PaperRelationshipORM, edge.edge_id)
+        payload = dict(
+            run_id=edge.run_id,
+            workspace_id=edge.workspace_id,
+            source_paper_id=edge.source_paper_id,
+            target_paper_id=edge.target_paper_id,
+            relationship_type=edge.relationship_type.value,
+            detection_method=edge.detection_method.value,
+            rule_fired=edge.rule_fired,
+            llm_confirmed=edge.llm_confirmed,
+            evidence=[e.model_dump(mode="json") for e in edge.evidence],
+            supporting_references=list(edge.supporting_references),
+            confidence=edge.confidence.value,
+            confidence_basis=edge.confidence_basis,
+        )
+        if existing is None:
+            db.add(PaperRelationshipORM(id=edge.edge_id, user_state=edge.user_state, created_at=edge.created_at, **payload))
+        elif existing.user_state != UserState.REJECTED.value:
+            for key, value in payload.items():
+                setattr(existing, key, value)
+    db.commit()
+
+
+def get_trail_edges(db: Session, run_id: str) -> list[TrailEdge]:
+    rows = (
+        db.execute(
+            select(PaperRelationshipORM)
+            .where(PaperRelationshipORM.run_id == run_id)
+            .order_by(PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type)
+        )
+        .scalars()
+        .all()
+    )
+    return [_trail_edge_domain_from_orm(r) for r in rows]
+
+
+def get_rejected_trail_keys(db: Session, run_id: str) -> set[tuple[str, str]]:
+    rows = db.execute(
+        select(PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type).where(
+            PaperRelationshipORM.run_id == run_id,
+            PaperRelationshipORM.user_state == UserState.REJECTED.value,
+        )
+    ).all()
+    return {(tgt, rtype) for tgt, rtype in rows}
+
+
+def set_trail_edge_user_state(db: Session, edge_id: str, state: UserState) -> TrailEdge | None:
+    row = db.get(PaperRelationshipORM, edge_id)
+    if row is None:
+        return None
+    row.user_state = state.value
+    db.commit()
+    db.refresh(row)
+    return _trail_edge_domain_from_orm(row)

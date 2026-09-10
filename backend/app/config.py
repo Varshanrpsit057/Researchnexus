@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     rank_recency_half_life_years: float = 4.0
     rank_llm_prose_top_k: int = 10
 
+    # Typed research trail (Roadmap Phase 7 / Architecture §3 S11). Rule
+    # thresholds live in app/services/trail/rules.py::TrailThresholds as
+    # fixed "w0" values (calibration is Phase 16); only the run-scoped caps
+    # are surfaced here.
+    trail_top_k: int = 40
+    trail_max_seed_claims: int = 3
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

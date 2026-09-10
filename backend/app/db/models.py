@@ -1,11 +1,11 @@
-"""SQLAlchemy ORM models for Phases 1-6.
+"""SQLAlchemy ORM models for Phases 1-7.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
-`research_profiles`, `search_runs`, `search_candidates` and `ranked_papers`
-tables in docs/architecture/ResearchNexus_Data_Model.md §13, scoped to what
-auth/BYOK, PDF ingestion, profile extraction, academic search and ranking
-need. Other columns from that spec belong to later phases and are added
-when those phases need them, not speculatively here.
+`research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`
+and `paper_relationships` tables in docs/architecture/
+ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
+later phases and are added when those phases need them, not speculatively
+here.
 """
 
 from __future__ import annotations
@@ -193,3 +193,30 @@ class RankedPaperORM(Base):
     final_rank: Mapped[int] = mapped_column(Integer)
     band: Mapped[str] = mapped_column(String(16))
     explanation: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PaperRelationshipORM(Base):
+    __tablename__ = "paper_relationships"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "source_paper_id", "target_paper_id", "relationship_type",
+            name="ux_paper_rel_run_src_tgt_type",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), ForeignKey("search_runs.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # wired in Phase 8
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    target_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    relationship_type: Mapped[str] = mapped_column(String(32))
+    detection_method: Mapped[str] = mapped_column(String(32))
+    rule_fired: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    supporting_references: Mapped[list] = mapped_column(JSON, default=list)
+    confidence: Mapped[str] = mapped_column(String(16))
+    confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
+    user_state: Mapped[str] = mapped_column(String(16), default="pending")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
