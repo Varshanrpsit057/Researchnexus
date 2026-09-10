@@ -1,0 +1,187 @@
+"""RAG orchestration (Architecture §3 S13; Roadmap Phase 9).
+
+Fixed stage order, each stage degrading safely:
+
+    retrieve -> rerank -> contextual filter -> answerability gate
+      -> generate (per-sentence chunk tags) -> IsSupported? verify
+      -> faithfulness gate (regenerate once, then warn)
+      -> assemble claims (deterministic chunk->paper link)
+
+Guarantees carried out of this module:
+- a rendered sentence cites only retrieved chunk ids (generate + link);
+- unsupported sentences are dropped (default) or flagged, never rendered as
+  a grounded claim with no chunk;
+- the answerability gate returns "not enough in this workspace" + a
+  suggestion with **no generation tokens billed**;
+- reference strings are never generated (stripped in `generate`).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from sqlalchemy.orm import Session
+
+from app.config import Settings
+from app.domain.rag import AnswerSentence, RagAnswer
+from app.domain.workspace import ResearchWorkspace
+from app.llm.session import LlmSession
+from app.retrieval.embeddings import get_embedding_provider
+from app.retrieval.reranker import CrossEncoderReranker, get_reranker
+from app.retrieval.workspace_index import FaissWorkspaceIndex, WorkspaceChunkIndex
+from app.services.citations.validate import link_claims
+from app.services.rag.answerability import assess
+from app.services.rag.context_filter import filter_chunks
+from app.services.rag.faithfulness import passes, score_faithfulness
+from app.services.rag.generate import DraftAnswer, generate_answer
+from app.services.rag.rerank import rerank
+from app.services.rag.retriever import retrieve
+from app.services.rag.verify import verify_sentences
+
+
+@dataclass
+class RagRequest:
+    query: str
+    scope_paper_ids: list[str] | None = None  # None -> the whole workspace
+    mode: str = "qa"
+
+
+@dataclass
+class _Budget:
+    prompt: int = 0
+    completion: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def add(self, pt: int, ct: int) -> None:
+        self.prompt += pt
+        self.completion += ct
+
+
+def _build_index(db: Session, workspace: ResearchWorkspace, settings: Settings) -> FaissWorkspaceIndex:
+    idx = FaissWorkspaceIndex(
+        db,
+        workspace_id=workspace.workspace_id,
+        index_dir=Path(settings.data_dir) / "workspace_index",
+        embedder=get_embedding_provider(settings.rag_embedder),
+        vector_backend=settings.rag_vector_backend,
+    )
+    idx.rebuild([p.paper_id for p in workspace.papers])
+    return idx
+
+
+async def answer_question(
+    db: Session,
+    *,
+    workspace: ResearchWorkspace,
+    request: RagRequest,
+    session: LlmSession | None,
+    settings: Settings,
+    index: WorkspaceChunkIndex | None = None,
+    reranker: CrossEncoderReranker | None = None,
+) -> RagAnswer:
+    index = index or _build_index(db, workspace, settings)
+    reranker = reranker or get_reranker(settings.rag_reranker)
+    budget = _Budget()
+
+    retrieved = retrieve(
+        db, index, request.query, k=settings.rag_retrieve_k, scope_paper_ids=request.scope_paper_ids
+    )
+    reranked = rerank(request.query, retrieved, reranker, settings.rag_rerank_top_n)
+    filtered, pt, ct = await filter_chunks(session, request.query, reranked)
+    budget.add(pt, ct)
+
+    verdict = assess(request.query, filtered, min_chunks=settings.rag_min_answerable_chunks)
+    if not verdict.answerable:
+        return RagAnswer(
+            answerable=False,
+            suggestion=verdict.suggestion,
+            prompt_tokens=budget.prompt,
+            completion_tokens=budget.completion,
+            warnings=["not_answerable"],
+        )
+
+    kept = [c for c in filtered if c.kept]
+    chunk_text = {c.chunk_id: c.text for c in kept}
+
+    sentences, faith, regenerated = await _generate_verify_gate(
+        session, request.query, kept, chunk_text, settings, budget
+    )
+
+    rendered, dropped = _apply_support_policy(sentences, settings.rag_drop_unsupported)
+    answer = RagAnswer(
+        answerable=True,
+        text=" ".join(s.text for s in rendered),
+        sentences=rendered,
+        faithfulness=faith,
+        faithfulness_passed=passes(faith, settings.rag_faithfulness_min),
+        regenerated=regenerated,
+        unsupported_dropped=dropped,
+        used_chunk_ids=sorted({cid for s in rendered for cid in s.chunk_ids}),
+        prompt_tokens=budget.prompt,
+        completion_tokens=budget.completion,
+        warnings=list(budget.warnings),
+    )
+    if not answer.faithfulness_passed:
+        answer.warnings.append("faithfulness_below_threshold")
+    if not rendered:
+        answer.warnings.append("no_supported_sentences")
+    return answer
+
+
+async def _generate_verify_gate(
+    session: LlmSession | None,
+    query: str,
+    kept: list,
+    chunk_text: dict[str, str],
+    settings: Settings,
+    budget: _Budget,
+) -> tuple[list[AnswerSentence], float, bool]:
+    async def one_pass(q: str) -> tuple[DraftAnswer, list[AnswerSentence], float]:
+        draft = await generate_answer(session, q, kept)
+        budget.add(draft.prompt_tokens, draft.completion_tokens)
+        if not draft.ok:
+            return draft, [], 0.0
+        verified, pt, ct = await verify_sentences(session, draft.sentences, chunk_text)
+        budget.add(pt, ct)
+        supported_text = [s.text for s in verified if s.is_supported]
+        score = score_faithfulness(" ".join(supported_text), [chunk_text[c] for c in chunk_text])
+        return draft, verified, score
+
+    draft, sentences, faith = await one_pass(query)
+    if not draft.ok:
+        budget.warnings.append("generation_failed")
+        return [], 0.0, False
+
+    if not passes(faith, settings.rag_faithfulness_min):
+        retry_q = (
+            f"{query}\n\n(The previous answer failed a faithfulness check. "
+            "Ground every sentence strictly in the context and cite the exact chunk.)"
+        )
+        draft2, sentences2, faith2 = await one_pass(retry_q)
+        if draft2.ok:
+            return sentences2, faith2, True
+    return sentences, faith, False
+
+
+def _apply_support_policy(
+    sentences: list[AnswerSentence], drop_unsupported: bool
+) -> tuple[list[AnswerSentence], int]:
+    dropped = 0
+    rendered: list[AnswerSentence] = []
+    for s in sentences:
+        grounded = bool(s.chunk_ids) and s.is_supported
+        if grounded:
+            rendered.append(s)
+        elif drop_unsupported:
+            dropped += 1
+        else:
+            rendered.append(s.model_copy(update={"flagged_unsupported": True}))
+    return rendered, dropped
+
+
+def build_answer_claims(
+    answer: RagAnswer, *, workspace_id: str, message_id: str, retrieved_chunk_ids: set[str], chunk_to_paper: dict[str, str]
+) -> list:
+    claims = answer.to_claims(workspace_id=workspace_id, artefact_id=message_id)
+    return link_claims(claims, retrieved_chunk_ids=retrieved_chunk_ids, chunk_to_paper=chunk_to_paper)

@@ -30,6 +30,8 @@ def test_alembic_upgrade_head_creates_expected_tables(tmp_path: Path) -> None:
     assert {
         "papers", "paper_chunks", "jobs", "users", "api_keys", "research_profiles",
         "search_runs", "search_candidates", "ranked_papers", "paper_relationships",
+        "workspaces", "workspace_papers",
+        "chat_sessions", "chat_messages", "citations", "claims",
         "alembic_version",
     } <= tables
 
@@ -59,3 +61,9 @@ def test_alembic_downgrade_removes_tables(tmp_path: Path) -> None:
     assert "search_candidates" not in tables
     assert "ranked_papers" not in tables
     assert "paper_relationships" not in tables
+    assert "workspaces" not in tables
+    assert "workspace_papers" not in tables
+    assert "chat_sessions" not in tables
+    assert "chat_messages" not in tables
+    assert "citations" not in tables
+    assert "claims" not in tables

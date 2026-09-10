@@ -11,11 +11,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
     ApiKeyORM,
+    ChatMessageORM,
+    ChatSessionORM,
+    CitationORM,
+    ClaimORM,
     JobORM,
     PaperChunkORM,
     PaperORM,
@@ -25,6 +29,8 @@ from app.db.models import (
     SearchCandidateORM,
     SearchRunORM,
     UserORM,
+    WorkspaceORM,
+    WorkspacePaperORM,
 )
 from app.domain.candidate import (
     CitationRelationship,
@@ -33,13 +39,22 @@ from app.domain.candidate import (
     PaperCandidate,
     SearchRun,
 )
+from app.domain.chat import ChatMessage, ChatRole, ChatSession
 from app.domain.chunk import ChunkKind, PaperChunk
+from app.domain.citation import Citation, Claim
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
-from app.domain.profile import Confidence, ResearchProfile
+from app.domain.profile import Confidence, ResearchProfile, TokenUsage
 from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
 from app.domain.user import ApiKeyRecord, ApiKeyStatus, LlmProvider, User
+from app.domain.workspace import (
+    AddedBy,
+    Grounding,
+    ResearchWorkspace,
+    WorkspacePaper,
+    WorkspacePaperRole,
+)
 from app.security.pdf_sanitizer import PdfFileMeta
 
 # ---------------------------------------------------------------------------
@@ -248,6 +263,14 @@ def get_chunks_for_paper(db: Session, paper_id: str) -> list[PaperChunk]:
     )
     return [_chunk_domain_from_orm(r) for r in rows]
 
+
+
+def get_chunks_by_ids(db: Session, chunk_ids: list[str]) -> list[PaperChunk]:
+    if not chunk_ids:
+        return []
+    rows = db.execute(select(PaperChunkORM).where(PaperChunkORM.id.in_(chunk_ids))).scalars().all()
+    by_id = {r.id: _chunk_domain_from_orm(r) for r in rows}
+    return [by_id[cid] for cid in chunk_ids if cid in by_id]
 
 # ---------------------------------------------------------------------------
 # Job
@@ -726,3 +749,478 @@ def set_trail_edge_user_state(db: Session, edge_id: str, state: UserState) -> Tr
     db.commit()
     db.refresh(row)
     return _trail_edge_domain_from_orm(row)
+
+
+# ---------------------------------------------------------------------------
+# Research workspace (Phase 8): workspaces + workspace_papers, owner-scoped
+# ---------------------------------------------------------------------------
+
+
+def _workspace_paper_domain_from_orm(row: WorkspacePaperORM) -> WorkspacePaper:
+    return WorkspacePaper(
+        workspace_id=row.workspace_id,
+        paper_id=row.paper_id,
+        added_by=AddedBy(row.added_by),
+        role=WorkspacePaperRole(row.role),
+        grounding=Grounding(row.grounding),
+        pinned=row.pinned,
+        tags=list(row.tags or []),
+        note=row.note,
+        order=row.sort_order,
+        ranking_snapshot=(
+            RankedPaper.model_validate(row.ranking_snapshot) if row.ranking_snapshot else None
+        ),
+        added_at=row.added_at,
+    )
+
+
+def _workspace_domain_from_orm(row: WorkspaceORM, papers: list[WorkspacePaperORM]) -> ResearchWorkspace:
+    ordered = sorted(papers, key=lambda pr: (pr.sort_order, pr.added_at))
+    return ResearchWorkspace(
+        workspace_id=row.id,
+        owner_id=row.owner_id,
+        title=row.title,
+        seed_paper_id=row.seed_paper_id,
+        seed_profile_id=row.seed_profile_id,
+        papers=[_workspace_paper_domain_from_orm(pr) for pr in ordered],
+        combined_index_path=row.combined_index_path,
+        token_budget_usd=row.token_budget_usd,
+        tokens_used=TokenUsage(prompt=row.tokens_prompt, completion=row.tokens_completion),
+        cost_used_usd=row.cost_usd,
+        source_run_id=row.source_run_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _workspace_paper_orm(wp: WorkspacePaper, owner_id: str) -> WorkspacePaperORM:
+    return WorkspacePaperORM(
+        workspace_id=wp.workspace_id,
+        paper_id=wp.paper_id,
+        owner_id=owner_id,
+        added_by=wp.added_by.value,
+        role=wp.role.value,
+        grounding=wp.grounding.value,
+        pinned=wp.pinned,
+        tags=list(wp.tags),
+        note=wp.note,
+        sort_order=wp.order,
+        ranking_snapshot=wp.ranking_snapshot.model_dump(mode="json") if wp.ranking_snapshot else None,
+        added_at=wp.added_at,
+    )
+
+
+def _owned_workspace_row(db: Session, workspace_id: str, owner_id: str) -> WorkspaceORM | None:
+    """The single tenant gate: a row whose owner_id does not match is
+    invisible (callers surface 404, never 403 -- API spec tenant isolation)."""
+    row = db.get(WorkspaceORM, workspace_id)
+    if row is None or row.owner_id != owner_id:
+        return None
+    return row
+
+
+def create_workspace(db: Session, ws: ResearchWorkspace) -> ResearchWorkspace:
+    db.add(
+        WorkspaceORM(
+            id=ws.workspace_id,
+            owner_id=ws.owner_id,
+            title=ws.title,
+            seed_paper_id=ws.seed_paper_id,
+            seed_profile_id=ws.seed_profile_id,
+            source_run_id=ws.source_run_id,
+            combined_index_path=ws.combined_index_path,
+            token_budget_usd=ws.token_budget_usd,
+            tokens_prompt=ws.tokens_used.prompt,
+            tokens_completion=ws.tokens_used.completion,
+            cost_usd=ws.cost_used_usd,
+        )
+    )
+    for wp in ws.papers:
+        db.add(_workspace_paper_orm(wp, ws.owner_id))
+    db.commit()
+    stored = get_workspace(db, ws.workspace_id, ws.owner_id)
+    assert stored is not None  # just inserted
+    return stored
+
+
+def get_workspace(db: Session, workspace_id: str, owner_id: str) -> ResearchWorkspace | None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return None
+    papers = (
+        db.execute(select(WorkspacePaperORM).where(WorkspacePaperORM.workspace_id == workspace_id))
+        .scalars()
+        .all()
+    )
+    return _workspace_domain_from_orm(row, list(papers))
+
+
+def list_workspaces(db: Session, owner_id: str) -> list[ResearchWorkspace]:
+    rows = (
+        db.execute(
+            select(WorkspaceORM)
+            .where(WorkspaceORM.owner_id == owner_id)
+            .order_by(WorkspaceORM.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    out: list[ResearchWorkspace] = []
+    for row in rows:
+        papers = (
+            db.execute(select(WorkspacePaperORM).where(WorkspacePaperORM.workspace_id == row.id))
+            .scalars()
+            .all()
+        )
+        out.append(_workspace_domain_from_orm(row, list(papers)))
+    return out
+
+
+def update_workspace(
+    db: Session,
+    workspace_id: str,
+    owner_id: str,
+    *,
+    title: str | None = None,
+    token_budget_usd: float | None = None,
+) -> ResearchWorkspace | None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return None
+    if title is not None:
+        row.title = title
+    if token_budget_usd is not None:
+        row.token_budget_usd = token_budget_usd
+    db.commit()
+    return get_workspace(db, workspace_id, owner_id)
+
+
+def set_workspace_index_path(
+    db: Session, workspace_id: str, owner_id: str, path: str | None
+) -> ResearchWorkspace | None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return None
+    row.combined_index_path = path
+    db.commit()
+    return get_workspace(db, workspace_id, owner_id)
+
+
+def delete_workspace(db: Session, workspace_id: str, owner_id: str) -> bool:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return False
+    # paper_relationships.workspace_id is a plain nullable column (no FK
+    # cascade); release membership so orphaned trail rows do not point at a
+    # dead workspace. The edges stay run-scoped.
+    for edge in (
+        db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.workspace_id == workspace_id))
+        .scalars()
+        .all()
+    ):
+        edge.workspace_id = None
+        edge.owner_id = None
+    db.delete(row)
+    db.commit()
+    return True
+
+
+def add_workspace_paper(db: Session, wp: WorkspacePaper, owner_id: str) -> WorkspacePaper:
+    """Insert one membership row. The (workspace_id, paper_id) PK makes a
+    duplicate add raise IntegrityError -- the service layer decides whether
+    that is an error or an idempotent no-op."""
+    db.add(_workspace_paper_orm(wp, owner_id))
+    db.commit()
+    stored = get_workspace_paper(db, wp.workspace_id, wp.paper_id)
+    assert stored is not None  # just inserted
+    return stored
+
+
+def get_workspace_paper(db: Session, workspace_id: str, paper_id: str) -> WorkspacePaper | None:
+    row = db.get(WorkspacePaperORM, {"workspace_id": workspace_id, "paper_id": paper_id})
+    return _workspace_paper_domain_from_orm(row) if row else None
+
+
+def list_workspace_papers(db: Session, workspace_id: str) -> list[WorkspacePaper]:
+    rows = (
+        db.execute(
+            select(WorkspacePaperORM)
+            .where(WorkspacePaperORM.workspace_id == workspace_id)
+            .order_by(WorkspacePaperORM.sort_order, WorkspacePaperORM.added_at)
+        )
+        .scalars()
+        .all()
+    )
+    return [_workspace_paper_domain_from_orm(r) for r in rows]
+
+
+def update_workspace_paper(
+    db: Session, workspace_id: str, paper_id: str, changes: dict
+) -> WorkspacePaper | None:
+    """Apply only the keys present in changes (pinned / tags / note /
+    order); the service layer has already normalised the values."""
+    row = db.get(WorkspacePaperORM, {"workspace_id": workspace_id, "paper_id": paper_id})
+    if row is None:
+        return None
+    if "pinned" in changes:
+        row.pinned = bool(changes["pinned"])
+    if "tags" in changes:
+        row.tags = list(changes["tags"])
+    if "note" in changes:
+        row.note = changes["note"]
+    if "order" in changes:
+        row.sort_order = int(changes["order"])
+    db.commit()
+    db.refresh(row)
+    return _workspace_paper_domain_from_orm(row)
+
+
+def remove_workspace_paper(db: Session, workspace_id: str, paper_id: str) -> bool:
+    row = db.get(WorkspacePaperORM, {"workspace_id": workspace_id, "paper_id": paper_id})
+    if row is None:
+        return False
+    db.delete(row)
+    db.commit()
+    return True
+
+
+def workspace_child_counts(db: Session, workspace_id: str) -> dict[str, int]:
+    papers = db.scalar(
+        select(func.count())
+        .select_from(WorkspacePaperORM)
+        .where(WorkspacePaperORM.workspace_id == workspace_id)
+    )
+    edges = db.scalar(
+        select(func.count())
+        .select_from(PaperRelationshipORM)
+        .where(
+            PaperRelationshipORM.workspace_id == workspace_id,
+            PaperRelationshipORM.user_state != UserState.REJECTED.value,
+        )
+    )
+    # gaps / directions arrive in Phases 11 / 12
+    return {"papers": int(papers or 0), "edges": int(edges or 0), "gaps": 0, "directions": 0}
+
+
+def attach_run_edges_to_workspace(
+    db: Session, *, run_id: str, workspace_id: str, owner_id: str
+) -> int:
+    """Stamp workspace_id / owner_id onto the Phase 7 trail rows for a run,
+    making them the workspace trail (GET /workspaces/{id}/trail)."""
+    rows = (
+        db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.run_id == run_id))
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.workspace_id = workspace_id
+        row.owner_id = owner_id
+    db.commit()
+    return len(rows)
+
+
+def get_workspace_trail_edges(db: Session, workspace_id: str) -> list[TrailEdge]:
+    rows = (
+        db.execute(
+            select(PaperRelationshipORM)
+            .where(PaperRelationshipORM.workspace_id == workspace_id)
+            .order_by(PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type)
+        )
+        .scalars()
+        .all()
+    )
+    return [_trail_edge_domain_from_orm(r) for r in rows]
+
+
+def accept_reject_workspace_edge(
+    db: Session, workspace_id: str, owner_id: str, edge_id: str, state: UserState
+) -> TrailEdge | None:
+    row = db.get(PaperRelationshipORM, edge_id)
+    if row is None or row.workspace_id != workspace_id or (row.owner_id not in (None, owner_id)):
+        return None
+    row.user_state = state.value
+    db.commit()
+    db.refresh(row)
+    return _trail_edge_domain_from_orm(row)
+
+
+# ---------------------------------------------------------------------------
+# RAG + citations (Phase 9): chat sessions/messages, claims, citations
+# ---------------------------------------------------------------------------
+
+
+def _chat_session_from_orm(row: ChatSessionORM) -> ChatSession:
+    return ChatSession(
+        session_id=row.id,
+        workspace_id=row.workspace_id,
+        owner_id=row.owner_id,
+        title=row.title,
+        created_at=row.created_at,
+    )
+
+
+def _chat_message_from_orm(row: ChatMessageORM) -> ChatMessage:
+    return ChatMessage(
+        message_id=row.id,
+        session_id=row.session_id,
+        role=ChatRole(row.role),
+        content=row.content,
+        citations=list(row.citations or []),
+        tokens_prompt=row.tokens_prompt,
+        tokens_completion=row.tokens_completion,
+        faithfulness=row.faithfulness,
+        answerable=row.answerable,
+        created_at=row.created_at,
+    )
+
+
+def create_chat_session(db: Session, session: ChatSession) -> ChatSession:
+    db.add(
+        ChatSessionORM(
+            id=session.session_id,
+            workspace_id=session.workspace_id,
+            owner_id=session.owner_id,
+            title=session.title,
+        )
+    )
+    db.commit()
+    row = db.get(ChatSessionORM, session.session_id)
+    assert row is not None
+    return _chat_session_from_orm(row)
+
+
+def get_chat_session(db: Session, session_id: str, *, workspace_id: str, owner_id: str) -> ChatSession | None:
+    row = db.get(ChatSessionORM, session_id)
+    if row is None or row.workspace_id != workspace_id or row.owner_id != owner_id:
+        return None
+    return _chat_session_from_orm(row)
+
+
+def list_chat_sessions(db: Session, workspace_id: str, owner_id: str) -> list[ChatSession]:
+    rows = (
+        db.execute(
+            select(ChatSessionORM)
+            .where(ChatSessionORM.workspace_id == workspace_id, ChatSessionORM.owner_id == owner_id)
+            .order_by(ChatSessionORM.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [_chat_session_from_orm(r) for r in rows]
+
+
+def add_chat_message(db: Session, message: ChatMessage) -> ChatMessage:
+    db.add(
+        ChatMessageORM(
+            id=message.message_id,
+            session_id=message.session_id,
+            role=message.role.value,
+            content=message.content,
+            citations=list(message.citations),
+            tokens_prompt=message.tokens_prompt,
+            tokens_completion=message.tokens_completion,
+            faithfulness=message.faithfulness,
+            answerable=message.answerable,
+        )
+    )
+    db.commit()
+    row = db.get(ChatMessageORM, message.message_id)
+    assert row is not None
+    return _chat_message_from_orm(row)
+
+
+def get_chat_messages(db: Session, session_id: str) -> list[ChatMessage]:
+    rows = (
+        db.execute(
+            select(ChatMessageORM)
+            .where(ChatMessageORM.session_id == session_id)
+            .order_by(ChatMessageORM.created_at, ChatMessageORM.id)
+        )
+        .scalars()
+        .all()
+    )
+    return [_chat_message_from_orm(r) for r in rows]
+
+
+def _claim_from_orm(row: ClaimORM) -> Claim:
+    return Claim(
+        claim_id=row.id,
+        workspace_id=row.workspace_id,
+        artefact_kind=row.artefact_kind,
+        artefact_id=row.artefact_id,
+        sentence=row.sentence,
+        supporting_chunk_ids=list(row.supporting_chunk_ids or []),
+        supporting_paper_ids=list(row.supporting_paper_ids or []),
+        is_supported=row.is_supported,
+        citation_precision=row.citation_precision,
+        citation_recall=row.citation_recall,
+    )
+
+
+def save_claims(db: Session, claims: list[Claim]) -> None:
+    for c in claims:
+        existing = db.get(ClaimORM, c.claim_id)
+        payload = dict(
+            workspace_id=c.workspace_id,
+            artefact_kind=c.artefact_kind,
+            artefact_id=c.artefact_id,
+            sentence=c.sentence,
+            supporting_chunk_ids=list(c.supporting_chunk_ids),
+            supporting_paper_ids=list(c.supporting_paper_ids),
+            is_supported=c.is_supported,
+            citation_precision=c.citation_precision,
+            citation_recall=c.citation_recall,
+        )
+        if existing is None:
+            db.add(ClaimORM(id=c.claim_id, **payload))
+        else:
+            for k, v in payload.items():
+                setattr(existing, k, v)
+    db.commit()
+
+
+def get_claims_for_artefact(db: Session, artefact_id: str) -> list[Claim]:
+    rows = (
+        db.execute(select(ClaimORM).where(ClaimORM.artefact_id == artefact_id).order_by(ClaimORM.id))
+        .scalars()
+        .all()
+    )
+    return [_claim_from_orm(r) for r in rows]
+
+
+def _citation_from_orm(row: CitationORM) -> Citation:
+    return Citation(
+        citation_id=row.id,
+        workspace_id=row.workspace_id,
+        paper_id=row.paper_id,
+        csl_json=dict(row.csl_json or {}),
+        formatted=dict(row.formatted or {}),
+        resolved_from=row.resolved_from,
+    )
+
+
+def upsert_citation(db: Session, citation: Citation, *, owner_id: str | None = None) -> Citation:
+    row = db.execute(
+        select(CitationORM).where(
+            CitationORM.workspace_id == citation.workspace_id, CitationORM.paper_id == citation.paper_id
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = CitationORM(id=citation.citation_id, workspace_id=citation.workspace_id, paper_id=citation.paper_id)
+        db.add(row)
+    row.owner_id = owner_id
+    row.csl_json = citation.csl_json
+    row.formatted = citation.formatted
+    row.resolved_from = citation.resolved_from
+    db.commit()
+    db.refresh(row)
+    return _citation_from_orm(row)
+
+
+def get_citations(db: Session, workspace_id: str) -> list[Citation]:
+    rows = (
+        db.execute(select(CitationORM).where(CitationORM.workspace_id == workspace_id).order_by(CitationORM.paper_id))
+        .scalars()
+        .all()
+    )
+    return [_citation_from_orm(r) for r in rows]

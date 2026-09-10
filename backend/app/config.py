@@ -73,6 +73,21 @@ class Settings(BaseSettings):
     trail_top_k: int = 40
     trail_max_seed_claims: int = 3
 
+    # RAG + citations (Roadmap Phase 9 / Architecture §3 S13). Retrieval /
+    # rerank widths and the faithfulness floor are fixed "w0" values
+    # (calibration is Phase 16). The real MiniLM embedder, a faiss vector
+    # backend and the cross-encoder reranker are opt-in -- the defaults are
+    # the deterministic, dependency-free stand-ins so tests stay hermetic.
+    rag_retrieve_k: int = 8
+    rag_rerank_top_n: int = 5
+    rag_min_answerable_chunks: int = 2
+    rag_faithfulness_min: float = 0.6
+    rag_drop_unsupported: bool = True
+    rag_index_cache_size: int = 8
+    rag_embedder: str = "fake"
+    rag_vector_backend: str = "numpy"
+    rag_reranker: str = "fake"
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

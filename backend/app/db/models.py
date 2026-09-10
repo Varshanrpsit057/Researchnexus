@@ -1,9 +1,10 @@
-"""SQLAlchemy ORM models for Phases 1-7.
+"""SQLAlchemy ORM models for Phases 1-9.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
-`research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`
-and `paper_relationships` tables in docs/architecture/
-ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
+`research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`,
+`paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
+`chat_messages`, `citations` and `claims` tables in
+docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
 later phases and are added when those phases need them, not speculatively
 here.
 """
@@ -202,6 +203,7 @@ class PaperRelationshipORM(Base):
             "run_id", "source_paper_id", "target_paper_id", "relationship_type",
             name="ux_paper_rel_run_src_tgt_type",
         ),
+        Index("ix_paper_relationships_workspace", "workspace_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -219,4 +221,127 @@ class PaperRelationshipORM(Base):
     confidence: Mapped[str] = mapped_column(String(16))
     confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
     user_state: Mapped[str] = mapped_column(String(16), default="pending")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class WorkspaceORM(Base):
+    """Data Model §13 `workspaces`. `owner_id` is the tenant key -- every
+    read in app/db/repository.py filters by it. `source_run_id` records the
+    discovery run the workspace imported from (nullable; SET NULL if the run
+    is deleted) so the Phase 7 `paper_relationships` rows can be resolved
+    for `GET /workspaces/{id}/trail`. `graph_json` / `comparison_schema`
+    (Data Model §13) are added by Phases 10/13 when those stages need them,
+    not speculatively here."""
+
+    __tablename__ = "workspaces"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    seed_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    seed_profile_id: Mapped[str] = mapped_column(String(64))
+    source_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("search_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    combined_index_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    token_budget_usd: Mapped[float] = mapped_column(Float, default=5.0)
+    tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class WorkspacePaperORM(Base):
+    """Data Model §13 `workspace_papers`. PK `(workspace_id, paper_id)` --
+    a paper appears at most once per workspace. `owner_id` is denormalised
+    from the parent workspace for the tenant filter (Data Model: "for
+    RLS/tenant filter"). The `order` field of the domain model is stored as
+    `sort_order` to avoid the reserved SQL word."""
+
+    __tablename__ = "workspace_papers"
+    __table_args__ = (Index("ix_wp_owner", "owner_id"),)
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64))
+    added_by: Mapped[str] = mapped_column(String(16), default="manual")
+    role: Mapped[str] = mapped_column(String(16), default="related")
+    grounding: Mapped[str] = mapped_column(String(16), default="abstract")
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    ranking_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    added_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ChatSessionORM(Base):
+    """Data Model §13 `chat_sessions`. One conversation thread over a
+    workspace; messages cascade-delete with it."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ChatMessageORM(Base):
+    """Data Model §13 `chat_messages`. `citations` holds the list of
+    `claims.id` grounding an assistant turn; `faithfulness` is the gate
+    score (nullable for user turns / non-answerable turns)."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_msg_session", "session_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text, default="")
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
+    faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    answerable: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class CitationORM(Base):
+    """Data Model §13 `citations`. `formatted` is built only by
+    app/services/citations/formatter.py -- never by an LLM."""
+
+    __tablename__ = "citations"
+    __table_args__ = (UniqueConstraint("workspace_id", "paper_id", name="ux_citations_workspace_paper"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    csl_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    formatted: Mapped[dict] = mapped_column(JSON, default=dict)
+    resolved_from: Mapped[str] = mapped_column(String(16), default="unresolved")
+
+
+class ClaimORM(Base):
+    """Data Model §13 `claims` -- the grounding audit trail. Invariant:
+    `supporting_chunk_ids` is never empty (enforced on the domain model)."""
+
+    __tablename__ = "claims"
+    __table_args__ = (Index("ix_claims_workspace", "workspace_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    artefact_kind: Mapped[str] = mapped_column(String(24))
+    artefact_id: Mapped[str] = mapped_column(String(64), index=True)
+    sentence: Mapped[str] = mapped_column(Text)
+    supporting_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+    supporting_paper_ids: Mapped[list] = mapped_column(JSON, default=list)
+    is_supported: Mapped[bool] = mapped_column(Boolean, default=False)
+    citation_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
+    citation_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
