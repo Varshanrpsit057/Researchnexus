@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     external_backoff_base_s: float = 0.5
     external_cache_ttl_s: float = 300.0
 
+    # Ranking (Roadmap Phase 6 / Architecture §3 S9-S10 / Data Model §4).
+    # Band cutoffs and the recency half-life are fixed "w0" values -- their
+    # calibration is Phase 16's job (Evaluation Plan §3), same as the
+    # RankingWeights themselves.
+    rank_rerank_top_n: int = 50
+    rank_band_high: float = 0.66
+    rank_band_medium: float = 0.33
+    rank_explanation_threshold: float = 0.5
+    rank_recency_half_life_years: float = 4.0
+    rank_llm_prose_top_k: int = 10
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

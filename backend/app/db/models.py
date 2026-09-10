@@ -1,11 +1,11 @@
-"""SQLAlchemy ORM models for Phases 1-4.
+"""SQLAlchemy ORM models for Phases 1-6.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
-`research_profiles`, `search_runs` and `search_candidates` tables in
-docs/architecture/ResearchNexus_Data_Model.md §13, scoped to what auth/
-BYOK, PDF ingestion, profile extraction, and academic search need. Other
-columns from that spec belong to later phases and are added when those
-phases need them, not speculatively here.
+`research_profiles`, `search_runs`, `search_candidates` and `ranked_papers`
+tables in docs/architecture/ResearchNexus_Data_Model.md §13, scoped to what
+auth/BYOK, PDF ingestion, profile extraction, academic search and ranking
+need. Other columns from that spec belong to later phases and are added
+when those phases need them, not speculatively here.
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -171,3 +173,23 @@ class SearchCandidateORM(Base):
     # metadata conflict was resolved (Roadmap Phase 4: "provenance/source
     # tracking").
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RankedPaperORM(Base):
+    __tablename__ = "ranked_papers"
+    __table_args__ = (
+        Index("ix_ranked_run_rank", "run_id", "final_rank"),
+        UniqueConstraint("run_id", "paper_id", name="ux_ranked_run_paper"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), ForeignKey("search_runs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(String(64))
+    paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
+    signals: Mapped[dict] = mapped_column(JSON, default=dict)
+    weights_version: Mapped[str] = mapped_column(String(32))
+    fused_score: Mapped[float] = mapped_column(Float)
+    rerank_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_rank: Mapped[int] = mapped_column(Integer)
+    band: Mapped[str] = mapped_column(String(16))
+    explanation: Mapped[dict] = mapped_column(JSON, default=dict)

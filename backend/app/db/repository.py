@@ -19,6 +19,7 @@ from app.db.models import (
     JobORM,
     PaperChunkORM,
     PaperORM,
+    RankedPaperORM,
     ResearchProfileORM,
     SearchCandidateORM,
     SearchRunORM,
@@ -34,7 +35,8 @@ from app.domain.candidate import (
 from app.domain.chunk import ChunkKind, PaperChunk
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
-from app.domain.profile import ResearchProfile
+from app.domain.profile import Confidence, ResearchProfile
+from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
 from app.domain.user import ApiKeyRecord, ApiKeyStatus, LlmProvider, User
 from app.security.pdf_sanitizer import PdfFileMeta
 
@@ -565,3 +567,67 @@ def get_search_candidates(db: Session, run_id: str) -> list[PaperCandidate]:
 def get_search_candidate_provenance(db: Session, run_id: str) -> dict[str, dict]:
     rows = db.execute(select(SearchCandidateORM).where(SearchCandidateORM.run_id == run_id)).scalars().all()
     return {r.id: dict(r.provenance or {}) for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Ranking (Phase 6): ranked_papers, one row per (run, paper)
+# ---------------------------------------------------------------------------
+
+
+def get_search_candidate_paper_ids(db: Session, run_id: str) -> dict[str, str]:
+    """`candidate_id -> paper_id` for a run -- the ranking pipeline needs
+    the linked `papers.id` (which `get_search_candidates` does not carry) to
+    persist `ranked_papers`."""
+    rows = db.execute(
+        select(SearchCandidateORM.id, SearchCandidateORM.paper_id).where(SearchCandidateORM.run_id == run_id)
+    ).all()
+    return {cid: pid for cid, pid in rows}
+
+
+def _ranked_paper_domain_from_orm(row: RankedPaperORM) -> RankedPaper:
+    return RankedPaper(
+        candidate_id=row.candidate_id,
+        signals=SignalScores(**(row.signals or {})),
+        weights_version=row.weights_version,
+        fused_score=row.fused_score,
+        rerank_score=row.rerank_score,
+        final_rank=row.final_rank,
+        band=Confidence(row.band),
+        explanation=RankingExplanation(**(row.explanation or {"bullet_reasons": [], "prose": ""})),
+    )
+
+
+def save_ranked_papers(
+    db: Session, run_id: str, ranked: list[RankedPaper], candidate_paper_ids: dict[str, str]
+) -> None:
+    """Replace the run's ranking result wholesale -- a re-rank of the same
+    run supersedes the previous one."""
+    db.query(RankedPaperORM).filter(RankedPaperORM.run_id == run_id).delete()
+    for rp in ranked:
+        db.add(
+            RankedPaperORM(
+                id=_new_id("rank"),
+                run_id=run_id,
+                candidate_id=rp.candidate_id,
+                paper_id=candidate_paper_ids[rp.candidate_id],
+                signals=rp.signals.model_dump(),
+                weights_version=rp.weights_version,
+                fused_score=rp.fused_score,
+                rerank_score=rp.rerank_score,
+                final_rank=rp.final_rank,
+                band=rp.band.value,
+                explanation=rp.explanation.model_dump(),
+            )
+        )
+    db.commit()
+
+
+def get_ranked_papers(db: Session, run_id: str) -> list[RankedPaper]:
+    rows = (
+        db.execute(
+            select(RankedPaperORM).where(RankedPaperORM.run_id == run_id).order_by(RankedPaperORM.final_rank)
+        )
+        .scalars()
+        .all()
+    )
+    return [_ranked_paper_domain_from_orm(r) for r in rows]
