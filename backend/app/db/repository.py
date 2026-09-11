@@ -20,11 +20,13 @@ from app.db.models import (
     ChatSessionORM,
     CitationORM,
     ClaimORM,
+    ComparisonORM,
     JobORM,
     PaperChunkORM,
     PaperORM,
     PaperRelationshipORM,
     RankedPaperORM,
+    ResearchGapORM,
     ResearchProfileORM,
     SearchCandidateORM,
     SearchRunORM,
@@ -42,6 +44,8 @@ from app.domain.candidate import (
 from app.domain.chat import ChatMessage, ChatRole, ChatSession
 from app.domain.chunk import ChunkKind, PaperChunk
 from app.domain.citation import Citation, Claim
+from app.domain.comparison import Comparison, ComparisonRow, ComparisonSchema
+from app.domain.gap import GapEvidence, GapType, GapUserState, ResearchGap
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
 from app.domain.profile import Confidence, ResearchProfile, TokenUsage
@@ -1224,3 +1228,181 @@ def get_citations(db: Session, workspace_id: str) -> list[Citation]:
         .all()
     )
     return [_citation_from_orm(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Comparison (Phase 10): comparisons + workspaces.comparison_schema
+# ---------------------------------------------------------------------------
+
+
+def _comparison_from_orm(row: ComparisonORM) -> Comparison:
+    return Comparison(
+        comparison_id=row.id,
+        workspace_id=row.workspace_id,
+        column_schema=ComparisonSchema.model_validate(row.schema_json or {"columns": []}),
+        paper_ids=list(row.paper_ids or []),
+        rows=[ComparisonRow.model_validate(r) for r in (row.rows_json or [])],
+        coverage=row.coverage,
+        decontext_eval=row.decontext_eval,
+        created_at=row.created_at,
+    )
+
+
+def save_comparison(db: Session, comparison: Comparison, *, owner_id: str | None = None) -> Comparison:
+    row = db.get(ComparisonORM, comparison.comparison_id)
+    payload = dict(
+        workspace_id=comparison.workspace_id,
+        owner_id=owner_id,
+        schema_json=comparison.column_schema.model_dump(mode="json"),
+        paper_ids=list(comparison.paper_ids),
+        rows_json=[r.model_dump(mode="json") for r in comparison.rows],
+        coverage=comparison.coverage,
+        decontext_eval=comparison.decontext_eval,
+    )
+    if row is None:
+        db.add(ComparisonORM(id=comparison.comparison_id, created_at=comparison.created_at, **payload))
+    else:
+        for k, v in payload.items():
+            setattr(row, k, v)
+    db.commit()
+    stored = db.get(ComparisonORM, comparison.comparison_id)
+    assert stored is not None
+    return _comparison_from_orm(stored)
+
+
+def get_comparison(db: Session, comparison_id: str, *, workspace_id: str) -> Comparison | None:
+    row = db.get(ComparisonORM, comparison_id)
+    if row is None or row.workspace_id != workspace_id:
+        return None
+    return _comparison_from_orm(row)
+
+
+def list_comparisons(db: Session, workspace_id: str) -> list[Comparison]:
+    rows = (
+        db.execute(
+            select(ComparisonORM)
+            .where(ComparisonORM.workspace_id == workspace_id)
+            .order_by(ComparisonORM.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [_comparison_from_orm(r) for r in rows]
+
+
+def set_workspace_comparison_schema(
+    db: Session, workspace_id: str, owner_id: str, schema: ComparisonSchema
+) -> None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return
+    row.comparison_schema = schema.model_dump(mode="json")
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Research gaps (Phase 11): research_gaps, workspace-scoped
+# ---------------------------------------------------------------------------
+
+
+def _gap_from_orm(row: ResearchGapORM) -> ResearchGap:
+    return ResearchGap(
+        gap_id=row.id,
+        workspace_id=row.workspace_id,
+        statement=row.statement,
+        gap_type=GapType(row.gap_type),
+        supporting_papers=list(row.supporting_papers or []),
+        supporting_evidence=[GapEvidence.model_validate(e) for e in (row.supporting_evidence or [])],
+        conflicting_evidence=[GapEvidence.model_validate(e) for e in (row.conflicting_evidence or [])],
+        why_unaddressed=row.why_unaddressed,
+        affected_methods=list(row.affected_methods or []),
+        affected_datasets=list(row.affected_datasets or []),
+        evidence_coverage=row.evidence_coverage,
+        novelty_assessment=row.novelty_assessment,
+        confidence=Confidence(row.confidence),
+        confidence_basis=dict(row.confidence_basis or {}),
+        proposed_direction=row.proposed_direction,
+        detection_rule=row.detection_rule,
+        self_support_passed=row.self_support_passed,
+        user_state=row.user_state,
+        generated_at=row.generated_at,
+        generator_model=row.generator_model,
+    )
+
+
+def save_gaps(db: Session, workspace_id: str, gaps: list[ResearchGap], *, owner_id: str | None = None) -> None:
+    """Replace this workspace's candidate gaps. Rows a user has `accepted` or
+    `rejected` are kept untouched -- a rerun never clobbers a human decision
+    (and the pipeline already skips a `rejected` gap_id)."""
+    keep_ids = {g.gap_id for g in gaps}
+    for row in db.execute(select(ResearchGapORM).where(ResearchGapORM.workspace_id == workspace_id)).scalars().all():
+        if row.user_state != GapUserState.CANDIDATE.value:
+            continue
+        if row.id not in keep_ids:
+            db.delete(row)
+
+    for gap in gaps:
+        existing = db.get(ResearchGapORM, gap.gap_id)
+        payload = dict(
+            workspace_id=gap.workspace_id,
+            owner_id=owner_id,
+            statement=gap.statement,
+            gap_type=gap.gap_type.value,
+            supporting_papers=list(gap.supporting_papers),
+            supporting_evidence=[e.model_dump(mode="json") for e in gap.supporting_evidence],
+            conflicting_evidence=[e.model_dump(mode="json") for e in gap.conflicting_evidence],
+            why_unaddressed=gap.why_unaddressed,
+            affected_methods=list(gap.affected_methods),
+            affected_datasets=list(gap.affected_datasets),
+            evidence_coverage=gap.evidence_coverage,
+            novelty_assessment=gap.novelty_assessment,
+            confidence=gap.confidence.value,
+            confidence_basis=gap.confidence_basis,
+            proposed_direction=gap.proposed_direction,
+            detection_rule=gap.detection_rule,
+            self_support_passed=gap.self_support_passed,
+            generator_model=gap.generator_model,
+        )
+        if existing is None:
+            db.add(ResearchGapORM(id=gap.gap_id, user_state=gap.user_state, generated_at=gap.generated_at, **payload))
+        elif existing.user_state == GapUserState.CANDIDATE.value:
+            for k, v in payload.items():
+                setattr(existing, k, v)
+    db.commit()
+
+
+def get_gaps(db: Session, workspace_id: str, *, state: str | None = None) -> list[ResearchGap]:
+    stmt = select(ResearchGapORM).where(ResearchGapORM.workspace_id == workspace_id)
+    if state is not None:
+        stmt = stmt.where(ResearchGapORM.user_state == state)
+    rows = db.execute(stmt.order_by(ResearchGapORM.gap_type, ResearchGapORM.id)).scalars().all()
+    return [_gap_from_orm(r) for r in rows]
+
+
+def get_gap(db: Session, gap_id: str, *, workspace_id: str) -> ResearchGap | None:
+    row = db.get(ResearchGapORM, gap_id)
+    if row is None or row.workspace_id != workspace_id:
+        return None
+    return _gap_from_orm(row)
+
+
+def get_rejected_gap_ids(db: Session, workspace_id: str) -> set[str]:
+    rows = db.execute(
+        select(ResearchGapORM.id).where(
+            ResearchGapORM.workspace_id == workspace_id,
+            ResearchGapORM.user_state == GapUserState.REJECTED.value,
+        )
+    ).all()
+    return {r[0] for r in rows}
+
+
+def set_gap_user_state(
+    db: Session, gap_id: str, *, workspace_id: str, owner_id: str, state: GapUserState
+) -> ResearchGap | None:
+    row = db.get(ResearchGapORM, gap_id)
+    if row is None or row.workspace_id != workspace_id or (row.owner_id not in (None, owner_id)):
+        return None
+    row.user_state = state.value
+    db.commit()
+    db.refresh(row)
+    return _gap_from_orm(row)

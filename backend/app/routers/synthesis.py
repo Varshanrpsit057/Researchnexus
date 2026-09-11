@@ -1,5 +1,5 @@
 """Workspace synthesis (API spec §6 `POST /workspaces/{id}/summary`,
-`/keypoints`, `/citations`; Roadmap Phase 9).
+`/keypoints`, `/citations`, `/compare`, `/gaps`; Roadmap Phases 9-11).
 
 `summary` / `keypoints` need a working LLM key (`409 llm_key_required`);
 `citations` is fully deterministic and needs none. Every returned claim /
@@ -11,18 +11,23 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import repository as repo
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.deps import CurrentUser
+from app.domain.comparison import ComparisonSchema
+from app.domain.gap import GapType, GapUserState
+from app.domain.jobs import Job, JobKind
 from app.domain.rag import FilteredChunk
-from app.jobs.runner import new_id
+from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
+from app.retrieval.workspace_index import FaissWorkspaceIndex
 from app.services.citations.metadata_resolver import to_citation
+from app.services.synthesis.compare import build_comparison, build_schema
 from app.services.synthesis.keypoints import extract_keypoints
 from app.services.synthesis.summary import summarize
 from app.services.workspace import pipeline as ws_pipeline
@@ -161,3 +166,138 @@ def citations(
         if citation.resolved_from == "unresolved":
             unresolved.append(pid)
     return {"citations": built, "unresolved": unresolved}
+
+
+class CompareBody(BaseModel):
+    paper_ids: list[str] = Field(default_factory=list)
+    schema_: list[str] | None = Field(default=None, alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/{workspace_id}/compare")
+async def compare(
+    workspace_id: str, body: CompareBody, db: DbSession, settings: AppSettings, current_user: CurrentUser
+) -> dict:
+    workspace = _require_ws(db, current_user, workspace_id)
+    session = resolve_llm_session(db, current_user, settings)
+    if session is None:
+        raise _err(409, "llm_key_required", "no working LLM provider key saved")
+
+    member_order = [p.paper_id for p in workspace.papers]
+    wanted = set(body.paper_ids)
+    targets = [pid for pid in member_order if pid in wanted] if wanted else list(member_order)
+    if len(targets) < 2:
+        raise _err(422, "invalid_parameter", "comparison needs at least 2 workspace papers")
+
+    profiles = [pr for pr in (repo.get_profile(db, pid) for pid in targets) if pr is not None]
+    column_schema: ComparisonSchema = build_schema(profiles, explicit=body.schema_)
+
+    index = FaissWorkspaceIndex(
+        db,
+        workspace_id=workspace_id,
+        index_dir=settings.data_dir / "workspace_index",
+        vector_backend=settings.rag_vector_backend,
+    )
+    index.rebuild([p.paper_id for p in workspace.papers])
+
+    result = await build_comparison(
+        db,
+        workspace=workspace,
+        comparison_id=new_id("cmp"),
+        paper_ids=targets,
+        column_schema=column_schema,
+        session=session,
+        settings=settings,
+        index=index,
+    )
+    repo.save_claims(db, result.claims)
+    stored = repo.save_comparison(db, result.comparison, owner_id=current_user.id)
+    repo.set_workspace_comparison_schema(db, workspace_id, current_user.id, column_schema)
+
+    warnings = list(result.warnings)
+    if len(targets) > settings.compare_max_sync_papers:
+        warnings.append("large_comparison_ran_sync")
+    return {**stored.api_dict(), "warnings": warnings}
+
+
+@router.get("/{workspace_id}/compare/{comparison_id}")
+def get_comparison(
+    workspace_id: str, comparison_id: str, db: DbSession, current_user: CurrentUser
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    comparison = repo.get_comparison(db, comparison_id, workspace_id=workspace_id)
+    if comparison is None:
+        raise _err(404, "not_found", "comparison not found")
+    return comparison.api_dict()
+
+
+class GapsBody(BaseModel):
+    gap_types: list[str] | None = None
+    min_supporting_papers: int = 2
+
+
+@router.post("/{workspace_id}/gaps", status_code=202)
+def gaps(
+    workspace_id: str,
+    body: GapsBody,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    settings: AppSettings,
+    current_user: CurrentUser,
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    if resolve_llm_session(db, current_user, settings) is None:
+        raise _err(409, "llm_key_required", "no working LLM provider key saved")
+    valid = {t.value for t in GapType}
+    bad = [t for t in (body.gap_types or []) if t not in valid]
+    if bad:
+        raise _err(422, "invalid_parameter", f"unknown gap_types: {bad}")
+
+    job_id = new_id("job")
+    repo.create_job(db, Job(job_id=job_id, owner_id=current_user.id, workspace_id=workspace_id, kind=JobKind.GAPS))
+    background_tasks.add_task(
+        run_gaps_job,
+        get_session_factory(),
+        job_id,
+        workspace_id,
+        current_user.id,
+        body.gap_types,
+        max(2, body.min_supporting_papers),
+        settings,
+    )
+    return {"job": {"job_id": job_id, "kind": "gaps", "status": "queued", "poll_url": f"/api/v1/jobs/{job_id}"}}
+
+
+@router.get("/{workspace_id}/gaps")
+def list_gaps(
+    workspace_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    state: Annotated[str | None, Query()] = None,
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    if state is not None and state not in {s.value for s in GapUserState}:
+        raise _err(422, "invalid_parameter", "state must be candidate|accepted|rejected")
+    return {"gaps": [g.model_dump(mode="json") for g in repo.get_gaps(db, workspace_id, state=state)]}
+
+
+class GapStateBody(BaseModel):
+    user_state: str
+
+
+@router.post("/{workspace_id}/gaps/{gap_id}")
+def set_gap_state(
+    workspace_id: str, gap_id: str, body: GapStateBody, db: DbSession, current_user: CurrentUser
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    try:
+        state = GapUserState(body.user_state)
+    except ValueError as e:
+        raise _err(422, "invalid_parameter", "user_state must be accepted|rejected|candidate") from e
+    updated = repo.set_gap_user_state(
+        db, gap_id, workspace_id=workspace_id, owner_id=current_user.id, state=state
+    )
+    if updated is None:
+        raise _err(404, "not_found", "gap not found in this workspace")
+    return updated.model_dump(mode="json")

@@ -88,6 +88,18 @@ class Settings(BaseSettings):
     rag_vector_backend: str = "numpy"
     rag_reranker: str = "fake"
 
+    # Comparison (Roadmap Phase 10 / Architecture §3 S13). `compare_retrieve_k`
+    # is the per-paper evidence budget; larger paper sets return a job
+    # (async threshold not wired -- see the Phase 10 report).
+    compare_retrieve_k: int = 6
+    compare_max_sync_papers: int = 4
+
+    # Research gaps (Roadmap Phase 11 / Architecture §4 GapAnalyzer). The
+    # >= 2-supporting-papers bar and the temporal-staleness window are
+    # fixed rule thresholds (calibration is Phase 16).
+    gap_min_supporting_papers: int = 2
+    gap_temporal_years: int = 4
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

@@ -1,10 +1,10 @@
-"""SQLAlchemy ORM models for Phases 1-9.
+"""SQLAlchemy ORM models for Phases 1-11.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
 `research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`,
 `paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
-`chat_messages`, `citations` and `claims` tables in
-docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
+`chat_messages`, `citations`, `claims`, `comparisons` and
+`research_gaps` tables in docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
 later phases and are added when those phases need them, not speculatively
 here.
 """
@@ -250,6 +250,8 @@ class WorkspaceORM(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # ADD COLUMN in migration 0009 appends -> keep this last to match the migrated schema order
+    comparison_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class WorkspacePaperORM(Base):
@@ -345,3 +347,59 @@ class ClaimORM(Base):
     citation_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
     citation_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ComparisonORM(Base):
+    """Phase 10 multi-paper comparison result. Not in the Data Model §13
+    column list (which only records `workspaces.comparison_schema`); a
+    dedicated table mirrors how Phases 6-8 each persisted their stage
+    result (`ranked_papers`, `paper_relationships`, `workspaces`). Every
+    populated cell also has a `claims` row (`artefact_kind=
+    "comparison_cell"`, `artefact_id=comparisons.id`)."""
+
+    __tablename__ = "comparisons"
+    __table_args__ = (Index("ix_comparisons_workspace", "workspace_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    paper_ids: Mapped[list] = mapped_column(JSON, default=list)
+    rows_json: Mapped[list] = mapped_column(JSON, default=list)
+    coverage: Mapped[float] = mapped_column(Float, default=0.0)
+    decontext_eval: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ResearchGapORM(Base):
+    """Data Model §13 `research_gaps` -- the structured, evidence-grounded,
+    confidence-labelled gap object (Architecture §9: the artefact the tracked
+    IEEE BigData 2024 paper does not produce). `supporting_papers` always has
+    >= 2 entries and every `supporting_evidence` item carries a real
+    `SourceSpan` (enforced on the domain model). `confidence` is a band
+    string, never a percentage."""
+
+    __tablename__ = "research_gaps"
+    __table_args__ = (Index("ix_research_gaps_workspace", "workspace_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    statement: Mapped[str] = mapped_column(Text)
+    gap_type: Mapped[str] = mapped_column(String(32))
+    supporting_papers: Mapped[list] = mapped_column(JSON, default=list)
+    supporting_evidence: Mapped[list] = mapped_column(JSON, default=list)
+    conflicting_evidence: Mapped[list] = mapped_column(JSON, default=list)
+    why_unaddressed: Mapped[str] = mapped_column(Text, default="")
+    affected_methods: Mapped[list] = mapped_column(JSON, default=list)
+    affected_datasets: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_coverage: Mapped[float] = mapped_column(Float, default=0.0)
+    novelty_assessment: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[str] = mapped_column(String(16), default="low")
+    confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
+    proposed_direction: Mapped[str] = mapped_column(Text, default="")
+    detection_rule: Mapped[str] = mapped_column(String(48), default="")
+    self_support_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    user_state: Mapped[str] = mapped_column(String(16), default="candidate")
+    generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
