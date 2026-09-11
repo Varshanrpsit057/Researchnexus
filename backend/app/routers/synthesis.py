@@ -1,5 +1,6 @@
 """Workspace synthesis (API spec §6 `POST /workspaces/{id}/summary`,
-`/keypoints`, `/citations`, `/compare`, `/gaps`; Roadmap Phases 9-11).
+`/keypoints`, `/citations`, `/compare`, `/gaps`, `/directions`; Roadmap
+Phases 9-12).
 
 `summary` / `keypoints` need a working LLM key (`409 llm_key_required`);
 `citations` is fully deterministic and needs none. Every returned claim /
@@ -20,6 +21,7 @@ from app.db import repository as repo
 from app.db.session import get_db, get_session_factory
 from app.deps import CurrentUser
 from app.domain.comparison import ComparisonSchema
+from app.domain.direction import DirectionUserState
 from app.domain.gap import GapType, GapUserState
 from app.domain.jobs import Job, JobKind
 from app.domain.rag import FilteredChunk
@@ -27,6 +29,7 @@ from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
 from app.retrieval.workspace_index import FaissWorkspaceIndex
 from app.services.citations.metadata_resolver import to_citation
+from app.services.directions.pipeline import build_directions
 from app.services.synthesis.compare import build_comparison, build_schema
 from app.services.synthesis.keypoints import extract_keypoints
 from app.services.synthesis.summary import summarize
@@ -300,4 +303,71 @@ def set_gap_state(
     )
     if updated is None:
         raise _err(404, "not_found", "gap not found in this workspace")
+    return updated.model_dump(mode="json")
+
+
+class DirectionsBody(BaseModel):
+    gap_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/{workspace_id}/directions")
+async def directions(
+    workspace_id: str, body: DirectionsBody, db: DbSession, settings: AppSettings, current_user: CurrentUser
+) -> dict:
+    workspace = _require_ws(db, current_user, workspace_id)
+    session = resolve_llm_session(db, current_user, settings)
+    if session is None:
+        raise _err(409, "llm_key_required", "no working LLM provider key saved")
+    if not body.gap_ids:
+        raise _err(422, "invalid_parameter", "gap_ids must be a non-empty list of accepted gap ids")
+
+    result = await build_directions(
+        db, workspace=workspace, gap_ids=body.gap_ids, session=session, settings=settings
+    )
+    return {
+        "directions": [d.model_dump(mode="json") for d in repo.get_directions(db, workspace_id)],
+        "requested": result.requested,
+        "generated": result.direction_count,
+        "skipped_not_accepted": result.skipped_not_accepted,
+        "skipped_not_found": result.skipped_not_found,
+        "dropped_unsupported": result.dropped_unsupported,
+    }
+
+
+@router.get("/{workspace_id}/directions")
+def list_directions(
+    workspace_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    state: Annotated[str | None, Query()] = None,
+    gap_id: Annotated[str | None, Query()] = None,
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    if state is not None and state not in {s.value for s in DirectionUserState}:
+        raise _err(422, "invalid_parameter", "state must be candidate|accepted|rejected")
+    return {
+        "directions": [
+            d.model_dump(mode="json") for d in repo.get_directions(db, workspace_id, state=state, gap_id=gap_id)
+        ]
+    }
+
+
+class DirectionStateBody(BaseModel):
+    user_state: str
+
+
+@router.post("/{workspace_id}/directions/{direction_id}")
+def set_direction_state(
+    workspace_id: str, direction_id: str, body: DirectionStateBody, db: DbSession, current_user: CurrentUser
+) -> dict:
+    _require_ws(db, current_user, workspace_id)
+    try:
+        state = DirectionUserState(body.user_state)
+    except ValueError as e:
+        raise _err(422, "invalid_parameter", "user_state must be accepted|rejected|candidate") from e
+    updated = repo.set_direction_user_state(
+        db, direction_id, workspace_id=workspace_id, owner_id=current_user.id, state=state
+    )
+    if updated is None:
+        raise _err(404, "not_found", "direction not found in this workspace")
     return updated.model_dump(mode="json")

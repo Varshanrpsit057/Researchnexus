@@ -1,10 +1,11 @@
-"""SQLAlchemy ORM models for Phases 1-11.
+"""SQLAlchemy ORM models for Phases 1-12.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
 `research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`,
 `paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
-`chat_messages`, `citations`, `claims`, `comparisons` and
-`research_gaps` tables in docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
+`chat_messages`, `citations`, `claims`, `comparisons`,
+`research_gaps` and `research_directions` tables in docs/architecture/
+ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
 later phases and are added when those phases need them, not speculatively
 here.
 """
@@ -400,6 +401,41 @@ class ResearchGapORM(Base):
     proposed_direction: Mapped[str] = mapped_column(Text, default="")
     detection_rule: Mapped[str] = mapped_column(String(48), default="")
     self_support_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    user_state: Mapped[str] = mapped_column(String(16), default="candidate")
+    generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ResearchDirectionORM(Base):
+    """Data Model §13 `research_directions`. Every direction is tied to an
+    accepted `research_gaps` row (`gap_id`, `ON DELETE CASCADE`) and
+    inherits its evidence spans verbatim. `kind` is mandatory
+    (`evidence_backed_inference` | `llm_hypothesis`) -- a direction is never
+    presented as an established fact. `confidence_basis`, `flags` and
+    `user_state` are not in the Data Model §13 column list; the Phase 12
+    brief requires an explicit confidence basis and accept/reject handling,
+    same deviation as Phase 11's `research_gaps.user_state`."""
+
+    __tablename__ = "research_directions"
+    __table_args__ = (Index("ix_research_directions_workspace", "workspace_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gap_id: Mapped[str] = mapped_column(String(64), ForeignKey("research_gaps.id", ondelete="CASCADE"), index=True)
+    proposal: Mapped[str] = mapped_column(Text, default="")
+    motivation: Mapped[str] = mapped_column(Text, default="")
+    supporting_evidence: Mapped[list] = mapped_column(JSON, default=list)
+    related_papers: Mapped[list] = mapped_column(JSON, default=list)
+    suggested_method: Mapped[str] = mapped_column(Text, default="")
+    possible_dataset: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluation_strategy: Mapped[str] = mapped_column(Text, default="")
+    risks: Mapped[list] = mapped_column(JSON, default=list)
+    kind: Mapped[str] = mapped_column(String(32))
+    critique: Mapped[dict] = mapped_column(JSON, default=dict)
+    confidence: Mapped[str] = mapped_column(String(16), default="low")
+    confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
+    flags: Mapped[list] = mapped_column(JSON, default=list)
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
     generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

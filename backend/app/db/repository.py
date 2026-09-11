@@ -26,6 +26,7 @@ from app.db.models import (
     PaperORM,
     PaperRelationshipORM,
     RankedPaperORM,
+    ResearchDirectionORM,
     ResearchGapORM,
     ResearchProfileORM,
     SearchCandidateORM,
@@ -45,6 +46,7 @@ from app.domain.chat import ChatMessage, ChatRole, ChatSession
 from app.domain.chunk import ChunkKind, PaperChunk
 from app.domain.citation import Citation, Claim
 from app.domain.comparison import Comparison, ComparisonRow, ComparisonSchema
+from app.domain.direction import DirectionUserState, ResearchDirection
 from app.domain.gap import GapEvidence, GapType, GapUserState, ResearchGap
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
@@ -1406,3 +1408,107 @@ def set_gap_user_state(
     db.commit()
     db.refresh(row)
     return _gap_from_orm(row)
+
+
+# ---------------------------------------------------------------------------
+# Research directions (Phase 12): research_directions, workspace-scoped
+# ---------------------------------------------------------------------------
+
+
+def _direction_from_orm(row: ResearchDirectionORM) -> ResearchDirection:
+    return ResearchDirection(
+        direction_id=row.id,
+        workspace_id=row.workspace_id,
+        gap_id=row.gap_id,
+        proposal=row.proposal,
+        motivation=row.motivation,
+        supporting_evidence=[GapEvidence.model_validate(e) for e in (row.supporting_evidence or [])],
+        related_papers=list(row.related_papers or []),
+        suggested_method=row.suggested_method,
+        possible_dataset=row.possible_dataset,
+        evaluation_strategy=row.evaluation_strategy,
+        risks=list(row.risks or []),
+        kind=row.kind,
+        critique=dict(row.critique or {}),
+        confidence=Confidence(row.confidence),
+        confidence_basis=dict(row.confidence_basis or {}),
+        flags=list(row.flags or []),
+        user_state=row.user_state,
+        generated_at=row.generated_at,
+        generator_model=row.generator_model,
+    )
+
+
+def save_directions(
+    db: Session, workspace_id: str, directions: list[ResearchDirection], *, owner_id: str | None = None
+) -> None:
+    """Replace this workspace's candidate directions. Rows a user has
+    `accepted` or `rejected` are kept untouched -- a rerun never clobbers a
+    human decision."""
+    keep_ids = {d.direction_id for d in directions}
+    for row in (
+        db.execute(select(ResearchDirectionORM).where(ResearchDirectionORM.workspace_id == workspace_id))
+        .scalars()
+        .all()
+    ):
+        if row.user_state != DirectionUserState.CANDIDATE.value:
+            continue
+        if row.id not in keep_ids:
+            db.delete(row)
+
+    for d in directions:
+        existing = db.get(ResearchDirectionORM, d.direction_id)
+        payload = dict(
+            workspace_id=d.workspace_id,
+            owner_id=owner_id,
+            gap_id=d.gap_id,
+            proposal=d.proposal,
+            motivation=d.motivation,
+            supporting_evidence=[e.model_dump(mode="json") for e in d.supporting_evidence],
+            related_papers=list(d.related_papers),
+            suggested_method=d.suggested_method,
+            possible_dataset=d.possible_dataset,
+            evaluation_strategy=d.evaluation_strategy,
+            risks=list(d.risks),
+            kind=d.kind,
+            critique=d.critique,
+            confidence=d.confidence.value,
+            confidence_basis=d.confidence_basis,
+            flags=list(d.flags),
+            generator_model=d.generator_model,
+        )
+        if existing is None:
+            db.add(ResearchDirectionORM(id=d.direction_id, user_state=d.user_state, generated_at=d.generated_at, **payload))
+        elif existing.user_state == DirectionUserState.CANDIDATE.value:
+            for k, v in payload.items():
+                setattr(existing, k, v)
+    db.commit()
+
+
+def get_directions(db: Session, workspace_id: str, *, state: str | None = None, gap_id: str | None = None) -> list[ResearchDirection]:
+    stmt = select(ResearchDirectionORM).where(ResearchDirectionORM.workspace_id == workspace_id)
+    if state is not None:
+        stmt = stmt.where(ResearchDirectionORM.user_state == state)
+    if gap_id is not None:
+        stmt = stmt.where(ResearchDirectionORM.gap_id == gap_id)
+    rows = db.execute(stmt.order_by(ResearchDirectionORM.gap_id, ResearchDirectionORM.id)).scalars().all()
+    return [_direction_from_orm(r) for r in rows]
+
+
+def get_direction(db: Session, direction_id: str, *, workspace_id: str) -> ResearchDirection | None:
+    row = db.get(ResearchDirectionORM, direction_id)
+    if row is None or row.workspace_id != workspace_id:
+        return None
+    return _direction_from_orm(row)
+
+
+def set_direction_user_state(
+    db: Session, direction_id: str, *, workspace_id: str, owner_id: str, state: DirectionUserState
+) -> ResearchDirection | None:
+    row = db.get(ResearchDirectionORM, direction_id)
+    if row is None or row.workspace_id != workspace_id or (row.owner_id not in (None, owner_id)):
+        return None
+    row.user_state = state.value
+    db.commit()
+    db.refresh(row)
+    return _direction_from_orm(row)

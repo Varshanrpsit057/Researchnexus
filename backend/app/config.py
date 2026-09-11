@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     gap_min_supporting_papers: int = 2
     gap_temporal_years: int = 4
 
+    # Research directions (Roadmap Phase 12 / Architecture §4
+    # DirectionGenerator). Directions are only ever generated from
+    # accepted gaps; this just bounds how many the LLM may propose per gap.
+    direction_max_per_gap: int = 2
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)
