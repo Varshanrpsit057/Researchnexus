@@ -15,9 +15,16 @@ Every membership change (`create` with an import, `add_papers`,
 stand-in; Phase 9 swaps in the FAISS-backed implementation behind the same
 `WorkspaceChunkIndex` protocol.
 
+`get_graph` (Phase 13) rebuilds the workspace's `ResearchGraph` from its
+current papers and non-rejected Phase 7 trail edges on every read and
+re-persists it (`workspaces.graph_json`) -- the graph has no state of its
+own beyond those two already-authoritative sources, so a fresh, deterministic
+rebuild is simpler and safer than an incremental diff and is automatically
+correct after any add/remove/accept/reject.
+
 Not in scope (later phases): synthesis (summary/keypoints/compare), gaps,
-directions, the research graph, and the async `index_rebuild` / `trail`
-jobs -- the rebuild runs inline here.
+directions, GraphRAG routing over the research graph, and the async
+`index_rebuild` / `trail` jobs -- the rebuild runs inline here.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db import repository as repo
+from app.domain.graph import ResearchGraph
 from app.domain.ranking import RankedPaper
 from app.domain.trail import RelationshipType, UserState
 from app.domain.user import User
@@ -42,6 +50,7 @@ from app.domain.workspace import (
 )
 from app.jobs.runner import new_id
 from app.retrieval.workspace_index import get_workspace_index
+from app.services.graph.builder import build_graph
 
 
 class WorkspaceNotFound(Exception):
@@ -302,3 +311,20 @@ def set_edge_state(
     if updated is None:
         raise PaperNotFound(edge_id)  # edge not in this workspace
     return updated.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Research graph (Phase 13)
+# ---------------------------------------------------------------------------
+
+
+def get_graph(db: Session, *, owner: User, workspace_id: str) -> ResearchGraph:
+    ws = _require_workspace(db, owner, workspace_id)
+    titles: dict[str, str] = {}
+    for p in ws.papers:
+        paper = repo.get_paper(db, p.paper_id)
+        titles[p.paper_id] = paper.title if paper is not None else p.paper_id
+    trail_edges = repo.get_workspace_trail_edges(db, workspace_id)
+    graph = build_graph(ws, trail_edges, titles)
+    repo.set_workspace_graph(db, workspace_id, owner.id, graph)
+    return graph

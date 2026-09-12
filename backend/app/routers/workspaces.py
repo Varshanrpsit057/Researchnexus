@@ -6,6 +6,10 @@ reject). Every route is tenant-scoped through `deps.CurrentUser`; a
 workspace owned by someone else is a `404`, never a `403` (API spec
 §Tenant isolation).
 
+`GET .../graph` (Phase 13) returns the workspace's `ResearchGraph`,
+rebuilt fresh from the current paper collection and trail on every call
+(app/services/workspace/pipeline.py::get_graph).
+
 Deferred to later phases (kept out per the Phase 8 brief):
 - the async `202 -> Job(kind=index_rebuild|workspace_delete|trail)` variants
   -- the index rebuild runs inline in the service layer and delete is
@@ -16,6 +20,7 @@ Deferred to later phases (kept out per the Phase 8 brief):
 - `POST .../trail/retype` -- trail regeneration is Phase 7 pipeline work.
 - synthesis routes (chat / summary / keypoints / compare / gaps /
   directions / citations / presentation) -- Phases 9-14.
+- GraphRAG routing over the research graph -- Phase 14+.
 """
 
 from __future__ import annotations
@@ -269,3 +274,15 @@ def set_edge_state(
         raise _err(404, "not_found", "workspace not found") from e
     except pipeline.PaperNotFound as e:
         raise _err(404, "not_found", "trail edge not found in this workspace") from e
+
+
+# --- research graph (Roadmap Phase 13) ----------------------------------
+
+
+@router.get("/{workspace_id}/graph")
+def get_graph(workspace_id: str, db: DbSession, current_user: CurrentUser) -> dict:
+    try:
+        graph = pipeline.get_graph(db, owner=current_user, workspace_id=workspace_id)
+    except pipeline.WorkspaceNotFound as e:
+        raise _err(404, "not_found", "workspace not found") from e
+    return graph.model_dump(mode="json")

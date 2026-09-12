@@ -48,6 +48,7 @@ from app.domain.citation import Citation, Claim
 from app.domain.comparison import Comparison, ComparisonRow, ComparisonSchema
 from app.domain.direction import DirectionUserState, ResearchDirection
 from app.domain.gap import GapEvidence, GapType, GapUserState, ResearchGap
+from app.domain.graph import ResearchGraph
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.paper import ParsedDocument
 from app.domain.profile import Confidence, ResearchProfile, TokenUsage
@@ -1512,3 +1513,23 @@ def set_direction_user_state(
     db.commit()
     db.refresh(row)
     return _direction_from_orm(row)
+
+
+# ---------------------------------------------------------------------------
+# Research graph (Phase 13): workspaces.graph_json
+# ---------------------------------------------------------------------------
+
+
+def set_workspace_graph(db: Session, workspace_id: str, owner_id: str, graph: ResearchGraph) -> None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return
+    row.graph_json = graph.model_dump(mode="json")
+    db.commit()
+
+
+def get_workspace_graph(db: Session, workspace_id: str, owner_id: str) -> ResearchGraph | None:
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None or row.graph_json is None:
+        return None
+    return ResearchGraph.model_validate(row.graph_json)

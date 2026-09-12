@@ -230,9 +230,7 @@ class WorkspaceORM(Base):
     read in app/db/repository.py filters by it. `source_run_id` records the
     discovery run the workspace imported from (nullable; SET NULL if the run
     is deleted) so the Phase 7 `paper_relationships` rows can be resolved
-    for `GET /workspaces/{id}/trail`. `graph_json` / `comparison_schema`
-    (Data Model §13) are added by Phases 10/13 when those stages need them,
-    not speculatively here."""
+    for `GET /workspaces/{id}/trail`."""
 
     __tablename__ = "workspaces"
 
@@ -251,8 +249,9 @@ class WorkspaceORM(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
-    # ADD COLUMN in migration 0009 appends -> keep this last to match the migrated schema order
+    # ADD COLUMN in migrations 0009 / 0012 appends -> keep these last to match the migrated schema order
     comparison_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    graph_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class WorkspacePaperORM(Base):

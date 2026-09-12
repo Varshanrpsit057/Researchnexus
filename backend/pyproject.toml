@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "researchnexus-backend"
 version = "0.1.0"
-description = "ResearchNexus backend (Phases 1-12: auth/BYOK, ingestion, profiles, academic search, discovery, ranking, typed research trail, research workspace, verified RAG + citations, multi-paper comparison, evidence-grounded research gaps, research directions)"
+description = "ResearchNexus backend (Phases 1-13: auth/BYOK, ingestion, profiles, academic search, discovery, ranking, typed research trail, research workspace, verified RAG + citations, multi-paper comparison, evidence-grounded research gaps, research directions, per-workspace research graph)"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115",

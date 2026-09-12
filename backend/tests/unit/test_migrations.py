@@ -71,3 +71,26 @@ def test_alembic_downgrade_removes_tables(tmp_path: Path) -> None:
     assert "comparisons" not in tables
     assert "research_gaps" not in tables
     assert "research_directions" not in tables
+
+
+def test_alembic_upgrade_adds_workspaces_graph_json_and_downgrade_removes_it(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_graph_smoke.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(workspaces)")}
+    finally:
+        conn.close()
+    assert "graph_json" in cols
+
+    command.downgrade(cfg, "0011")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(workspaces)")}
+    finally:
+        conn.close()
+    assert "graph_json" not in cols
