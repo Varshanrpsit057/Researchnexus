@@ -1,13 +1,13 @@
-"""SQLAlchemy ORM models for Phases 1-12.
+"""SQLAlchemy ORM models for Phases 1-14.
 
 Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
 `research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`,
 `paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
 `chat_messages`, `citations`, `claims`, `comparisons`,
-`research_gaps` and `research_directions` tables in docs/architecture/
-ResearchNexus_Data_Model.md §13. Other columns from that spec belong to
-later phases and are added when those phases need them, not speculatively
-here.
+`research_gaps`, `research_directions` and `stage_runs` tables in
+docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that
+spec belong to later phases and are added when those phases need them, not
+speculatively here.
 """
 
 from __future__ import annotations
@@ -438,3 +438,35 @@ class ResearchDirectionORM(Base):
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
     generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class StageRunORM(Base):
+    """Data Model §13 `stage_runs` -- the orchestrator's append-only
+    tool-call log (Roadmap Phase 14 `ToolLog`). Never blocks the path it
+    observes: a failed write here is a logging bug, not a pipeline failure.
+    No prompt/response bodies, no secrets -- only hashes, counts, and a
+    short error string."""
+
+    __tablename__ = "stage_runs"
+    __table_args__ = (
+        Index("ix_stage_runs_ws_stage", "workspace_id", "stage"),
+        Index("ix_stage_runs_ts", "ts"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage: Mapped[str] = mapped_column(String(32))
+    tool: Mapped[str] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    output_hash: Mapped[str] = mapped_column(String(64))
+    tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

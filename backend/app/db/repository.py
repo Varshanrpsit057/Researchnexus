@@ -31,6 +31,7 @@ from app.db.models import (
     ResearchProfileORM,
     SearchCandidateORM,
     SearchRunORM,
+    StageRunORM,
     UserORM,
     WorkspaceORM,
     WorkspacePaperORM,
@@ -50,6 +51,7 @@ from app.domain.direction import DirectionUserState, ResearchDirection
 from app.domain.gap import GapEvidence, GapType, GapUserState, ResearchGap
 from app.domain.graph import ResearchGraph
 from app.domain.jobs import Job, JobKind, JobStatus
+from app.domain.orchestrator import StageName, StageRun
 from app.domain.paper import ParsedDocument
 from app.domain.profile import Confidence, ResearchProfile, TokenUsage
 from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
@@ -913,6 +915,21 @@ def set_workspace_index_path(
     return get_workspace(db, workspace_id, owner_id)
 
 
+def add_workspace_spend(
+    db: Session, workspace_id: str, owner_id: str, *, tokens_prompt: int, tokens_completion: int, cost_usd: float
+) -> ResearchWorkspace | None:
+    """Accumulates onto the workspace's running total (Roadmap Phase 14
+    `BudgetGuard`) -- the only writer of `workspaces.cost_usd`."""
+    row = _owned_workspace_row(db, workspace_id, owner_id)
+    if row is None:
+        return None
+    row.tokens_prompt += tokens_prompt
+    row.tokens_completion += tokens_completion
+    row.cost_usd += cost_usd
+    db.commit()
+    return get_workspace(db, workspace_id, owner_id)
+
+
 def delete_workspace(db: Session, workspace_id: str, owner_id: str) -> bool:
     row = _owned_workspace_row(db, workspace_id, owner_id)
     if row is None:
@@ -1533,3 +1550,73 @@ def get_workspace_graph(db: Session, workspace_id: str, owner_id: str) -> Resear
     if row is None or row.graph_json is None:
         return None
     return ResearchGraph.model_validate(row.graph_json)
+
+
+def mark_extra_citation_hop(db: Session, run_id: str) -> None:
+    """Records the orchestrator's bounded "one extra citation hop"
+    decision (Architecture §4) on the run it was authorised for."""
+    row = db.get(SearchRunORM, run_id)
+    if row is None:
+        return
+    row.extra_citation_hop_used = True
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator (Phase 14): stage_runs -- the ToolLog append-only tool-call log
+# ---------------------------------------------------------------------------
+
+
+def _stage_run_from_orm(row: StageRunORM) -> StageRun:
+    return StageRun(
+        id=row.id,
+        owner_id=row.owner_id,
+        workspace_id=row.workspace_id,
+        job_id=row.job_id,
+        stage=StageName(row.stage),
+        tool=row.tool,
+        input_hash=row.input_hash,
+        output_hash=row.output_hash,
+        tokens_prompt=row.tokens_prompt,
+        tokens_completion=row.tokens_completion,
+        cost_usd=row.cost_usd,
+        latency_ms=row.latency_ms,
+        ok=row.ok,
+        error=row.error,
+        ts=row.ts,
+    )
+
+
+def record_stage_run(db: Session, run: StageRun) -> StageRun:
+    db.add(
+        StageRunORM(
+            id=run.id,
+            owner_id=run.owner_id,
+            workspace_id=run.workspace_id,
+            job_id=run.job_id,
+            stage=run.stage.value,
+            tool=run.tool,
+            input_hash=run.input_hash,
+            output_hash=run.output_hash,
+            tokens_prompt=run.tokens_prompt,
+            tokens_completion=run.tokens_completion,
+            cost_usd=run.cost_usd,
+            latency_ms=run.latency_ms,
+            ok=run.ok,
+            error=run.error,
+            ts=run.ts,
+        )
+    )
+    db.commit()
+    return run
+
+
+def list_stage_runs(
+    db: Session, workspace_id: str, *, stage: StageName | None = None, limit: int = 50
+) -> list[StageRun]:
+    stmt = select(StageRunORM).where(StageRunORM.workspace_id == workspace_id)
+    if stage is not None:
+        stmt = stmt.where(StageRunORM.stage == stage.value)
+    stmt = stmt.order_by(StageRunORM.ts.desc(), StageRunORM.id.desc()).limit(limit)
+    rows = db.execute(stmt).scalars().all()
+    return [_stage_run_from_orm(r) for r in rows]

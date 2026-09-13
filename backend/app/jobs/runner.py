@@ -64,10 +64,14 @@ def run_gaps_job(
     settings: Settings,
 ) -> None:
     """`POST /workspaces/{id}/gaps` -- runs the deterministic-first gap
-    pipeline and persists `research_gaps` rows (Roadmap Phase 11)."""
+    pipeline and persists `research_gaps` rows (Roadmap Phase 11). Routed
+    through `ResearchOrchestrator.run_gaps_stage` (Roadmap Phase 14) so the
+    run also writes a `stage_runs` row; same inputs, same result, same
+    error handling."""
     from app.domain.gap import GapType
     from app.llm.session import resolve_llm_session
-    from app.services.gaps.pipeline import GapBuildOptions, build_gaps
+    from app.services.gaps.pipeline import GapBuildOptions
+    from app.services.orchestrator.orchestrator import ResearchOrchestrator
 
     db = session_factory()
     try:
@@ -80,13 +84,14 @@ def run_gaps_job(
                 return
             gap_types = {GapType(v) for v in gap_type_values} if gap_type_values else None
             session = resolve_llm_session(db, user, settings)
+            orchestrator = ResearchOrchestrator(db=db, settings=settings)
             result = asyncio.run(
-                build_gaps(
-                    db,
+                orchestrator.run_gaps_stage(
                     workspace=workspace,
                     options=GapBuildOptions(gap_types=gap_types, min_supporting_papers=min_supporting_papers),
                     session=session,
-                    settings=settings,
+                    owner_id=owner_id,
+                    job_id=job_id,
                 )
             )
         except Exception as e:  # noqa: BLE001 - record on the job, never crash the worker

@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db import repository as repo
 from app.domain.graph import ResearchGraph
+from app.domain.orchestrator import StageName, StageRun
 from app.domain.ranking import RankedPaper
 from app.domain.trail import RelationshipType, UserState
 from app.domain.user import User
@@ -328,3 +329,15 @@ def get_graph(db: Session, *, owner: User, workspace_id: str) -> ResearchGraph:
     graph = build_graph(ws, trail_edges, titles)
     repo.set_workspace_graph(db, workspace_id, owner.id, graph)
     return graph
+
+
+# ---------------------------------------------------------------------------
+# Activity (Phase 14): GET /workspaces/{id}/activity reads stage_runs
+# ---------------------------------------------------------------------------
+
+
+def get_activity(
+    db: Session, *, owner: User, workspace_id: str, stage: StageName | None = None, limit: int = 50
+) -> list[StageRun]:
+    _require_workspace(db, owner, workspace_id)
+    return repo.list_stage_runs(db, workspace_id, stage=stage, limit=limit)

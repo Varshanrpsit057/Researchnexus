@@ -10,6 +10,10 @@ workspace owned by someone else is a `404`, never a `403` (API spec
 rebuilt fresh from the current paper collection and trail on every call
 (app/services/workspace/pipeline.py::get_graph).
 
+`GET .../activity` (Phase 14) reads the workspace's `stage_runs` --
+the orchestrator's append-only tool-call log. Hashes and counts only,
+never a prompt or response body (Data Model §13).
+
 Deferred to later phases (kept out per the Phase 8 brief):
 - the async `202 -> Job(kind=index_rebuild|workspace_delete|trail)` variants
   -- the index rebuild runs inline in the service layer and delete is
@@ -35,6 +39,7 @@ from app.config import Settings, get_settings
 from app.db import repository as repo
 from app.db.session import get_db
 from app.deps import CurrentUser
+from app.domain.orchestrator import StageName
 from app.domain.trail import UserState
 from app.services.workspace import pipeline
 
@@ -286,3 +291,27 @@ def get_graph(workspace_id: str, db: DbSession, current_user: CurrentUser) -> di
     except pipeline.WorkspaceNotFound as e:
         raise _err(404, "not_found", "workspace not found") from e
     return graph.model_dump(mode="json")
+
+
+# --- activity / tool-call log (Roadmap Phase 14) ------------------------
+
+
+@router.get("/{workspace_id}/activity")
+def get_activity(
+    workspace_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    stage: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict:
+    stage_filter: StageName | None = None
+    if stage is not None:
+        try:
+            stage_filter = StageName(stage)
+        except ValueError as e:
+            raise _err(422, "invalid_parameter", "stage must be one of " + ", ".join(s.value for s in StageName)) from e
+    try:
+        rows = pipeline.get_activity(db, owner=current_user, workspace_id=workspace_id, stage=stage_filter, limit=limit)
+    except pipeline.WorkspaceNotFound as e:
+        raise _err(404, "not_found", "workspace not found") from e
+    return {"stage_runs": [r.model_dump(mode="json") for r in rows]}

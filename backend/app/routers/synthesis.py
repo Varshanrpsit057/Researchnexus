@@ -29,7 +29,7 @@ from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
 from app.retrieval.workspace_index import FaissWorkspaceIndex
 from app.services.citations.metadata_resolver import to_citation
-from app.services.directions.pipeline import build_directions
+from app.services.orchestrator.orchestrator import ResearchOrchestrator
 from app.services.synthesis.compare import build_comparison, build_schema
 from app.services.synthesis.keypoints import extract_keypoints
 from app.services.synthesis.summary import summarize
@@ -321,8 +321,9 @@ async def directions(
     if not body.gap_ids:
         raise _err(422, "invalid_parameter", "gap_ids must be a non-empty list of accepted gap ids")
 
-    result = await build_directions(
-        db, workspace=workspace, gap_ids=body.gap_ids, session=session, settings=settings
+    orchestrator = ResearchOrchestrator(db=db, settings=settings)
+    result = await orchestrator.run_directions_stage(
+        workspace=workspace, gap_ids=body.gap_ids, session=session, owner_id=current_user.id
     )
     return {
         "directions": [d.model_dump(mode="json") for d in repo.get_directions(db, workspace_id)],

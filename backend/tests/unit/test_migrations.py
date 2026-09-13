@@ -32,7 +32,7 @@ def test_alembic_upgrade_head_creates_expected_tables(tmp_path: Path) -> None:
         "search_runs", "search_candidates", "ranked_papers", "paper_relationships",
         "workspaces", "workspace_papers",
         "chat_sessions", "chat_messages", "citations", "claims", "comparisons", "research_gaps",
-        "research_directions",
+        "research_directions", "stage_runs",
         "alembic_version",
     } <= tables
 
@@ -71,6 +71,7 @@ def test_alembic_downgrade_removes_tables(tmp_path: Path) -> None:
     assert "comparisons" not in tables
     assert "research_gaps" not in tables
     assert "research_directions" not in tables
+    assert "stage_runs" not in tables
 
 
 def test_alembic_upgrade_adds_workspaces_graph_json_and_downgrade_removes_it(tmp_path: Path) -> None:

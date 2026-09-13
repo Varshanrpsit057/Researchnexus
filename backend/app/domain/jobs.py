@@ -3,7 +3,11 @@
 Mirrors docs/architecture/ResearchNexus_Data_Model.md §12. Phase 2 uses this
 only for `JobKind.INGEST` (PDF validate -> parse -> chunk), run via FastAPI
 BackgroundTasks per docs/architecture/ResearchNexus_Implementation_
-Architecture.md §7 ("FastAPI BackgroundTasks (MVP)").
+Architecture.md §7 ("FastAPI BackgroundTasks (MVP)"). `PIPELINE` (Roadmap
+Phase 14) tracks a `ResearchOrchestrator.run_full_pipeline` call end to
+end; its own `progress` dict names the current stage (e.g.
+`{"stage": "discovery"}`), same shape as the Data Model's own
+`{"semantic": "done", "citation": "running", ...}` example.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ class JobKind(str, Enum):
     GAPS = "gaps"
     DIRECTIONS = "directions"
     INDEX_REBUILD = "index_rebuild"
+    PIPELINE = "pipeline"
 
 
 class JobStatus(str, Enum):

@@ -105,6 +105,25 @@ class Settings(BaseSettings):
     # accepted gaps; this just bounds how many the LLM may propose per gap.
     direction_max_per_gap: int = 2
 
+    # Agentic orchestrator (Roadmap Phase 14 / Architecture §4
+    # ResearchOrchestrator). BYOK means there is no single real-world price
+    # list ResearchNexus can know in advance; this blended per-1k-token USD
+    # rate is a deliberately simple MVP approximation used only to compare
+    # running spend against a workspace's own `token_budget_usd` cap --
+    # actual billing is always the user's own provider's, never this app's.
+    orchestrator_cost_per_1k_tokens_usd: float = 0.002
+    # Degrade (fewer strategies / smaller k) once spend crosses this
+    # fraction of the budget; block once spend reaches the budget itself.
+    orchestrator_budget_degrade_threshold: float = 0.8
+    orchestrator_stage_timeout_s: float = 60.0
+    # Hard cap on attempts for any single stage call, regardless of what a
+    # caller requests -- "no unbounded loops" (Roadmap Phase 14 tests).
+    orchestrator_max_stage_attempts: int = 2
+    # The "one extra citation hop" bounded decision (Architecture §4):
+    # authorise it only when the first discovery pass is this thin.
+    orchestrator_min_candidates_for_hop: int = 5
+    orchestrator_min_strategy_diversity: int = 2
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)
