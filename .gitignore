@@ -1,1 +1,9 @@
 .semgrep/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
+# Claude Code plugin/skill scaffolding (personal tooling, not project source;
+# .claude/settings.local.json in particular carries a machine-specific path)
+.claude/
+.github/agents/
+.github/hooks/
+.github/skills/
