@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     orchestrator_min_candidates_for_hop: int = 5
     orchestrator_min_strategy_diversity: int = 2
 
+    # Frontend CORS (Roadmap Phase 15). No frontend existed before this
+    # phase, so no CORS policy did either; the dev default is the Next.js
+    # dev server's own origin. A real deployment overrides this env-only,
+    # same as every other setting here.
+    cors_allowed_origins: list[str] = ["http://localhost:3000"]
+
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"
         d.mkdir(parents=True, exist_ok=True)

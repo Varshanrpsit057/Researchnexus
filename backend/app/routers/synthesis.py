@@ -235,6 +235,20 @@ def get_comparison(
     return comparison.api_dict()
 
 
+@router.get("/{workspace_id}/compare")
+def get_latest_comparison(workspace_id: str, db: DbSession, current_user: CurrentUser) -> dict:
+    # `compare` (POST) is synchronous and its result was only ever handed
+    # back in that one response -- `list_comparisons` has read the
+    # persisted rows back out since Phase 10, but nothing called it, so
+    # revisiting Compare after running one showed "no comparison yet"
+    # again, indistinguishable from having never run it, until this route.
+    _require_ws(db, current_user, workspace_id)
+    comparisons = repo.list_comparisons(db, workspace_id)
+    if not comparisons:
+        raise _err(404, "not_found", "no comparison run yet")
+    return comparisons[0].api_dict()
+
+
 class GapsBody(BaseModel):
     gap_types: list[str] | None = None
     min_supporting_papers: int = 2

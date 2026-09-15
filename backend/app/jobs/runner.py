@@ -4,7 +4,13 @@
 `ingest` (Phase 2) and `gaps` (Phase 11) run here. Each callable opens its
 own DB session -- the request-scoped one is closed once the response is
 sent -- and records success or failure on the `jobs` row, never crashing
-the worker thread.
+the worker thread. `run_discover_related_job` (Roadmap Phase 15) is the
+first thing that calls the Phase 5/6/7 discovery/ranking/trail pipelines
+from an HTTP-reachable path at all -- those stages were fully built and
+tested but never wired to a route (each module's own docstring said so
+explicitly); this job runs them through `ResearchOrchestrator.run_stage`
+for the same `stage_runs` telemetry every other Phase 14 stage gets,
+without changing a line of Phase 5/6/7's own logic.
 """
 
 from __future__ import annotations
@@ -106,3 +112,78 @@ def run_gaps_job(
         )
     finally:
         db.close()
+
+def run_discover_related_job(
+    session_factory: sessionmaker,
+    job_id: str,
+    paper_id: str,
+    owner_id: str,
+    settings: Settings,
+) -> None:
+    """`POST /papers/{id}/discover-related` -- runs discovery (S5+S6) ->
+    ranking (S9-S10) -> trail typing (S11) for an already-analysed seed
+    paper, in that fixed order, each stage logged via
+    `ResearchOrchestrator.run_stage`. No LLM session is used (discovery's
+    search-plan generation and trail's LLM-confirm both degrade to their
+    deterministic fallback paths already tested in Phases 5 and 7) --
+    browsing discovery results never requires a BYOK key; only later
+    generative steps (chat, gaps, directions) do."""
+    from app.domain.orchestrator import StageName
+    from app.services.discovery.pipeline import DiscoveryOptions, run_discovery
+    from app.services.orchestrator.orchestrator import ResearchOrchestrator
+    from app.services.ranking.pipeline import RankOptions, rank_search_run
+    from app.services.trail.pipeline import TrailOptions, build_trail
+
+    db = session_factory()
+    try:
+        repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"stage": "discovery"})
+        orchestrator = ResearchOrchestrator(db=db, settings=settings)
+        try:
+            discovery_result = asyncio.run(
+                orchestrator.run_stage(
+                    StageName.DISCOVERY,
+                    "run_discovery",
+                    lambda: run_discovery(
+                        db, seed_paper_id=paper_id, current_user=None, settings=settings, options=DiscoveryOptions()
+                    ),
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    input_for_hash={"seed_paper_id": paper_id},
+                )
+            )
+
+            repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"stage": "ranking"})
+            asyncio.run(
+                orchestrator.run_stage(
+                    StageName.RANKING,
+                    "rank_search_run",
+                    lambda: rank_search_run(db, run_id=discovery_result.run_id, settings=settings, options=RankOptions()),
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    input_for_hash={"run_id": discovery_result.run_id},
+                )
+            )
+
+            repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"stage": "trail"})
+            asyncio.run(
+                orchestrator.run_stage(
+                    StageName.TRAIL,
+                    "build_trail",
+                    lambda: build_trail(db, run_id=discovery_result.run_id, settings=settings, options=TrailOptions()),
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    input_for_hash={"run_id": discovery_result.run_id},
+                )
+            )
+        except Exception as e:  # noqa: BLE001 - record on the job, never crash the worker
+            repo.update_job(db, job_id, status=JobStatus.FAILED, error=str(e))
+            return
+
+        status = JobStatus.SUCCEEDED if discovery_result.status != "partial" else JobStatus.PARTIAL
+        repo.update_job(
+            db, job_id, status=status,
+            progress={"stage": "done"}, result_ref=discovery_result.run_id,
+        )
+    finally:
+        db.close()
+

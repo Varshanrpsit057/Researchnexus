@@ -160,6 +160,32 @@ def test_compare_default_schema_is_derived_from_profiles(tmp_path: Path, monkeyp
     assert r.json()["generated_by"] == "deterministic_union"
 
 
+def test_get_latest_comparison_before_any_run_returns_404(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    token = _token(c)
+    wid, _ = _seed_ws(c, token)
+    assert c.get(f"/api/v1/workspaces/{wid}/compare", headers=_h(token)).status_code == 404
+
+
+def test_get_latest_comparison_returns_the_most_recent_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    c = _client(tmp_path)
+    token = _token(c)
+    wid, _ = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch, {"pap_seed": {"cells": [{"column": "method", "value": "dense retrieval", "chunk_id": "a0", "quote": "We use dense retrieval on the NQ dataset"}]}})
+
+    first = c.post(f"/api/v1/workspaces/{wid}/compare", json={"paper_ids": [], "schema": ["method"]}, headers=_h(token)).json()
+    second = c.post(f"/api/v1/workspaces/{wid}/compare", json={"paper_ids": [], "schema": ["method", "dataset"]}, headers=_h(token)).json()
+    assert first["comparison_id"] != second["comparison_id"]
+
+    latest = c.get(f"/api/v1/workspaces/{wid}/compare", headers=_h(token))
+    assert latest.status_code == 200
+    assert latest.json()["comparison_id"] == second["comparison_id"]
+    assert latest.json()["schema"] == ["method", "dataset"]
+
+    assert c.get(f"/api/v1/workspaces/{wid}/compare", headers=_h(_token(c, "z@example.com"))).status_code == 404
+
+
 def test_compare_output_is_deterministic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     c = _client(tmp_path)
     token = _token(c)

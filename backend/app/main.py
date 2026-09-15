@@ -12,6 +12,7 @@ and is not added speculatively here.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db.session import configure
@@ -26,6 +27,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="ResearchNexus Backend", version="0.1.0")
     app.state.settings = settings
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(settings_keys.router)

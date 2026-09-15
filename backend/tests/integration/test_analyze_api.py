@@ -175,6 +175,42 @@ def test_analyze_with_malformed_llm_output_returns_degraded_profile_not_500(
     assert body["profile"]["title"]  # bibliographic fields still filled
 
 
+def test_get_profile_before_analysis_returns_404(tmp_path: Path, normal_paper_pdf_bytes: bytes) -> None:
+    client, token = _authed_client(tmp_path)
+    paper_id = _upload_and_wait(client, token, normal_paper_pdf_bytes)
+    resp = client.get(f"/api/v1/papers/{paper_id}/profile", headers=_auth_headers(token))
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"]["code"] == "not_found"
+
+
+def test_get_profile_missing_paper_returns_404(tmp_path: Path) -> None:
+    client, token = _authed_client(tmp_path)
+    resp = client.get("/api/v1/papers/pap_does_not_exist/profile", headers=_auth_headers(token))
+    assert resp.status_code == 404
+
+
+def test_get_profile_after_analysis_returns_the_persisted_profile_without_re_extracting(
+    tmp_path: Path, normal_paper_pdf_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, token = _authed_client(tmp_path)
+    paper_id = _upload_and_wait(client, token, normal_paper_pdf_bytes)
+    _save_working_key(client, token, monkeypatch)
+    _mock_llm(monkeypatch, _VALID_EXTRACTION_JSON)
+
+    analyzed = client.post(f"/api/v1/papers/{paper_id}/analyze", headers=_auth_headers(token))
+    assert analyzed.status_code == 200
+    profile_id = analyzed.json()["profile"]["profile_id"]
+
+    # No LLM key/mock is needed for this call: GET must read back the
+    # already-persisted profile rather than re-running extraction.
+    fetched = client.get(f"/api/v1/papers/{paper_id}/profile", headers=_auth_headers(token))
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["profile_id"] == profile_id
+    assert body["domain"]["value"] == "Retrieval-Augmented Generation"
+    assert body["keywords"] == ["rag", "retrieval"]
+
+
 def test_patch_profile_without_existing_profile_returns_404(tmp_path: Path, normal_paper_pdf_bytes: bytes) -> None:
     client, token = _authed_client(tmp_path)
     paper_id = _upload_and_wait(client, token, normal_paper_pdf_bytes)

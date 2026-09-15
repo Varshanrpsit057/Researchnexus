@@ -7,3 +7,7 @@
 .github/agents/
 .github/hooks/
 .github/skills/
+# Impeccable design-skill working state: local config/cache and review
+# screenshots taken mid-pass, not final project source (DESIGN.md/PRODUCT.md
+# are the committed deliverables this scaffolding produces).
+.impeccable/
