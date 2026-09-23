@@ -126,6 +126,16 @@ def create_workspace(
     if not seed.has_full_text or profile is None:
         raise SeedNotAnalyzed(req.seed_paper_id)
 
+    # `source_run_id` is a real foreign key (search_runs.run_id) -- a run
+    # id that does not actually exist there (stale, expired, or simply
+    # invalid) must not reach the INSERT below, or SQLAlchemy surfaces the
+    # database's own FOREIGN KEY constraint failure as an unhandled 500
+    # instead of the workspace being created without that historical link,
+    # same as it already degrades when there is no import_run_id at all.
+    verified_run_id: str | None = None
+    if req.import_run_id is not None and repo.get_search_run(db, req.import_run_id) is not None:
+        verified_run_id = req.import_run_id
+
     workspace_id = new_id("ws")
     seed_paper = WorkspacePaper(
         workspace_id=workspace_id,
@@ -141,14 +151,14 @@ def create_workspace(
         seed_paper_id=seed.id,
         seed_profile_id=profile.profile_id,
         token_budget_usd=req.token_budget_usd,
-        source_run_id=req.import_run_id,
+        source_run_id=verified_run_id,
         papers=[seed_paper],
     )
     repo.create_workspace(db, ws)
 
-    if req.import_run_id and repo.get_search_run(db, req.import_run_id) is not None:
+    if verified_run_id is not None:
         repo.attach_run_edges_to_workspace(
-            db, run_id=req.import_run_id, workspace_id=workspace_id, owner_id=owner.id
+            db, run_id=verified_run_id, workspace_id=workspace_id, owner_id=owner.id
         )
 
     stored = _require_workspace(db, owner, workspace_id)

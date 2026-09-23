@@ -63,3 +63,16 @@ def test_reading_order_text_falls_back_to_single_column_for_narrow_pages(two_col
         text, truncated = reading_order_text(page, max_chars=1_000_000)
         assert isinstance(text, str)
         assert truncated is False
+
+
+def test_reading_order_text_drops_a_duplicated_overlapping_text_block(duplicate_text_pdf_bytes: bytes) -> None:
+    # Observed live: a real ScienceDirect PDF had its abstract's text block
+    # rendered twice, offset by roughly half a line height, and pdfplumber's
+    # word extraction faithfully returned both copies as separate lines --
+    # every line of the abstract came back duplicated, immediately adjacent
+    # to itself. `duplicate_text_pdf_bytes` reproduces that exact layout.
+    with pdfplumber.open(io.BytesIO(duplicate_text_pdf_bytes)) as pdf:
+        text, _truncated = reading_order_text(pdf.pages[0], max_chars=1_000_000)
+    assert text.count("duplicate text block.") == 1
+    assert text.count("Every line below is drawn twice") == 1
+    assert text.count("must not repeat this content") == 1

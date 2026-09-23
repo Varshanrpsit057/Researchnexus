@@ -6,6 +6,7 @@ import pytest
 
 from tests.fixtures.make_fixtures import (
     make_corrupt_pdf,
+    make_duplicate_text_pdf,
     make_encrypted_pdf,
     make_multi_page_pdf,
     make_normal_paper_pdf,
@@ -28,6 +29,11 @@ def two_column_paper_pdf_bytes() -> bytes:
 @pytest.fixture(scope="session")
 def scanned_pdf_bytes() -> bytes:
     return make_scanned_pdf()
+
+
+@pytest.fixture(scope="session")
+def duplicate_text_pdf_bytes() -> bytes:
+    return make_duplicate_text_pdf()
 
 
 @pytest.fixture(scope="session")

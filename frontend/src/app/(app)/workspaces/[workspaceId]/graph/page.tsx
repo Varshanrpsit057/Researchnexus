@@ -9,7 +9,7 @@ import type { GraphEdgeRecord, GraphNode, GraphNodeType } from "@/lib/api/types"
 import Link from "next/link";
 import { ArrowSquareOut } from "@phosphor-icons/react/dist/ssr";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { Badge, ConfidenceBadge } from "@/components/ui/Badge";
+import { ConfidenceBadge } from "@/components/ui/Badge";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/States";
 
 const NODE_TYPES: GraphNodeType[] = ["PAPER", "METHOD", "DATASET", "TOPIC", "RESEARCH_QUESTION", "CLAIM", "GAP", "DIRECTION"];
@@ -119,7 +119,7 @@ export default function WorkspaceGraphPage() {
   const connectedEdges = selectedId ? graph.edges.filter((e) => e.src === selectedId || e.dst === selectedId) : [];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-16">
       <p className="border-b border-border pb-3 font-mono text-xs text-ink-subtle">
         {graph.node_count} nodes · {graph.edge_count} edges · rebuilt {new Date(graph.built_at).toLocaleString()}
       </p>
@@ -283,13 +283,13 @@ export default function WorkspaceGraphPage() {
                     <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
                       {type.replace(/_/g, " ")} ({nodes.length})
                     </h4>
-                    <div className="flex flex-wrap gap-1.5">
+                    <ul className="divide-y divide-border">
                       {nodes.map((n) => (
-                        <Badge key={n.id} tone={type === "PAPER" ? "accent" : "neutral"}>
+                        <li key={n.id} className="truncate py-1.5 text-sm text-ink">
                           {n.label}
-                        </Badge>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 );
               })}

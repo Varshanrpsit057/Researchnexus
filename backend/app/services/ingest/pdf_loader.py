@@ -128,7 +128,18 @@ def reading_order_text(page: pdfplumber.page.Page, max_chars: int) -> tuple[str,
     parts: list[str] = []
     for column_words in columns:
         for line in _group_words_into_lines(column_words):
-            parts.append(" ".join(w["text"] for w in line))
+            joined = " ".join(w["text"] for w in line)
+            # Some publisher typesetting pipelines embed a whole text block
+            # twice, offset by roughly half a line height (observed live: a
+            # ScienceDirect PDF whose abstract repeated every line verbatim
+            # -- pdfplumber's own word extraction has no opinion on this and
+            # faithfully returns both copies as separate lines, since the
+            # vertical offset is well outside normal word-spacing jitter).
+            # A real line of running prose repeating itself verbatim,
+            # immediately after itself, does not otherwise happen.
+            if parts and parts[-1] == joined:
+                continue
+            parts.append(joined)
     text = "\n".join(parts)
 
     if len(text) > max_chars:

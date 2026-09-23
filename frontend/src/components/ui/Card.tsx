@@ -33,7 +33,7 @@ export function CardTracings({
 }: { entries: { label: string; href?: string }[] } & Omit<HTMLAttributes<HTMLDivElement>, "children">) {
   return (
     <div
-      className={`rule-t flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 font-mono text-[0.6875rem] text-ink-subtle ${className}`}
+      className={`rule-t flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 font-mono text-[0.6875rem] text-ink-subtle break-all ${className}`}
       {...props}
     >
       {entries.length === 0 ? (

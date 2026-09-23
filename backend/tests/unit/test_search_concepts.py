@@ -52,6 +52,47 @@ def test_fallback_plan_is_non_empty_from_a_profile() -> None:
     assert plan.citation_anchors == ["10.5555/abc"]
 
 
+def test_fallback_plan_keeps_queries_short_for_a_profile_with_no_keywords() -> None:
+    # Observed live: a real profile with empty `keywords` and long,
+    # sentence-shaped `research_problem`/`methods` values produced a 40+
+    # word run-on "expanded query" (every value joined whole, then several
+    # of those joined again) -- a query that long returns unrelated
+    # results from a real search API, because it has nothing distinctive
+    # left to match on. Every query must stay short enough to still be a
+    # real search query, and the profile's own significant words (not
+    # generic filler) must be the ones that survive.
+    profile = _profile(
+        keywords=[],
+        domain=ProfileField(value="Facial recognition-based attendance system"),
+        research_problem=ProfileField(
+            value=(
+                "Improving facial recognition accuracy for attendance tracking, especially in "
+                "large-group settings and under non-ideal conditions, while addressing false "
+                "positives and scalability."
+            )
+        ),
+        methods=ProfileList(
+            items=[
+                ProfileField(
+                    value=(
+                        "Combination of the FaceNet model with an enhanced facial database, where "
+                        "multiple images of each individual were collected using a 180-degree video "
+                        "capture method."
+                    )
+                )
+            ]
+        ),
+        datasets=ProfileList(items=[]),
+    )
+    plan = fallback_plan(profile, citation_anchors=[])
+    for query in plan.expanded_queries:
+        assert len(query.split()) <= 20, f"query too long to be a real search query: {query!r}"
+    joined = " ".join(plan.expanded_queries)
+    assert "facial" in joined
+    assert "recognition" in joined
+    assert "facenet" in joined
+
+
 def test_generate_search_plan_without_a_session_uses_fallback() -> None:
     plan, warnings = asyncio.run(generate_search_plan(_profile(), session=None, citation_anchors=[]))
     assert plan.generated_by == "fallback"

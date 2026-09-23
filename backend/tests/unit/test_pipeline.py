@@ -11,7 +11,8 @@ from app.config import Settings
 from app.db import repository as repo
 from app.db.base import Base
 from app.domain.paper import ParseConfidence
-from app.services.ingest.pipeline import run_ingestion
+from app.services.ingest.pdf_loader import LoadedPage
+from app.services.ingest.pipeline import _fallback_title, run_ingestion
 
 
 @pytest.fixture()
@@ -91,3 +92,86 @@ def test_run_ingestion_two_column_paper_produces_chunks_and_body_text(
     joined = " ".join(c.text for c in chunks)
     assert "INTROSTART" in joined
     assert "METHODSTART" in joined
+
+
+def _page(text: str) -> list[LoadedPage]:
+    return [LoadedPage(number=1, text=text)]
+
+
+def test_fallback_title_skips_publisher_running_header() -> None:
+    # Observed live: a real ScienceDirect PDF stamps this exact running
+    # header on page 1, ahead of the real title -- a naive "first
+    # reasonably long line" picked the header instead of the paper.
+    text = (
+        "Available online at www.sciencedirect.com\n"
+        "ScienceDirect\n"
+        "Procedia Computer Science 258 (2025) 3031-3041\n"
+        "www.elsevier.com/locate/procedia\n"
+        "A Study of Retrieval Augmented Generation for Long Documents\n"
+        "A. Author, B. Coauthor\n"
+    )
+    assert _fallback_title(_page(text)) == "A Study of Retrieval Augmented Generation for Long Documents"
+
+
+def test_fallback_title_skips_conference_name_line() -> None:
+    # Conference proceedings print the event name directly above the
+    # paper's own title -- a phrasing no paper title itself uses.
+    text = (
+        "International Conference on Machine Learning and Data Engineering\n"
+        "Enhancing Classroom Attendance Systems with Face Recognition\n"
+        "J. Patel, S. Gandhi\n"
+    )
+    assert _fallback_title(_page(text)) == "Enhancing Classroom Attendance Systems with Face Recognition"
+
+
+def test_fallback_title_skips_digit_heavy_garbled_line() -> None:
+    # A line thick with stray digits/symbols (e.g. a mis-extracted,
+    # overlapping-text watermark) is not plausible prose for a title.
+    text = (
+        "AvaiPlarobcleed ioan Clionmep autte wr Swciwen i0e0n (c2e02d5ir)e 0c0t0\n"
+        "A Clean and Readable Paper Title Goes Here\n"
+    )
+    assert _fallback_title(_page(text)) == "A Clean and Readable Paper Title Goes Here"
+
+
+def test_fallback_title_merges_a_wrapped_second_line() -> None:
+    # A long title commonly wraps onto a second PDF line before the author
+    # list starts. The continuation line must be title-shaped and
+    # comma-free (an author byline always has commas).
+    text = (
+        "Enhancing Classroom Attendance Systems with Face Recognition\n"
+        "through CCTV using Deep Learning\n"
+        "Jaykumar Patel, Savita Gandhi, Vishal Katheriya\n"
+    )
+    assert _fallback_title(_page(text)) == (
+        "Enhancing Classroom Attendance Systems with Face Recognition through CCTV using Deep Learning"
+    )
+
+
+def test_fallback_title_merges_more_than_one_wrapped_line() -> None:
+    # Observed live: a real 3-line title ("REAL-TIME STUDENT ATTENDANCE" /
+    # "SYSTEM USING FACE RECOGNITION AND" / "CLOUD INTEGRATION") was cut off
+    # mid-phrase when only a single continuation line was merged.
+    text = (
+        "REAL-TIME STUDENT ATTENDANCE\n"
+        "SYSTEM USING FACE RECOGNITION AND\n"
+        "CLOUD INTEGRATION\n"
+        "Gowthaman S, Harrish Sridhar, Sreeman T S\n"
+    )
+    assert _fallback_title(_page(text)) == (
+        "REAL-TIME STUDENT ATTENDANCE SYSTEM USING FACE RECOGNITION AND CLOUD INTEGRATION"
+    )
+
+
+def test_fallback_title_does_not_merge_an_author_byline() -> None:
+    # The author line has commas, so it must not be swallowed into the title.
+    text = (
+        "A Short and Complete Title\n"
+        "Jaykumar Patel, Savita Gandhi, Vishal Katheriya\n"
+    )
+    assert _fallback_title(_page(text)) == "A Short and Complete Title"
+
+
+def test_fallback_title_returns_none_when_no_candidate_line_exists() -> None:
+    text = "www.sciencedirect.com\nScienceDirect\n123 (2020) 1-2\n"
+    assert _fallback_title(_page(text)) is None

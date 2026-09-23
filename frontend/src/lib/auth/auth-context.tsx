@@ -26,7 +26,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * server/first-hydration-pass value must be distinguishable from a
  * confirmed "no token", or `isLoading` below would read false for one
  * render on every fresh navigation, and AppShell would read that render as
- * "not authenticated" and redirect to /login before the real client value
+ * "not authenticated" and redirect to /sign-in before the real client value
  * (which may well be "yes, there is a token") ever gets a chance to apply. */
 type TokenState = "unknown" | "present" | "absent";
 

@@ -25,6 +25,7 @@ from app.llm.session import LlmSession
 _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 _MAX_KEYWORD_SETS = 6
 _MAX_EXPANDED = 8
+_MAX_TERM_WORDS = 5
 
 
 class SearchPlanExtraction(BaseModel):
@@ -43,15 +44,33 @@ def extract_reference_dois(raw_reference_texts: list[str]) -> list[str]:
     return seen
 
 
+def _short_phrase(text: str, max_words: int = _MAX_TERM_WORDS) -> str:
+    """Reduce a profile value to a short, search-engine-friendly phrase:
+    its first few significant (>3 char) words, lowercased. `domain` is
+    already phrase-shaped, but `research_problem` and a method/dataset
+    description are full sentences -- joining one whole, unbounded
+    sentence into a single "keyword" defeats the point of a keyword set,
+    and fallback_plan below concatenates a few of these terms again into
+    one expanded query. Without this cap, that compounds into an
+    unsearchable 40+ word run-on query, which degrades external search to
+    matching only common generic words (observed live: a facial-
+    recognition paper's fallback plan returned unrelated sentiment-
+    analysis and generic ML-survey papers this way, because a query that
+    long has nothing distinctive left for arXiv/OpenAlex to match on)."""
+    words = [w for w in re.split(r"[^a-zA-Z0-9]+", text.lower()) if len(w) > 3]
+    return " ".join(words[:max_words])
+
+
 def _profile_terms(profile: ResearchProfile) -> list[str]:
-    terms = list(profile.keywords)
+    terms = [k.strip().lower() for k in profile.keywords if k.strip()]
     for value in (profile.domain.value, profile.research_problem.value):
-        cleaned = " ".join(w for w in re.split(r"[^a-z0-9]+", value.lower()) if len(w) > 3)
-        if cleaned:
-            terms.append(cleaned)
+        phrase = _short_phrase(value)
+        if phrase:
+            terms.append(phrase)
     for item in profile.methods.items + profile.datasets.items:
-        if item.value.strip():
-            terms.append(item.value.strip().lower())
+        phrase = _short_phrase(item.value)
+        if phrase:
+            terms.append(phrase)
     deduped: list[str] = []
     for t in terms:
         if t and t not in deduped:

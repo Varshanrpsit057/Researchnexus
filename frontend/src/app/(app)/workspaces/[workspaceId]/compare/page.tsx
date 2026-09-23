@@ -64,7 +64,7 @@ export default function WorkspaceComparePage() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 pb-16">
       <Card>
         <CardBody className="space-y-3">
           <p className="text-sm font-medium text-ink">Select papers to compare</p>

@@ -116,6 +116,20 @@ def test_create_workspace_rejects_an_unknown_seed(db: Session, owner: User, sett
         create_workspace(db, owner=owner, req=_req(seed_paper_id="pap_ghost"), settings=settings)
 
 
+def test_create_workspace_ignores_an_import_run_id_that_does_not_exist(
+    db: Session, owner: User, settings: Settings
+) -> None:
+    # `source_run_id` is a real foreign key (search_runs.run_id) -- found
+    # live: a stale or otherwise-invalid run id reaching the INSERT crashed
+    # with an unhandled FOREIGN KEY constraint failure (a 500) instead of
+    # the workspace being created without that historical link, same as
+    # when no import_run_id is given at all.
+    _seed_with_profile(db)
+    ws = create_workspace(db, owner=owner, req=_req(import_run_id="run_does_not_exist"), settings=settings)
+    assert ws.workspace_id.startswith("ws_")
+    assert ws.source_run_id is None
+
+
 def test_add_papers_is_idempotent_and_rejects_unknown_ids(db: Session, owner: User, settings: Settings) -> None:
     _seed_with_profile(db)
     p1 = _paper(db, "Cand 1")

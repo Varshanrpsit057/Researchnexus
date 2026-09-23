@@ -30,6 +30,22 @@ from app.services.ingest.table_extractor import extract_table_blocks
 _TITLE_HASH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 _MIN_FALLBACK_TITLE_LEN = 8
 
+# Major publishers (Elsevier/ScienceDirect, Springer, IEEE, ...) stamp a
+# running header -- "Available online at www.sciencedirect.com", the
+# journal/volume/page citation, a bare brand name -- on page 1 ahead of the
+# real title; a naive "first long-enough line" picks that stamp instead
+# (observed live, against a real ScienceDirect PDF). Conference proceedings
+# additionally print the event name ("International Conference on ...")
+# directly above the paper's own title -- a phrasing no paper title itself
+# uses. None of these patterns are plausible substrings of a real title.
+_FALLBACK_TITLE_SKIP_RE = re.compile(
+    r"available\s+online|contents\s+lists\s+available|sciencedirect|"
+    r"www\.|https?://|\belsevier\b|\bspringer\b|ieee\s*xplore|"
+    r"\bconference\s+on\b|\bworkshop\s+on\b|\bsymposium\s+on\b|"
+    r"\d+\s*\(\d{4}\)\s*\d",  # a "<volume> (<year>) <pages>" citation stamp
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class IngestResult:
@@ -48,14 +64,54 @@ def _title_hash(title: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _looks_title_shaped(candidate: str) -> bool:
+    if len(candidate) < _MIN_FALLBACK_TITLE_LEN:
+        return False
+    if _FALLBACK_TITLE_SKIP_RE.search(candidate):
+        return False
+    digit_ratio = sum(c.isdigit() for c in candidate) / len(candidate)
+    return digit_ratio <= 0.05
+
+
+_MAX_TITLE_CONTINUATION_LINES = 3
+
+
 def _fallback_title(pages: list[LoadedPage]) -> str | None:
     """Best-effort title when the PDF has no Title metadata: the first
-    reasonably long line of page 1. Never guesses authors."""
+    reasonably long, title-shaped line of page 1 -- skipping publisher
+    boilerplate (see _FALLBACK_TITLE_SKIP_RE) and lines too digit-heavy to
+    plausibly be a title (a real title is prose; a mis-extracted running
+    header or citation stamp is usually thick with page numbers and years).
+
+    A long title commonly wraps onto further PDF lines before the author
+    list starts (observed live: a 3-line title, "REAL-TIME STUDENT
+    ATTENDANCE" / "SYSTEM USING FACE RECOGNITION AND" / "CLOUD
+    INTEGRATION" -- merging only one continuation line cut it off mid-
+    phrase) -- keep merging while the line built so far doesn't already
+    end a sentence and the next line is itself title-shaped and has no
+    comma (an author byline always does, "Firstname Lastname, Firstname
+    Lastname"), up to a small cap so a genuinely title-shaped author line
+    can never be swallowed indefinitely. Never guesses authors."""
     for page in pages:
-        for line in page.text.splitlines():
-            candidate = line.strip()
-            if len(candidate) >= _MIN_FALLBACK_TITLE_LEN:
-                return candidate
+        lines = [line.strip() for line in page.text.splitlines()]
+        for i, candidate in enumerate(lines):
+            if not _looks_title_shaped(candidate):
+                continue
+            merged = candidate
+            next_index = i + 1
+            extra_lines = 0
+            while (
+                extra_lines < _MAX_TITLE_CONTINUATION_LINES
+                and not merged.endswith((".", "?", "!"))
+                and next_index < len(lines)
+            ):
+                next_line = lines[next_index]
+                if "," in next_line or not _looks_title_shaped(next_line):
+                    break
+                merged = f"{merged} {next_line}"
+                next_index += 1
+                extra_lines += 1
+            return merged
     return None
 
 

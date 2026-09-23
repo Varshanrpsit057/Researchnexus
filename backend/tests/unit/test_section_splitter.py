@@ -48,6 +48,47 @@ def test_does_not_false_positive_on_numbered_body_sentences() -> None:
     assert titles == ["1 Introduction", "2 Method"]
 
 
+def test_detects_numbered_headings_with_a_period_after_the_number() -> None:
+    # "1. Introduction" / "3. Data and Methods" -- observed live in a real
+    # ScienceDirect paper whose every heading used this style; the original
+    # regex only matched a period-free "1 Introduction", so it found zero
+    # numbered headings in that document and section detection fell back to
+    # treating the entire body as one section.
+    full_text = (
+        "Abstract\n"
+        "This is the abstract text of the paper.\n"
+        "1. Introduction\n"
+        "This is the introduction body text.\n"
+        "2. Related Work\n"
+        "This is related work body text.\n"
+        "References\n"
+        "[1] Someone, A paper, 2020.\n"
+    )
+    sections = split_sections(full_text, page_ranges=[(0, len(full_text))])
+    titles = [s.title for s in sections]
+    assert titles == ["Abstract", "1. Introduction", "2. Related Work", "References"]
+
+
+def test_detects_roman_numeral_ieee_style_headings() -> None:
+    # "I. INTRODUCTION" / "V. RESULT" -- observed live in a real IEEE
+    # conference paper whose every heading used this style; neither the
+    # period-free nor the period-after-arabic-number pattern matched a
+    # roman numeral, so this document also fell back to one giant section.
+    full_text = (
+        "Abstract\n"
+        "This is the abstract text of the paper.\n"
+        "I. INTRODUCTION\n"
+        "This is the introduction body text.\n"
+        "II. RELATED WORK\n"
+        "This is related work body text.\n"
+        "REFERENCES\n"
+        "[1] Someone, A paper, 2020.\n"
+    )
+    sections = split_sections(full_text, page_ranges=[(0, len(full_text))])
+    titles = [s.title for s in sections]
+    assert titles == ["Abstract", "I. INTRODUCTION", "II. RELATED WORK", "REFERENCES"]
+
+
 def test_page_span_is_computed_from_page_ranges() -> None:
     page1 = "1 Introduction\nSome intro text that stays on page one.\n"
     page2 = "2 Method\nSome method text that is on page two.\n"

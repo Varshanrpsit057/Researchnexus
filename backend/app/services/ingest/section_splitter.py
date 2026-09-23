@@ -45,10 +45,18 @@ _CANONICAL_HEADINGS = {
     "appendix",
 }
 
-# A numbered heading: "1 Introduction", "3.2 Ablations". Deliberately
-# excludes lines ending in a period (body sentences do; headings don't) by
-# only allowing a restricted character class with no '.'.
-_NUMBERED_HEADING_RE = re.compile(r"^\d+(?:\.\d+)*\s+[A-Z][A-Za-z0-9,&/'\- ]{1,78}$")
+# A numbered heading: "1 Introduction", "3.2 Ablations", the equally common
+# "1. Introduction" / "3.2. Ablations" style (a period directly after the
+# number, observed live in a real paper whose every heading used this
+# form -- the earlier pattern required a period-free "1 Introduction", so
+# it matched zero headings in that document and section detection fell
+# back to one 10-page "Abstract"), or IEEE-style roman numerals -- "I.
+# INTRODUCTION", "V. RESULT" (observed live in a second real paper; the
+# arabic-only pattern above still matched none of that document's
+# headings). Still deliberately excludes headings that end in a period
+# (body sentences do; headings don't) via the restricted character class
+# with no '.' after the number/heading text.
+_NUMBERED_HEADING_RE = re.compile(r"^(?:\d+(?:\.\d+)*\.?|[IVXLCDM]+\.)\s+[A-Z][A-Za-z0-9,&/'\- ]{1,78}$")
 
 
 def _iter_stripped_lines_with_offsets(text: str) -> list[tuple[int, int, str]]:

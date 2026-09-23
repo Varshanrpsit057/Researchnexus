@@ -14,7 +14,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+      router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
     }
   }, [isLoading, isAuthenticated, pathname, router]);
 

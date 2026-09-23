@@ -154,6 +154,32 @@ def make_scanned_pdf() -> bytes:
     return buf.getvalue()
 
 
+def make_duplicate_text_pdf() -> bytes:
+    """A page whose every line is drawn twice, offset by roughly half a
+    line height -- reproducing a publisher-typesetting duplicate-text-block
+    artifact observed live in a real ScienceDirect PDF (every line of the
+    abstract came back from extraction duplicated, immediately adjacent to
+    itself). Low-level canvas drawing, not platypus flow, since the point
+    is exact control over each line's vertical position."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    c.setFont("Helvetica", 11)
+    lines = [
+        "This paper investigates the effectiveness of a duplicate text block.",
+        "Every line below is drawn twice, offset by half a line height.",
+        "A correct extractor must not repeat this content in its output.",
+    ]
+    y = 700.0
+    line_height = 14.0
+    for line in lines:
+        c.drawString(72, y, line)
+        c.drawString(72, y - line_height / 2, line)  # the duplicate, offset
+        y -= line_height
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def make_encrypted_pdf(password: str = "secret") -> bytes:
     base = make_normal_paper_pdf()
     reader = PdfReader(io.BytesIO(base))

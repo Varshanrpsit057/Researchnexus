@@ -72,7 +72,7 @@ test.describe("Gap -> Direction", () => {
   });
 
   test("an accepted gap appears in the checklist, and generating without a saved key shows the real error", async ({ page }) => {
-    const { workspaceId, seedPaperId } = await createWorkspaceWithAcceptedGap(page, "Direction Flow Seed Paper A", `gap_pw_dir_real_1_${Date.now()}`);
+    const { workspaceId, seedPaperId } = await createWorkspaceWithAcceptedGap(page, "Direction Flow Seed Paper A", `gap_dir1_${Date.now().toString(36)}`);
     seededPaperId = seedPaperId;
 
     await page.goto(`/workspaces/${workspaceId}/directions`);
@@ -88,7 +88,7 @@ test.describe("Gap -> Direction", () => {
   });
 
   test("generating directions renders an evidence-backed proposal, surfaces the drop/skip funnel, and you can accept it", async ({ page }) => {
-    const gapId = `gap_pw_dir_real_2_${Date.now()}`;
+    const gapId = `gap_dir2_${Date.now().toString(36)}`;
     const { workspaceId, seedPaperId, secondPaperId } = await createWorkspaceWithAcceptedGap(
       page,
       "Direction Flow Seed Paper B",
