@@ -251,7 +251,7 @@ export default function HomePage() {
             list.map((ws, i) => (
               <Reveal key={ws.workspace_id} delay={0.1 + i * 0.06}>
                 <Link
-                  href={`/workspaces/${ws.workspace_id}`}
+                  href={`/workspace/${ws.workspace_id}`}
                   className="block h-full rounded-2xl p-5 transition-colors duration-200 hover:border-white/20"
                   style={{ background: GLASS, border: `1px solid ${LINE}` }}
                 >

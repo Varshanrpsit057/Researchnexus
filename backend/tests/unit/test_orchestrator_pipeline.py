@@ -79,6 +79,10 @@ def _handler(*, empty: bool = False) -> httpx.MockTransport:
             if "/works/" in url:
                 return httpx.Response(404, json={})
             return httpx.Response(200, json={"results": []} if empty else _OPENALEX_SEARCH)
+        if "semanticscholar.org" in url:  # seed resolution / S2 lookups: not on S2
+            return httpx.Response(404, json={})
+        if "europepmc" in url:
+            return httpx.Response(200, json={"resultList": {"result": []}})
         raise AssertionError(url)
 
     return httpx.MockTransport(h)

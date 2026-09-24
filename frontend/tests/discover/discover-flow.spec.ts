@@ -158,7 +158,13 @@ test.describe("Discovery", () => {
     const dialog = page.getByRole("dialog", { name: "Create a workspace" });
     await expect(dialog.getByText("Only", { exact: false })).toBeVisible();
     await dialog.getByRole("button", { name: "Create workspace" }).click();
-    await page.waitForURL(/\/workspaces\/ws_/, { timeout: 10_000 });
+    await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+
+    // 7. The handoff lands on the real workspace overview. The mocked run id
+    //    never existed server-side, so no run is attached: just the seed.
+    await expect(page.getByRole("heading", { name: /^Papers\s*1$/ })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("link", { name: /^Papers\s*:/ })).toContainText("Only the seed so far");
+    await expect(page.getByRole("link", { name: "Discovery results" })).toHaveCount(0);
   });
 
   test("a seed paper with no profile yet cannot start discovery", async ({ page }) => {

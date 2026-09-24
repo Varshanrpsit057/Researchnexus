@@ -15,6 +15,7 @@ _ALLOWED_HOSTS = frozenset(
         "api.openalex.org",
         "api.semanticscholar.org",
         "api.crossref.org",
+        "www.ebi.ac.uk",  # Europe PMC REST API
     }
 )
 

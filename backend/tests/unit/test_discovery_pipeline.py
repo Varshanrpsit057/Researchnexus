@@ -60,6 +60,10 @@ def _handler(fail_openalex: bool = False) -> httpx.MockTransport:
             if "/works/" in url:  # citation seed lookup -> pretend the seed isn't on OpenAlex
                 return httpx.Response(404, json={})
             return httpx.Response(200, json=_OPENALEX_SEARCH)
+        if "semanticscholar.org" in url:  # seed resolution / S2 lookups: not on S2
+            return httpx.Response(404, json={})
+        if "europepmc" in url:
+            return httpx.Response(200, json={"resultList": {"result": []}})
         raise AssertionError(url)
 
     return httpx.MockTransport(h)
@@ -213,4 +217,24 @@ def test_no_llm_key_falls_back_to_a_deterministic_plan_and_still_runs(db: Sessio
     seed_id = _seed(db)
     result = asyncio.run(run_discovery(db, seed_paper_id=seed_id, current_user=None, settings=settings, options=_options()))
     assert "search_plan_fallback_no_llm" in result.warnings
+    assert repo.get_search_run(db, result.run_id) is not None
+
+
+def test_an_unreadable_saved_key_falls_back_instead_of_failing_discovery(
+    db: Session, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A key saved under a since-changed vault secret can't be decrypted.
+    # Discovery never requires a key, so that must not fail the run.
+    from app.domain.user import User
+    from app.security.key_vault import KeyVaultDecryptionError
+    from app.services.discovery import pipeline as discovery_pipeline
+
+    def unreadable(*_a: object, **_k: object) -> None:
+        raise KeyVaultDecryptionError("stored key could not be decrypted")
+
+    monkeypatch.setattr(discovery_pipeline, "resolve_llm_session", unreadable)
+    seed_id = _seed(db)
+    user = User(id="usr_1", email="u@example.com", auth_subject="u@example.com")
+    result = asyncio.run(run_discovery(db, seed_paper_id=seed_id, current_user=user, settings=settings, options=_options()))
+    assert "search_plan_fallback_key_unusable" in result.warnings
     assert repo.get_search_run(db, result.run_id) is not None

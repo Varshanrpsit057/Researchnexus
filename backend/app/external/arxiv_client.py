@@ -28,8 +28,20 @@ class ArxivClient:
         self._http = http
 
     async def search(self, query: str, *, max_results: int = 25) -> list[RawExternalRecord]:
+        return await self.search_query(f"all:{query}", max_results=max_results)
+
+    async def search_phrases(self, phrases: list[str], *, max_results: int = 25) -> list[RawExternalRecord]:
+        """Papers matching every phrase, each as an exact phrase. A bare
+        `all:agentic AI survey` lets arXiv match any one word, which is how
+        unrelated papers crowd in; `all:"agentic AI" AND all:survey` does not."""
+        query = arxiv_phrase_query(phrases)
+        if not query:
+            return []
+        return await self.search_query(query, max_results=max_results)
+
+    async def search_query(self, search_query: str, *, max_results: int = 25) -> list[RawExternalRecord]:
         text = await self._http.get_text(
-            _BASE_URL, params={"search_query": f"all:{query}", "start": 0, "max_results": max_results}
+            _BASE_URL, params={"search_query": search_query, "start": 0, "max_results": max_results}
         )
         try:
             root = ET.fromstring(text)
@@ -69,6 +81,18 @@ class ArxivClient:
             url=url,
             is_preprint=not journal_ref,
         )
+
+
+_PHRASE_UNSAFE = str.maketrans({c: " " for c in '"():'})
+
+
+def arxiv_phrase_query(phrases: list[str]) -> str:
+    parts = []
+    for phrase in phrases:
+        words = phrase.translate(_PHRASE_UNSAFE).split()
+        if words:
+            parts.append(f'all:"{" ".join(words)}"' if len(words) > 1 else f"all:{words[0]}")
+    return " AND ".join(parts)
 
 
 def _text(el: Element | None) -> str:

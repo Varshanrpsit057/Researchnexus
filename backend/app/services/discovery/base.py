@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.candidate import (
     CitationRelationship,
@@ -35,6 +35,10 @@ class SeedView:
     abstract: str | None = None
     doi: str | None = None
     arxiv_id: str | None = None
+    # filled in by resolve_seed() before the strategies run: the seed's own
+    # records on OpenAlex (raw work, with referenced/related works) and S2
+    openalex_work: dict[str, Any] | None = None
+    s2_paper_id: str | None = None
 
 
 @dataclass

@@ -1,25 +1,28 @@
 """1-hop citation discovery (Architecture §3 S6; Data Model §3
-`CitationRelationship`). Resolves the seed on OpenAlex by DOI, then:
+`CitationRelationship`), from the seed as resolved by
+app/services/discovery/resolve.py:
 
-- its `referenced_works`  -> candidates the seed CITES  (`cited_by_seed`)
-- works that cite the seed -> candidates that CITE the seed (`cites_seed`)
+- OpenAlex: the seed work's `referenced_works` (`cited_by_seed`) and the
+  works citing it (`cites_seed`);
+- Semantic Scholar: the seed's references and citations, which fill gaps in
+  OpenAlex's coverage (and vice versa -- duplicates merge downstream);
 - the plan's `citation_anchors` (DOIs pulled from the seed's reference
-  list) -> also `cited_by_seed`
+  list) -> also `cited_by_seed`.
 
 Strictly one hop -- the "one extra citation hop" decision is an
-orchestrator concern (Architecture §4) and is out of Phase 5 scope. A seed
-with no DOI yields an empty result with a note (arXiv-only seeds would need
-a DOI-resolution step, deferred).
+orchestrator concern (Architecture §4). A seed resolved on neither source
+yields an empty result with a note.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Coroutine
 from typing import Any
 
 from app.domain.candidate import CitationRelationship, DiscoveryStrategy, RawExternalRecord
 from app.external.http import ExternalError
 from app.external.openalex_client import OpenAlexClient
+from app.external.semantic_scholar_client import SemanticScholarClient
 from app.services.discovery.base import StrategyContext, StrategyResult, record_key
 
 
@@ -28,28 +31,36 @@ class CitationStrategy:
 
     async def run(self, ctx: StrategyContext) -> StrategyResult:
         result = StrategyResult(strategy=self.strategy)
-        if not ctx.seed.doi:
+        openalex = OpenAlexClient(ctx.http)
+        # references are the seed's own chosen related work: take up to twice
+        # the per-strategy cap; the ranking stage orders them
+        limit = ctx.filters.max_results_per_strategy * 2
+
+        seed_work = ctx.seed.openalex_work
+        if seed_work is None and ctx.seed.doi:
+            seed_work = await self._get_work(ctx, openalex, ctx.seed.doi, result)
+        s2_id = ctx.seed.s2_paper_id
+        if seed_work is None and not s2_id:
             result.notes.append("citation_no_seed_id")
             return result
 
-        openalex = OpenAlexClient(ctx.http)
-        limit = ctx.filters.max_results_per_strategy
+        if seed_work is not None:
+            ref_ids = [str(w) for w in (seed_work.get("referenced_works") or [])][:limit]
+            await self._collect(ctx, result, openalex.works_by_ids(ref_ids), CitationRelationship.CITED_BY_SEED)
+            await self._collect(
+                ctx,
+                result,
+                openalex.works_citing(str(seed_work["id"]), per_page=limit),
+                CitationRelationship.CITES_SEED,
+            )
+        if s2_id:
+            s2 = SemanticScholarClient(ctx.http)
+            await self._collect(ctx, result, s2.references(s2_id, limit=limit), CitationRelationship.CITED_BY_SEED)
+            await self._collect(ctx, result, s2.citations(s2_id, limit=limit), CitationRelationship.CITES_SEED)
 
-        seed_work = await self._get_work(ctx, openalex, ctx.seed.doi, result)
-        if seed_work is None:
-            result.notes.append("citation_seed_not_on_openalex")
-            return result
-
-        ref_ids = [str(w) for w in (seed_work.get("referenced_works") or [])][:limit]
-        await self._collect(ctx, result, openalex.works_by_ids(ref_ids), CitationRelationship.CITED_BY_SEED)
-        await self._collect(
-            ctx,
-            result,
-            openalex.works_citing(str(seed_work["id"]), per_page=limit),
-            CitationRelationship.CITES_SEED,
-        )
-
-        for doi in ctx.plan.citation_anchors[:limit]:
+        # each anchor is its own lookup; a handful covers what the bulk
+        # reference lists above missed without spending the whole budget
+        for doi in ctx.plan.citation_anchors[:10]:
             work = await self._get_work(ctx, openalex, doi, result)
             if work is not None:
                 self._add(result, OpenAlexClient._work_to_record(work), CitationRelationship.CITED_BY_SEED)
@@ -77,6 +88,8 @@ class CitationStrategy:
     ) -> None:
         if not ctx.budget.can_call_external():
             result.notes.append("citation_external_budget")
+            if isinstance(coro, Coroutine):
+                coro.close()  # never started; close it rather than leave it un-awaited
             return
         ctx.budget.record_external_call()
         try:

@@ -147,6 +147,22 @@ def test_add_papers_is_idempotent_and_rejects_unknown_ids(db: Session, owner: Us
         add_papers(db, owner=owner, workspace_id=ws.workspace_id, paper_ids=["pap_ghost"], settings=settings)
 
 
+def test_add_papers_with_one_unknown_id_adds_none_of_the_batch(db: Session, owner: User, settings: Settings) -> None:
+    # A batch is all-or-nothing: an unknown id used to be found mid-loop,
+    # after earlier ids had already been saved -- leaving them in the
+    # workspace but missing from its (never rebuilt) search index.
+    _seed_with_profile(db)
+    p1 = _paper(db, "Cand 1")
+    ws = create_workspace(db, owner=owner, req=_req(), settings=settings)
+
+    with pytest.raises(PaperNotFound):
+        add_papers(db, owner=owner, workspace_id=ws.workspace_id, paper_ids=[p1, "pap_ghost"], settings=settings)
+
+    ws, added = add_papers(db, owner=owner, workspace_id=ws.workspace_id, paper_ids=[], settings=settings)
+    assert added == []
+    assert ws.related_papers == []
+
+
 def test_add_and_remove_paper_reindexes_the_workspace(db: Session, owner: User, settings: Settings) -> None:
     _seed_with_profile(db)
     p1 = _paper(db, "Cand 1")

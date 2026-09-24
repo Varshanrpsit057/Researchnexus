@@ -185,7 +185,7 @@ function DiscoverContent() {
         await workspaces.addPapers(ws.workspace_id, { paper_ids: Array.from(selected), from_run_id: runId });
       }
       dialogRef.current?.close();
-      router.push(`/workspaces/${ws.workspace_id}`);
+      router.push(`/workspace/${ws.workspace_id}`);
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : "Could not create workspace.");
     } finally {
@@ -302,6 +302,7 @@ function DiscoverContent() {
               <span>
                 {related.run.counts.after_filter} candidates from {related.run.strategies_succeeded.join(", ") || "no"} strategies
                 {related.run.strategies_failed.length > 0 && ` · ${related.run.strategies_failed.join(", ")} failed`}
+                {(related.run.counts.off_topic ?? 0) > 0 && ` · ${related.run.counts.off_topic} off-topic set aside`}
               </span>
               <details>
                 <summary className="cursor-pointer" style={{ color: C.muted2 }}>
@@ -311,6 +312,7 @@ function DiscoverContent() {
                   <p>found {related.run.counts.raw}</p>
                   <p>after dedupe {related.run.counts.after_dedupe}</p>
                   <p>after filter {related.run.counts.after_filter}</p>
+                  <p>set aside as off-topic {related.run.counts.off_topic ?? 0}</p>
                   <p>extra citation hop {related.run.extra_citation_hop_used ? "used" : "not used"}</p>
                 </div>
               </details>
@@ -421,7 +423,7 @@ function DiscoverContent() {
           <p className="text-xs" style={{ color: C.muted }}>
             {selected.size > 0
               ? `${seedPaper?.title ?? "The seed paper"} plus ${selected.size} selected paper${selected.size === 1 ? "" : "s"} will be added, and their relationship to the seed will be filed as accepted on the trail.`
-              : `Only ${seedPaper?.title ?? "the seed paper"} will be added. You can add more papers from the trail later.`}
+              : `Only ${seedPaper?.title ?? "the seed paper"} will be added. You can add more of these results later, from the workspace page.`}
           </p>
           {createError && <InlineError message={createError} />}
           <div className="flex justify-end gap-2">

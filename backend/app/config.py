@@ -54,6 +54,20 @@ class Settings(BaseSettings):
     external_max_retries: int = 3
     external_backoff_base_s: float = 0.5
     external_cache_ttl_s: float = 300.0
+    # Optional free Semantic Scholar API key (sent as x-api-key, never
+    # logged): raises S2's rate limit. Everything works without one.
+    semantic_scholar_api_key: str | None = None
+
+    # Discovery relevance: the bi-encoder behind the semantic ranking
+    # signals. "fastembed" = BAAI/bge-small-en-v1.5 on ONNX (no torch);
+    # "fake" = the deterministic hash embedder tests use; "none" = no
+    # semantic signals at all. Models are cached under data_dir/models.
+    discovery_embedder: str = "fastembed"
+    # Candidates whose title+abstract similarity to the seed falls below
+    # this are dropped as off-topic (recorded on the candidate, never
+    # silently). Calibrated on bge-small: papers Semantic Scholar recommends
+    # for a seed scored >= 0.71; clearly unrelated fields scored <= 0.61.
+    rank_min_relevance: float = 0.62
 
     # Ranking (Roadmap Phase 6 / Architecture §3 S9-S10 / Data Model §4).
     # Band cutoffs and the recency half-life are fixed "w0" values -- their

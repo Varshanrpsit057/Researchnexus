@@ -41,8 +41,8 @@ async function createWorkspaceWithTwoPapers(
   await page.reload();
   await page.getByText("Skip discovery, start a workspace with just this paper").click();
   await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
-  await page.waitForURL(/\/workspaces\/ws_/, { timeout: 10_000 });
-  const workspaceId = page.url().split("/workspaces/")[1].split("/")[0].split("?")[0];
+  await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+  const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
 
   const secondPaperId = `pap_pw_gap_${Date.now()}`;
   seedSecondPaperAndEdge(seedPaperId, secondPaperId, workspaceId);
@@ -239,8 +239,11 @@ test.describe("Compare -> Gap", () => {
     await page.route(`**/api/v1/workspaces/${workspaceId}/gaps/gap_pw_1`, (route) =>
       route.fulfill({ json: { ...mockedGap, user_state: "accepted" } })
     );
-    await page.getByRole("button", { name: "Accept", exact: true }).click();
+    // flip the mocked list's state *before* accepting: the page refetches the
+    // list the moment the accept lands, and a refetch that beat this line
+    // would keep returning the gap as a candidate (a real, intermittent race)
     gapState = "accepted";
+    await page.getByRole("button", { name: "Accept", exact: true }).click();
     // Accepting removes it from the still-active "Candidates" filter (the
     // list re-fetches with state=candidate and no longer matches it) --
     // switch filters to see the new state, same as curate-flow.spec.ts's

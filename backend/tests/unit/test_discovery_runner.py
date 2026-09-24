@@ -12,7 +12,13 @@ from app.domain.candidate import (
     SearchPlan,
 )
 from app.external.http import ExternalHttpClient
-from app.services.discovery.base import DiscoveryFilters, SeedView, StrategyContext, StrategyResult
+from app.services.discovery.base import (
+    DiscoveryFilters,
+    SeedView,
+    StrategyContext,
+    StrategyResult,
+    record_key,
+)
 from app.services.discovery.budget import DiscoveryBudget
 from app.services.discovery.runner import RunnerOutput, run_discovery_strategies
 from app.services.normalize.canonical import title_hash
@@ -169,3 +175,30 @@ def test_budget_total_cap_truncates_and_marks_partial() -> None:
     assert len(out.candidates) == 4
     assert "budget_truncated" in out.warnings
     assert out.status == "partial"
+
+
+def test_truncation_keeps_the_best_evidenced_candidates_and_counts_what_was_kept() -> None:
+    # The cap applies before any ranking, so it must not cut blindly in
+    # discovery order: a paper the seed's recommendations or citations
+    # produced, or that several strategies found, outranks a single keyword hit.
+    kw = StrategyResult(strategy=DiscoveryStrategy.KEYWORD)
+    kw.records = [_rec(f"Keyword Hit {i}", doi=f"10.1/k{i}") for i in range(5)] + [_rec("Found Twice", doi="10.1/twice")]
+    qe = StrategyResult(strategy=DiscoveryStrategy.QUERY_EXPANSION)
+    qe.records = [_rec("Found Twice", doi="10.1/twice")]
+    rec = StrategyResult(strategy=DiscoveryStrategy.RECOMMENDATION)
+    rec.records = [_rec("Recommended For The Seed", doi="10.1/rec")]
+    for result in (kw, qe, rec):  # as real strategies do: every record they return is attributed to them
+        result.signals = {record_key(r): {} for r in result.records}
+    out = _run(
+        [
+            _FakeStrategy(DiscoveryStrategy.KEYWORD, kw),
+            _FakeStrategy(DiscoveryStrategy.QUERY_EXPANSION, qe),
+            _FakeStrategy(DiscoveryStrategy.RECOMMENDATION, rec),
+        ],
+        ctx=_ctx(max_total_candidates=3),
+    )
+    titles = [c.normalized.title for c in out.candidates]
+    assert len(titles) == 3
+    assert "Found Twice" in titles
+    assert "Recommended For The Seed" in titles
+    assert out.count_after_filter == 3  # counts what was kept, not the pre-cap pool

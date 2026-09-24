@@ -481,6 +481,7 @@ def _search_run_domain_from_orm(row: SearchRunORM) -> SearchRun:
         candidate_count_raw=counts.get("raw", 0),
         candidate_count_after_dedupe=counts.get("after_dedupe", 0),
         candidate_count_after_filter=counts.get("after_filter", 0),
+        candidate_count_off_topic=counts.get("off_topic", 0),
         tokens_prompt=row.tokens_prompt,
         tokens_completion=row.tokens_completion,
         started_at=row.started_at,
@@ -518,6 +519,37 @@ def create_search_run(db: Session, run: SearchRun) -> SearchRun:
 def get_search_run(db: Session, run_id: str) -> SearchRun | None:
     row = db.get(SearchRunORM, run_id)
     return _search_run_domain_from_orm(row) if row else None
+
+
+def mark_candidates_off_topic(db: Session, run_id: str, candidate_ids: list[str]) -> None:
+    """Record the ranking stage's relevance-floor drops: each candidate keeps
+    its row but is no longer kept (reason "off_topic"), and the run counts
+    them -- so the results page can say how many were set aside, and why."""
+    if not candidate_ids:
+        return
+    rows = (
+        db.execute(
+            select(SearchCandidateORM).where(
+                SearchCandidateORM.run_id == run_id, SearchCandidateORM.id.in_(candidate_ids)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    dropped = 0
+    for row in rows:
+        if not row.filter_kept:
+            continue
+        row.filter_kept = False
+        row.filter_reasons = [*(row.filter_reasons or []), "off_topic"]
+        dropped += 1
+    run = db.get(SearchRunORM, run_id)
+    if run is not None and dropped:
+        counts = dict(run.counts or {})
+        counts["after_filter"] = max(0, counts.get("after_filter", 0) - dropped)
+        counts["off_topic"] = counts.get("off_topic", 0) + dropped
+        run.counts = counts  # a new dict, so the JSON column registers the change
+    db.commit()
 
 
 def add_search_candidate(
@@ -1022,8 +1054,33 @@ def workspace_child_counts(db: Session, workspace_id: str) -> dict[str, int]:
             PaperRelationshipORM.user_state != UserState.REJECTED.value,
         )
     )
-    # gaps / directions arrive in Phases 11 / 12
-    return {"papers": int(papers or 0), "edges": int(edges or 0), "gaps": 0, "directions": 0}
+    # rejected gaps/directions are excluded, the same way rejected edges are
+    gaps = db.scalar(
+        select(func.count())
+        .select_from(ResearchGapORM)
+        .where(
+            ResearchGapORM.workspace_id == workspace_id,
+            ResearchGapORM.user_state != GapUserState.REJECTED.value,
+        )
+    )
+    directions = db.scalar(
+        select(func.count())
+        .select_from(ResearchDirectionORM)
+        .where(
+            ResearchDirectionORM.workspace_id == workspace_id,
+            ResearchDirectionORM.user_state != DirectionUserState.REJECTED.value,
+        )
+    )
+    comparisons = db.scalar(
+        select(func.count()).select_from(ComparisonORM).where(ComparisonORM.workspace_id == workspace_id)
+    )
+    return {
+        "papers": int(papers or 0),
+        "edges": int(edges or 0),
+        "gaps": int(gaps or 0),
+        "directions": int(directions or 0),
+        "comparisons": int(comparisons or 0),
+    }
 
 
 def attach_run_edges_to_workspace(

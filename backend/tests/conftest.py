@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 import pytest
+
+# The production relevance model (fastembed) downloads and loads a real
+# model; tests stay offline and deterministic with no embedder unless a test
+# injects one explicitly. Env vars outrank .env, and Settings(_env_file=None)
+# still reads them.
+os.environ.setdefault("RESEARCHNEXUS_DISCOVERY_EMBEDDER", "none")
 
 from tests.fixtures.make_fixtures import (
     make_corrupt_pdf,

@@ -211,11 +211,17 @@ def add_papers(
 ) -> tuple[ResearchWorkspace, list[str]]:
     ws = _require_workspace(db, owner, workspace_id)
     members = {p.paper_id for p in ws.papers}
-    added: list[str] = []
+    # Resolve the whole batch before writing anything: an unknown id found
+    # mid-loop would leave the earlier ids added but never reindexed.
+    papers = {}
     for pid in paper_ids:
         paper = repo.get_paper(db, pid)
         if paper is None:
             raise PaperNotFound(pid)
+        papers[pid] = paper
+    added: list[str] = []
+    for pid in paper_ids:
+        paper = papers[pid]
         if pid in members:
             continue  # idempotent -- a paper appears at most once per workspace
         repo.add_workspace_paper(

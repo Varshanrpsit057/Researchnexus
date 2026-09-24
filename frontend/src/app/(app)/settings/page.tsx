@@ -36,7 +36,13 @@ export default function SettingsPage() {
       setApiKey("");
       await mutate();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not save this key. Check the value and try again.");
+      // No ApiError means no readable response at all: the server is down, or it
+      // crashed (a crash answers without CORS headers). The key isn't the problem.
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Couldn't reach the server to save this key. Check that the backend is running, then try again."
+      );
     } finally {
       setSaving(false);
     }

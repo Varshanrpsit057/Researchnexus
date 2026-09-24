@@ -173,3 +173,45 @@ def test_disallowed_host_is_rejected_before_any_request() -> None:
     client = _client(httpx.MockTransport(handler))
     with pytest.raises(DisallowedHost):
         asyncio.run(client.get_json("https://evil.example.com/x"))
+
+
+def test_host_headers_are_sent_only_to_their_host() -> None:
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.headers.get("x-api-key")
+        return httpx.Response(200, json={"results": [], "data": []})
+
+    client = ExternalHttpClient(
+        transport=httpx.MockTransport(handler), host_headers={"api.semanticscholar.org": {"x-api-key": "k-test"}}
+    )
+    asyncio.run(client.get_json("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": "q"}))
+    asyncio.run(client.get_json(_URL, params={"search": "q"}))
+    assert seen == {"api.semanticscholar.org": "k-test", "api.openalex.org": None}
+
+
+def test_requests_to_a_throttled_host_are_spaced_out() -> None:
+    now = {"t": 100.0}
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["t"] += seconds
+
+    client = ExternalHttpClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})),
+        sleep=fake_sleep,
+        clock=lambda: now["t"],
+        host_min_interval_s={"api.semanticscholar.org": 1.0},
+    )
+
+    async def three_calls() -> None:
+        for i in range(3):
+            await client.get_json("https://api.semanticscholar.org/graph/v1/paper/x", params={"i": i})
+            now["t"] += 0.25  # each call itself takes a quarter second
+
+    asyncio.run(three_calls())
+    assert sleeps == [0.75, 0.75]  # the first goes straight out; the rest wait out the interval
+    # an unthrottled host never waits
+    asyncio.run(client.get_json(_URL, params={"x": 1}))
+    assert sleeps == [0.75, 0.75]

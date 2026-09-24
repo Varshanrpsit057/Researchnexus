@@ -26,6 +26,17 @@ _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 _MAX_KEYWORD_SETS = 6
 _MAX_EXPANDED = 8
 _MAX_TERM_WORDS = 5
+_ACRONYM_RE = re.compile(r"^[A-Z][A-Z0-9]{1,5}s?$")
+_STOPWORDS = frozenset(
+    [
+        "about", "above", "after", "also", "among", "based", "been", "being", "between", "both",
+        "could", "does", "doing", "during", "each", "from", "have", "having", "into", "more", "most",
+        "other", "over", "same", "some", "such", "than", "that", "their", "them", "then", "there",
+        "these", "they", "this", "those", "through", "toward", "towards", "under", "until", "upon",
+        "using", "very", "were", "what", "when", "where", "which", "while", "with", "within", "without",
+        "would",
+    ]
+)
 
 
 class SearchPlanExtraction(BaseModel):
@@ -57,16 +68,21 @@ def _short_phrase(text: str, max_words: int = _MAX_TERM_WORDS) -> str:
     recognition paper's fallback plan returned unrelated sentiment-
     analysis and generic ML-survey papers this way, because a query that
     long has nothing distinctive left for arXiv/OpenAlex to match on)."""
-    words = [w for w in re.split(r"[^a-zA-Z0-9]+", text.lower()) if len(w) > 3]
+    words: list[str] = []
+    for word in re.split(r"[^a-zA-Z0-9]+", text):
+        # short all-caps acronyms (AI, LLM, RL, GANs) are often the most
+        # distinctive term there is; function words never are
+        if _ACRONYM_RE.match(word) or (len(word) > 3 and word.lower() not in _STOPWORDS):
+            words.append(word.lower())
     return " ".join(words[:max_words])
 
 
 def _profile_terms(profile: ResearchProfile) -> list[str]:
+    """The profile's facets: keywords, then method and dataset names. The
+    research problem is left out on purpose -- it is a sentence, and its
+    first words are filler ("There is a striking lack of ..."), which is
+    exactly what a search engine then matches on."""
     terms = [k.strip().lower() for k in profile.keywords if k.strip()]
-    for value in (profile.domain.value, profile.research_problem.value):
-        phrase = _short_phrase(value)
-        if phrase:
-            terms.append(phrase)
     for item in profile.methods.items + profile.datasets.items:
         phrase = _short_phrase(item.value)
         if phrase:
@@ -79,8 +95,15 @@ def _profile_terms(profile: ResearchProfile) -> list[str]:
 
 
 def fallback_plan(profile: ResearchProfile, *, citation_anchors: list[str]) -> SearchPlan:
-    terms = _profile_terms(profile)
-    keyword_sets = [terms[i : i + 3] for i in range(0, min(len(terms), _MAX_KEYWORD_SETS * 3), 3)] or [[profile.title]]
+    """Every query pairs the paper's domain with one facet, so a generic
+    facet ("structured literature review") only ever searches within the
+    domain rather than across all of science."""
+    anchor = _short_phrase(profile.domain.value) or _short_phrase(profile.title)
+    facets = [t for t in _profile_terms(profile) if t != anchor][:_MAX_KEYWORD_SETS]
+    if anchor:
+        keyword_sets = [[anchor, f] for f in facets] or [[anchor]]
+    else:
+        keyword_sets = [[f] for f in facets] or [[profile.title]]
     expanded = [" ".join(group) for group in keyword_sets[:_MAX_EXPANDED] if group]
     return SearchPlan(
         keyword_sets=keyword_sets,

@@ -57,7 +57,11 @@ export function recordRecentPaper(entry: RecentPaper): void {
   if (typeof window === "undefined") return;
   const existing = getSnapshot().filter((p) => p.paperId !== entry.paperId);
   const next = [entry, ...existing].slice(0, MAX);
-  window.localStorage.setItem(KEY, JSON.stringify(next));
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(next));
+  } catch {
+    return; // storage blocked or full (e.g. private mode): the history is only a convenience
+  }
   window.dispatchEvent(new Event("researchnexus:recent-papers"));
 }
 

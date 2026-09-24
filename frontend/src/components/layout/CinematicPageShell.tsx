@@ -17,7 +17,9 @@ export function CinematicPageShell({ children, maxWidthClassName = "max-w-[1180p
         style={{ background: "linear-gradient(180deg, rgba(4,6,15,.55) 0%, rgba(4,6,15,.82) 320px, rgba(4,6,15,.9) 100%)" }}
       />
       <CinematicHeader />
-      <main className={`mx-auto px-4 py-10 sm:px-6 sm:py-14 ${maxWidthClassName}`}>{children}</main>
+      <main id="main" className={`mx-auto px-4 py-10 sm:px-6 sm:py-14 ${maxWidthClassName}`}>
+        {children}
+      </main>
     </div>
   );
 }

@@ -10,6 +10,9 @@ from app.db import repository as repo
 from app.db.base import Base
 from app.db.models import PaperRelationshipORM, WorkspacePaperORM
 from app.domain.candidate import NormalizedCandidate, SearchRun
+from app.domain.comparison import Comparison, ComparisonSchema
+from app.domain.direction import ResearchDirection
+from app.domain.gap import GapEvidence, GapType, ResearchGap
 from app.domain.profile import Confidence, SourceSpan
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
 from app.domain.workspace import AddedBy, ResearchWorkspace, WorkspacePaper, WorkspacePaperRole
@@ -198,6 +201,53 @@ def test_workspace_child_counts(db: Session) -> None:
     assert counts["papers"] == 2
     assert counts["edges"] == 0
     assert counts["gaps"] == 0 and counts["directions"] == 0
+
+
+def test_workspace_child_counts_reflect_real_gaps_directions_and_comparisons(db: Session) -> None:
+    # Found live: counts hard-coded gaps/directions to 0 ("arrive in Phases
+    # 11 / 12") long after both shipped, so the API reported zero for every
+    # workspace. Rejected items are excluded, matching how edges are counted.
+    uid = _user(db)
+    seed = _paper(db, "Seed")
+    repo.create_workspace(db, _ws(uid, seed))
+    evidence = [GapEvidence(paper_id="p1", span=SourceSpan(paper_id="p1", quote="q"))]
+
+    def gap(gid: str, state: str) -> ResearchGap:
+        return ResearchGap(
+            gap_id=gid, workspace_id="ws_1", statement=gid, gap_type=GapType.METHOD_GAP,
+            supporting_papers=["p1", "p2"], supporting_evidence=evidence,
+            confidence=Confidence.MEDIUM, self_support_passed=True, user_state=state,
+        )
+
+    repo.save_gaps(db, "ws_1", [gap("gap_1", "accepted"), gap("gap_2", "candidate"), gap("gap_3", "rejected")], owner_id=uid)
+    repo.save_directions(
+        db,
+        "ws_1",
+        [
+            ResearchDirection(
+                direction_id=did, workspace_id="ws_1", gap_id="gap_1", proposal="Apply X.", motivation="m",
+                supporting_evidence=evidence, related_papers=["p1", "p2"], suggested_method="X",
+                evaluation_strategy="e", risks=[], kind="evidence_backed_inference", critique={},
+                confidence=Confidence.MEDIUM, confidence_basis={}, user_state=state,
+            )
+            for did, state in (("dir_1", "candidate"), ("dir_2", "rejected"))
+        ],
+        owner_id=uid,
+    )
+    repo.save_comparison(
+        db,
+        Comparison(
+            comparison_id="cmp_1", workspace_id="ws_1",
+            column_schema=ComparisonSchema(columns=["method"], generated_by="deterministic_union"),
+            paper_ids=["p1"], rows=[], coverage=0.0,
+        ),
+        owner_id=uid,
+    )
+
+    counts = repo.workspace_child_counts(db, "ws_1")
+    assert counts["gaps"] == 2
+    assert counts["directions"] == 1
+    assert counts["comparisons"] == 1
 
 
 def test_accept_reject_workspace_edge_is_scoped_to_the_workspace(db: Session) -> None:

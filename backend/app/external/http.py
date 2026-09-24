@@ -24,6 +24,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -68,8 +69,23 @@ class ExternalHttpClient:
         cache_ttl_s: float = 300.0,
         sleep: Sleep | None = None,
         clock: Clock | None = None,
+        host_headers: dict[str, dict[str, str]] | None = None,
+        host_min_interval_s: dict[str, float] | None = None,
+        max_retry_wait_s: float = _RETRY_AFTER_CAP_S,
     ) -> None:
         self._transport = transport
+        # e.g. {"api.semanticscholar.org": {"x-api-key": ...}}: credentials a
+        # source accepts, sent only to that host and never part of a cache key
+        self._host_headers = host_headers or {}
+        # minimum spacing between requests to one host (Semantic Scholar
+        # allows about one a second), so parallel strategies queue politely
+        # instead of all being rate-limited at once
+        self._host_min_interval_s = host_min_interval_s or {}
+        self._host_locks: dict[str, asyncio.Lock] = {}
+        self._host_last_sent: dict[str, float] = {}
+        # the longest a 429's Retry-After may hold a request up; a caller on a
+        # deadline (discovery) sets this low and moves on to other sources
+        self._max_retry_wait_s = max_retry_wait_s
         self._timeout_s = timeout_s
         self._max_retries = max_retries
         self._backoff_base_s = backoff_base_s
@@ -110,7 +126,8 @@ class ExternalHttpClient:
         ) as http:
             for attempt in range(self._max_retries + 1):
                 try:
-                    resp = await http.get(url, params=params)
+                    await self._throttle(url)
+                    resp = await http.get(url, params=params, headers=self._headers_for(url))
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     if attempt == self._max_retries:
                         raise UpstreamUnavailable(f"{url}: {type(exc).__name__}") from exc
@@ -120,9 +137,9 @@ class ExternalHttpClient:
                 if resp.status_code == 429:
                     retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
                     last_rate_limit = UpstreamRateLimited(f"{url}: rate limited", retry_after)
-                    if attempt == self._max_retries:
+                    if attempt == self._max_retries or (retry_after or 0) > self._max_retry_wait_s:
                         break
-                    await self._sleep(min(retry_after or self._backoff_base_s * (2**attempt), _RETRY_AFTER_CAP_S))
+                    await self._sleep(min(retry_after or self._backoff_base_s * (2**attempt), self._max_retry_wait_s))
                     continue
 
                 if resp.status_code >= 500:
@@ -138,6 +155,23 @@ class ExternalHttpClient:
 
         assert last_rate_limit is not None
         raise last_rate_limit
+
+    def _headers_for(self, url: str) -> dict[str, str]:
+        return self._host_headers.get((urlparse(url).hostname or "").lower(), {})
+
+    async def _throttle(self, url: str) -> None:
+        host = (urlparse(url).hostname or "").lower()
+        interval = self._host_min_interval_s.get(host)
+        if not interval:
+            return
+        lock = self._host_locks.setdefault(host, asyncio.Lock())
+        async with lock:
+            last = self._host_last_sent.get(host)
+            if last is not None:
+                wait = last + interval - self._clock()
+                if wait > 0:
+                    await self._sleep(wait)
+            self._host_last_sent[host] = self._clock()
 
     # -- public -----------------------------------------------------------------
 
@@ -161,11 +195,18 @@ class ExternalHttpClient:
         ) as http:
             for attempt in range(self._max_retries + 1):
                 try:
-                    resp = await http.get(url, params=params)
+                    await self._throttle(url)
+                    resp = await http.get(url, params=params, headers=self._headers_for(url))
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     if attempt == self._max_retries:
                         raise UpstreamUnavailable(f"{url}: {type(exc).__name__}") from exc
                     await self._sleep(self._backoff_base_s * (2**attempt))
+                    continue
+                if resp.status_code == 429 and attempt < self._max_retries:
+                    retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                    if (retry_after or 0) > self._max_retry_wait_s:
+                        return resp
+                    await self._sleep(min(retry_after or self._backoff_base_s * (2**attempt), self._max_retry_wait_s))
                     continue
                 if resp.status_code >= 500:
                     if attempt == self._max_retries:

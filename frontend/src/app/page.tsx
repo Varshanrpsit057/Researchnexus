@@ -155,7 +155,9 @@ export default function LandingPage() {
           }}
         />
 
-        <nav className="relative z-10 mx-auto flex w-full max-w-[1180px] items-center justify-between px-6 py-[22px]">
+        {/* z-20: the hero below is lifted by translateY(-6vh) into this row; at an
+            equal z-index its (transparent) box would sit over the nav and eat clicks */}
+        <nav className="relative z-20 mx-auto flex w-full max-w-[1180px] items-center justify-between px-6 py-[22px]">
           <span className="inline-flex items-center gap-[9px] text-[19px] font-extrabold tracking-[0.16em]">
             <FlaskIcon className="size-[18px] -translate-y-px" style={{ color: MINT }} weight="duotone" aria-hidden />
             RESEARCHNEXUS

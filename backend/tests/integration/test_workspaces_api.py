@@ -106,7 +106,7 @@ def test_create_then_get_workspace(tmp_path: Path) -> None:
     got = client.get(f"/api/v1/workspaces/{ws['workspace_id']}", headers=_headers(token))
     assert got.status_code == 200
     body = got.json()
-    assert body["counts"] == {"papers": 1, "edges": 0, "gaps": 0, "directions": 0}
+    assert body["counts"] == {"papers": 1, "edges": 0, "gaps": 0, "directions": 0, "comparisons": 0}
     assert body["cost_used"] == 0.0
 
 

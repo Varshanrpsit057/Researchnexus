@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import Settings
 from app.db import repository as repo
 from app.db.base import Base
-from app.db.models import PaperORM
+from app.db.models import PaperORM, SearchRunORM
 from app.domain.candidate import (
     CitationRelationship,
     DiscoveryStrategy,
@@ -235,3 +235,79 @@ def test_run_whose_seed_has_no_profile_raises_seed_not_rankable(db: Session, set
     repo.create_search_run(db, SearchRun(run_id="run_x", seed_paper_id="pap_noprofile"))
     with pytest.raises(SeedNotRankable):
         asyncio.run(rank_search_run(db, run_id="run_x", settings=settings, options=_options()))
+
+
+class _TopicEmbedder:
+    """Two-topic stand-in for a real embedder: text mentioning retrieval
+    points one way, anything else the other -- so similarity is 1 or 0."""
+
+    name = "topic-stub"
+    dimension = 2
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def embed(self, texts: list[str]):  # type: ignore[no-untyped-def]
+        import numpy as np
+
+        self.seen.extend(texts)
+        return np.array([[1.0, 0.0] if "retrieval" in t.lower() else [0.0, 1.0] for t in texts], dtype="float32")
+
+
+def test_relevance_floor_sets_off_topic_candidates_aside_and_counts_them(db: Session, settings: Settings) -> None:
+    run_id = _run_with_candidates(
+        db,
+        [
+            {"title": "Dense Passage Retrieval for Open-Domain QA", "year": 2020},
+            {"title": "Initial sequencing and analysis of the human genome", "year": 2001},
+        ],
+    )
+
+    db.get(SearchRunORM, run_id).counts = {"raw": 2, "after_dedupe": 2, "after_filter": 2}  # type: ignore[union-attr]
+    db.commit()
+
+    embedder = _TopicEmbedder()
+    result = asyncio.run(
+        rank_search_run(
+            db,
+            run_id=run_id,
+            settings=settings,
+            options=RankOptions(chunk_embedder=embedder, doc_embedder=embedder, min_relevance=0.62),
+        )
+    )
+
+    assert result.ranked_count == 1
+    assert result.off_topic_count == 1
+    ranked_titles = [c.title for c in repo.get_search_candidates(db, run_id) if c.filter_kept]
+    assert ranked_titles == ["Dense Passage Retrieval for Open-Domain QA"]
+    genome = next(c for c in repo.get_search_candidates(db, run_id) if "genome" in c.title)
+    assert genome.filter_reasons == ["off_topic"]  # set aside with its reason, not deleted
+    run = repo.get_search_run(db, run_id)
+    assert run is not None
+    assert (run.candidate_count_after_filter, run.candidate_count_off_topic) == (1, 1)
+
+
+def test_seed_is_compared_with_its_profile_abstract_when_the_pdf_had_none(db: Session, settings: Settings) -> None:
+    run_id = _run_with_candidates(db, [{"title": "Dense Passage Retrieval", "year": 2020}])
+    db.get(PaperORM, "pap_seed").abstract = None  # type: ignore[union-attr]
+    db.commit()
+    embedder = _TopicEmbedder()
+    asyncio.run(
+        rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(doc_embedder=embedder))
+    )
+    seed_texts = [t for t in embedder.seen if t.startswith("Retrieval-Augmented Generation for Knowledge-Intensive NLP")]
+    assert seed_texts == ["Retrieval-Augmented Generation for Knowledge-Intensive NLP\nWe propose RAG."]
+
+
+def test_without_a_reranker_the_order_is_the_fused_score(db: Session, settings: Settings) -> None:
+    run_id = _run_with_candidates(
+        db,
+        [
+            {"title": "A", "year": 2010},
+            {"title": "B", "year": 2024, "rel": CitationRelationship.CITES_SEED, "hops": 1},
+        ],
+    )
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions()))
+    ranked = sorted(repo.get_ranked_papers(db, run_id), key=lambda r: r.final_rank)
+    assert all(r.rerank_score is None for r in ranked)
+    assert [r.fused_score for r in ranked] == sorted((r.fused_score for r in ranked), reverse=True)

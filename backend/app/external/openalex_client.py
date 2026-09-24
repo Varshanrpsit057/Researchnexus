@@ -13,6 +13,10 @@ from app.domain.candidate import CandidateSource, RawExternalRecord
 from app.external.http import ExternalHttpClient, MalformedUpstreamResponse
 
 _BASE_URL = "https://api.openalex.org/works"
+# only the fields the records are built from: full work objects are several
+# times larger, and on a busy day that size is the difference in latency
+_SELECT = "id,doi,title,display_name,publication_year,authorships,abstract_inverted_index,primary_location,type"
+_SELECT_SEED = f"{_SELECT},referenced_works,related_works"
 _PREPRINT_SOURCE_TYPES = {"repository"}
 
 
@@ -21,8 +25,16 @@ class OpenAlexClient:
         self._http = http
 
     async def search(self, query: str, *, max_results: int = 25) -> list[RawExternalRecord]:
-        body = await self._http.get_json(_BASE_URL, params={"search": query, "per_page": max_results})
+        body = await self._http.get_json(_BASE_URL, params={"search": query, "per_page": max_results, "select": _SELECT})
         return self._records_from_results(body)
+
+    async def search_works(self, query: str, *, per_page: int = 5) -> list[dict[str, Any]]:
+        """Raw work dicts (with `referenced_works` / `related_works`), for
+        resolving a seed paper by its title."""
+        body = await self._http.get_json(_BASE_URL, params={"search": query, "per_page": per_page, "select": _SELECT_SEED})
+        if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+            raise MalformedUpstreamResponse("OpenAlex: response missing a `results` list")
+        return [w for w in body["results"] if isinstance(w, dict)]
 
     async def get_work(self, id_or_doi: str) -> dict[str, Any] | None:
         """Fetch a single work by OpenAlex id or DOI. Returns the raw work
@@ -47,13 +59,15 @@ class OpenAlexClient:
             return []
         short = [i.rstrip("/").rsplit("/", 1)[-1] for i in openalex_ids]
         body = await self._http.get_json(
-            _BASE_URL, params={"filter": f"openalex_id:{'|'.join(short)}", "per_page": per_page}
+            _BASE_URL, params={"filter": f"openalex_id:{'|'.join(short)}", "per_page": per_page, "select": _SELECT}
         )
         return self._records_from_results(body)
 
     async def works_citing(self, openalex_id: str, *, per_page: int = 25) -> list[RawExternalRecord]:
         short = openalex_id.rstrip("/").rsplit("/", 1)[-1]
-        body = await self._http.get_json(_BASE_URL, params={"filter": f"cites:{short}", "per_page": per_page})
+        body = await self._http.get_json(
+            _BASE_URL, params={"filter": f"cites:{short}", "per_page": per_page, "select": _SELECT}
+        )
         return self._records_from_results(body)
 
     @classmethod

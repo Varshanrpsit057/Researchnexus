@@ -6,7 +6,7 @@ import { FileArrowUp, FilePdf, MagnifyingGlass } from "@phosphor-icons/react/dis
 import { papers } from "@/lib/api/endpoints";
 import { useJobPolling } from "@/lib/api/hooks";
 import { recordRecentPaper, useRecentPapers } from "@/lib/local-history";
-import { ApiError } from "@/lib/api/client";
+import { uploadErrorMessage } from "@/lib/paper-upload";
 import { Button } from "@/components/ui/Button";
 import { InlineError } from "@/components/ui/States";
 import { Card } from "@/components/ui/Card";
@@ -48,19 +48,7 @@ export default function PapersPage() {
       }
       setState({ phase: "parsing", paperId: res.paper_id, jobId: res.job.job_id });
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.status === 413
-            ? "This file is larger than the 30 MB limit."
-            : err.status === 415
-              ? "This file is not a PDF."
-              : err.code === "pdf_scanned"
-                ? "This PDF has no extractable text layer (a scanned image). Try an OCR'd version."
-                : err.code === "pdf_encrypted"
-                  ? "This PDF is password-protected."
-                  : err.message
-          : "Upload failed. Try again.";
-      setState({ phase: "error", message });
+      setState({ phase: "error", message: uploadErrorMessage(err) });
     }
   }, [router]);
 

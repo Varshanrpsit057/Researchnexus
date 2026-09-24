@@ -93,6 +93,35 @@ def test_fallback_plan_keeps_queries_short_for_a_profile_with_no_keywords() -> N
     assert "facenet" in joined
 
 
+def test_fallback_plan_keeps_acronyms_and_anchors_every_query_to_the_domain() -> None:
+    # Observed live on a survey of agentic AI with no extracted keywords:
+    # the plan cut "AI" (too short) and took the research problem's first
+    # words, searching for "agentic systems there striking lack readily
+    # available structured literature review" -- which matched generic
+    # literature reviews from every field (genomics, surgery, climate).
+    profile = _profile(
+        title="Agentic AI: A Comprehensive Survey of Technologies, Applications, and Societal Implications",
+        keywords=[],
+        domain=ProfileField(value="Agentic AI systems"),
+        research_problem=ProfileField(
+            value=(
+                "There is a striking lack of readily available and understandable materials dedicated to "
+                "agentic AI, with foundational concepts scattered across reinforcement learning and LLMs."
+            )
+        ),
+        methods=ProfileList(items=[ProfileField(value="Structured literature review")]),
+        datasets=ProfileList(items=[]),
+    )
+    plan = fallback_plan(profile, citation_anchors=[])
+    assert plan.keyword_sets
+    for group in plan.keyword_sets:
+        assert group[0] == "agentic ai systems", group
+    for query in plan.expanded_queries:
+        assert "agentic ai" in query
+        for filler in ("striking", "readily", "there"):
+            assert filler not in query.split()
+
+
 def test_generate_search_plan_without_a_session_uses_fallback() -> None:
     plan, warnings = asyncio.run(generate_search_plan(_profile(), session=None, citation_anchors=[]))
     assert plan.generated_by == "fallback"

@@ -34,6 +34,7 @@ class CandidateSource(str, Enum):
     OPENALEX = "openalex"
     SEMANTIC_SCHOLAR = "semantic_scholar"
     CROSSREF = "crossref"
+    EUROPE_PMC = "europe_pmc"
 
 
 class DiscoveryStrategy(str, Enum):
@@ -45,6 +46,9 @@ class DiscoveryStrategy(str, Enum):
     METHOD = "method"
     TOPIC = "topic"
     RESEARCH_QUESTION = "research_question"
+    # "papers like this one": Semantic Scholar's recommendations (SPECTER
+    # embeddings) and OpenAlex's related works for the seed
+    RECOMMENDATION = "recommendation"
 
 
 class CitationRelationship(str, Enum):
@@ -147,6 +151,8 @@ class SearchRun(BaseModel):
     candidate_count_raw: int = 0
     candidate_count_after_dedupe: int = 0
     candidate_count_after_filter: int = 0
+    # dropped by the ranking stage's relevance floor (already excluded from after_filter)
+    candidate_count_off_topic: int = 0
     tokens_prompt: int = 0
     tokens_completion: int = 0
     started_at: datetime = Field(default_factory=_utcnow)

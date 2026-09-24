@@ -186,7 +186,7 @@ function PaperDetail() {
         await workspaces.addPapers(ws.workspace_id, { paper_ids: Array.from(selected), from_run_id: runId });
       }
       dialogRef.current?.close();
-      router.push(`/workspaces/${ws.workspace_id}`);
+      router.push(`/workspace/${ws.workspace_id}`);
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : "Could not create workspace.");
     } finally {
@@ -366,6 +366,7 @@ function PaperDetail() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span>
                         {related.run.counts.after_filter} candidates from {related.run.strategies_succeeded.join(", ") || "no"} strategies
+                        {(related.run.counts.off_topic ?? 0) > 0 && ` · ${related.run.counts.off_topic} off-topic set aside`}
                       </span>
                       {related.run.strategies_failed.length > 0 && (
                         <Badge tone="warning">{related.run.strategies_failed.join(", ")} failed</Badge>

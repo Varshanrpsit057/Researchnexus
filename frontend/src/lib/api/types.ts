@@ -248,9 +248,13 @@ export interface WorkspacePaper {
 
 export interface WorkspaceCounts {
   papers: number;
+  /** Trail edges, excluding rejected. */
   edges: number;
+  /** Excluding rejected. */
   gaps: number;
+  /** Excluding rejected. */
   directions: number;
+  comparisons: number;
 }
 
 export interface Workspace {
@@ -292,7 +296,8 @@ export type DiscoveryStrategy =
   | "citation"
   | "method"
   | "topic"
-  | "research_question";
+  | "research_question"
+  | "recommendation";
 
 export type CitationRelationship = "cited_by_seed" | "cites_seed" | "co_cited" | "none";
 
@@ -312,7 +317,9 @@ export interface RelatedRunSummary {
   seed_paper_id: string;
   strategies_succeeded: DiscoveryStrategy[];
   strategies_failed: DiscoveryStrategy[];
-  counts: { raw: number; after_dedupe: number; after_filter: number };
+  // off_topic: candidates the ranking's relevance floor set aside (already
+  // excluded from after_filter); absent on runs from before it existed
+  counts: { raw: number; after_dedupe: number; after_filter: number; off_topic?: number };
   extra_citation_hop_used: boolean;
   weights_version: string | null;
 }

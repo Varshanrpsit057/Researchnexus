@@ -33,6 +33,8 @@ from app.services.normalize.canonical import identity_keys
 from app.services.normalize.dedupe import SeedIdentity, dedupe
 
 _SIGNAL_FIELDS = set(RawSignalScores.model_fields)
+# strategies whose hits come from the seed itself (its citations, its neighbours)
+_SEED_LINKED = frozenset({DiscoveryStrategy.CITATION, DiscoveryStrategy.RECOMMENDATION})
 
 
 @dataclass
@@ -123,13 +125,22 @@ async def run_discovery_strategies(
         if mc.normalized.title_hash in dropped_hashes:
             mc.filter_kept = False
             mc.filter_reasons = dropped_hashes[mc.normalized.title_hash]
-    count_after_filter = sum(1 for mc in merged if mc.filter_kept)
-
     warnings = [*warn_a, *warn_b]
     if len(merged) > ctx.budget.max_total_candidates:
-        merged.sort(key=lambda mc: (not mc.filter_kept))  # kept first, otherwise stable
+        # The cap bites before any ranking, so cut by strength of evidence,
+        # never blindly in discovery order: kept candidates first, then those
+        # more strategies found, then those from the seed's own citation
+        # neighbourhood or recommendations. The sort is stable otherwise.
+        merged.sort(
+            key=lambda mc: (
+                not mc.filter_kept,
+                -len(mc.discovery_methods),
+                not any(m in _SEED_LINKED for m in mc.discovery_methods),
+            )
+        )
         merged = merged[: ctx.budget.max_total_candidates]
         warnings.append("budget_truncated")
+    count_after_filter = sum(1 for mc in merged if mc.filter_kept)
     if ctx.budget.expired():
         warnings.append("deadline_reached")
 

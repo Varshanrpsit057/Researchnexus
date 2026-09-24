@@ -51,7 +51,7 @@ export default function WorkspacesPage() {
           {data.workspaces.map((ws) => (
             <li key={ws.workspace_id}>
               <Link
-                href={`/workspaces/${ws.workspace_id}`}
+                href={`/workspace/${ws.workspace_id}`}
                 className="flex items-center justify-between gap-4 py-4 transition-colors hover:bg-surface-sunken"
               >
                 <div className="min-w-0">

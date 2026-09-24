@@ -48,8 +48,8 @@ async function createWorkspaceWithAcceptedGap(
   await page.reload();
   await page.getByText("Skip discovery, start a workspace with just this paper").click();
   await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
-  await page.waitForURL(/\/workspaces\/ws_/, { timeout: 10_000 });
-  const workspaceId = page.url().split("/workspaces/")[1].split("/")[0].split("?")[0];
+  await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+  const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
 
   const secondPaperId = `pap_pw_dir_${Date.now()}`;
   seedSecondPaperAndEdge(seedPaperId, secondPaperId, workspaceId);

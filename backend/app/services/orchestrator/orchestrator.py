@@ -48,6 +48,10 @@ from app.llm.session import LlmSession
 from app.services.citations.pipeline import CitationsBuildResult, build_citations
 from app.services.directions.pipeline import DirectionBuildResult, build_directions
 from app.services.discovery.pipeline import DiscoveryOptions, run_discovery
+from app.services.discovery.relevance import (
+    discovery_options as default_discovery_options,
+)
+from app.services.discovery.relevance import rank_options, relevance_embedder
 from app.services.gaps.pipeline import GapBuildOptions, GapBuildResult, build_gaps
 from app.services.orchestrator.budget import (
     decide_budget,
@@ -57,11 +61,15 @@ from app.services.orchestrator.budget import (
 )
 from app.services.profile.pipeline import run_profile_extraction
 from app.services.rag.pipeline import RagRequest, answer_question
-from app.services.ranking.pipeline import RankOptions, rank_search_run
+from app.services.ranking.pipeline import rank_search_run
 from app.services.synthesis.compare import ComparisonResult, build_comparison
 from app.services.trail.pipeline import TrailOptions, build_trail
 from app.services.workspace.pipeline import WorkspaceCreateRequest, create_workspace
 from app.telemetry.stage_timer import StageTimer
+
+# discovery bounds itself (a 90s deadline, per-source time caps); its stage
+# limit only has to sit above that -- same value as the discover job's
+DISCOVERY_STAGE_TIMEOUT_S = 150.0
 
 T = TypeVar("T")
 
@@ -251,13 +259,15 @@ class ResearchOrchestrator:
             return PipelineResult(paper_id=paper.id, failed_stage=StageName.PROFILE, error=str(e))
 
         _progress("discovery")
-        options = discovery_options or DiscoveryOptions()
+        embedder = relevance_embedder(self.settings)
+        options = discovery_options or default_discovery_options(embedder)
         try:
             discovery_result = await self.run_stage(
                 StageName.DISCOVERY, "run_discovery",
                 lambda: run_discovery(self.db, seed_paper_id=paper.id, current_user=None, settings=self.settings, options=options),
                 owner_id=owner.id, job_id=job_id,
                 input_for_hash={"seed_paper_id": paper.id, "strategies": options.strategies},
+                timeout_s=DISCOVERY_STAGE_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001
             if job_id is not None:
@@ -272,6 +282,7 @@ class ResearchOrchestrator:
                 lambda: run_discovery(self.db, seed_paper_id=paper.id, current_user=None, settings=self.settings, options=hop_options),
                 owner_id=owner.id, job_id=job_id,
                 input_for_hash={"seed_paper_id": paper.id, "strategies": hop_options.strategies, "extra_hop": True},
+                timeout_s=DISCOVERY_STAGE_TIMEOUT_S,
             )
             if hop_result.count_after_filter >= discovery_result.count_after_filter:
                 discovery_result = hop_result
@@ -281,7 +292,9 @@ class ResearchOrchestrator:
         _progress("ranking")
         rank_result = await self.run_stage(
             StageName.RANKING, "rank_search_run",
-            lambda: rank_search_run(self.db, run_id=discovery_result.run_id, settings=self.settings, options=RankOptions()),
+            lambda: rank_search_run(
+                self.db, run_id=discovery_result.run_id, settings=self.settings, options=rank_options(self.settings, embedder)
+            ),
             owner_id=owner.id, job_id=job_id, input_for_hash={"run_id": discovery_result.run_id},
         )
 

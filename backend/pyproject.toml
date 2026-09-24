@@ -23,6 +23,9 @@ dependencies = [
   "python-jose[cryptography]>=3.3",
   "cryptography>=42.0",
   "defusedxml>=0.7",
+  # discovery relevance: bge-small embeddings on ONNX Runtime (no torch);
+  # its ~70 MB model downloads once into data/models on first use
+  "fastembed>=0.4",
 ]
 
 # Heavy/optional retrieval backends. Kept OUT of the default install so Phase 2

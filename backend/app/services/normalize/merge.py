@@ -28,6 +28,7 @@ _SOURCE_AUTHORITY = {
     CandidateSource.CROSSREF: 3,
     CandidateSource.OPENALEX: 2,
     CandidateSource.SEMANTIC_SCHOLAR: 1,
+    CandidateSource.EUROPE_PMC: 1,
     CandidateSource.ARXIV: 0,
 }
 

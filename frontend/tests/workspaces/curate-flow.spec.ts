@@ -72,8 +72,8 @@ test.describe("Explore -> Curate", () => {
     const dialog = page.getByRole("dialog", { name: "Create a workspace" });
     await expect(dialog.getByText(`Only ${paperTitle}`, { exact: false })).toBeVisible();
     await dialog.getByRole("button", { name: "Create workspace" }).click();
-    await page.waitForURL(/\/workspaces\/ws_/, { timeout: 10_000 });
-    const workspaceId = page.url().split("/workspaces/")[1].split("/")[0].split("?")[0];
+    await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+    const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
 
     // 3. Seed a second real paper plus a *pending* trail edge to it.
     const targetPaperId = `pap_pw_curate_${Date.now()}`;
@@ -97,17 +97,16 @@ test.describe("Explore -> Curate", () => {
     await expect(page.getByText("accepted", { exact: true })).toBeVisible();
     await expect(page.getByText("Fixture Reference 2024")).toBeVisible();
 
-    // 6. Reject it for real, then confirm the workspace-level edge count
-    //    (a *separate* SWR cache key on the Overview page) reflects the
-    //    change -- edges are counted "not rejected", so this is a real
-    //    cross-page consistency check, not just a Trail-local one.
+    // 6. Reject it for real, then confirm the workspace overview (a
+    //    *separate* SWR cache key) reflects the change -- the trail it
+    //    summarises hides rejected edges, so this is a real cross-page
+    //    consistency check, not just a Trail-local one.
     await page.getByRole("button", { name: "Reject", exact: true }).click();
     // The default "Pending + accepted" filter hides a just-rejected edge
     // outright -- switch to the Rejected filter to see its withdrawn stamp.
     await page.getByRole("button", { name: "Rejected", exact: true }).click();
     await expect(page.getByText("withdrawn", { exact: true })).toBeVisible();
-    await page.goto(`/workspaces/${workspaceId}`);
-    await expect(page.getByText("0", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("trail edges")).toBeVisible();
+    await page.goto(`/workspace/${workspaceId}`);
+    await expect(page.getByRole("link", { name: /^Connections\s*:/ })).toContainText("None yet", { timeout: 10_000 });
   });
 });

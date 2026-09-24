@@ -92,7 +92,7 @@ def test_assemble_joins_candidates_with_ranking_ranked_first(db: Session) -> Non
     view = assemble_related_results(db, "run_1")
 
     assert view.run_id == "run_1"
-    assert view.counts == {"raw": 5, "after_dedupe": 4, "after_filter": 3}
+    assert view.counts == {"raw": 5, "after_dedupe": 4, "after_filter": 3, "off_topic": 0}
     assert view.strategies_succeeded == ["keyword"]
     assert view.strategies_failed == ["citation"]
     assert view.weights_version == "w0-initial"

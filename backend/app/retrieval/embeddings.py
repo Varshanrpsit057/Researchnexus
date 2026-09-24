@@ -14,6 +14,9 @@ ResearchNexus_Implementation_Architecture.md §7 (embedding choices).
 from __future__ import annotations
 
 import hashlib
+import threading
+from collections import OrderedDict
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -121,16 +124,89 @@ class Specter2EmbeddingProvider:
         return pooled.numpy().astype("float32")
 
 
+class FastEmbedEmbeddingProvider:
+    """`BAAI/bge-small-en-v1.5` on ONNX Runtime via `fastembed` -- a real
+    semantic embedding without torch (about 70 MB, fast on a laptop CPU).
+    The discovery ranking's default: it scores a candidate's title+abstract
+    against the seed, which is what separates related work from papers that
+    merely share a word.
+
+    Vectors are L2-normalised. Recently seen texts are cached, so ranking a
+    run whose candidates were already embedded during discovery costs
+    nothing extra."""
+
+    name = "fastembed-bge-small"
+    dimension = 384
+    MODEL = "BAAI/bge-small-en-v1.5"
+    _CACHE_MAX = 5000
+
+    def __init__(self, cache_dir: str | Path | None = None) -> None:
+        self._cache_dir = str(cache_dir) if cache_dir is not None else None
+        self._model: object | None = None
+        self._vectors: OrderedDict[str, np.ndarray] = OrderedDict()
+
+    def _load(self) -> object:
+        if self._model is None:
+            try:
+                from fastembed import TextEmbedding
+            except ImportError as e:
+                raise EmbeddingBackendUnavailable("fastembed is not installed (pip install fastembed)") from e
+            self._model = TextEmbedding(self.MODEL, cache_dir=self._cache_dir)
+        return self._model
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        missing = list(dict.fromkeys(t for t in texts if t not in self._vectors))
+        if missing:
+            model = self._load()
+            vectors = np.asarray(list(model.embed(missing)), dtype="float32")  # type: ignore[attr-defined]
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            vectors = vectors / np.where(norms == 0.0, 1.0, norms)
+            for text, vec in zip(missing, vectors, strict=True):
+                self._vectors[text] = vec
+        out = np.stack([self._vectors[t] for t in texts]) if texts else np.zeros((0, self.dimension), "float32")
+        for t in texts:
+            self._vectors.move_to_end(t)
+        while len(self._vectors) > self._CACHE_MAX:
+            self._vectors.popitem(last=False)
+        return out
+
+
 _PROVIDERS: dict[str, type] = {
     "fake": FakeEmbeddingProvider,
     "minilm": MiniLMEmbeddingProvider,
     "specter2": Specter2EmbeddingProvider,
+    "fastembed": FastEmbedEmbeddingProvider,
 }
 
 
-def get_embedding_provider(name: str) -> EmbeddingProvider:
+def get_embedding_provider(name: str, **kwargs: object) -> EmbeddingProvider:
     try:
         provider_cls = _PROVIDERS[name]
     except KeyError as e:
         raise ValueError(f"unknown embedding provider: {name!r} (known: {sorted(_PROVIDERS)})") from e
-    return provider_cls()
+    return provider_cls(**kwargs)
+
+
+_shared: dict[str, EmbeddingProvider] = {}
+_shared_lock = threading.Lock()
+
+
+def discovery_embedder(name: str, *, model_dir: Path) -> EmbeddingProvider | None:
+    """The process-wide embedder behind discovery's semantic signals, loaded
+    once (discovery jobs run on worker threads, hence the lock). Returns
+    None -- and the ranking falls back to its non-semantic signals -- when
+    `name` is "none" or the model cannot be loaded (e.g. offline before its
+    first download); the caller records that on the run."""
+    if name == "none":
+        return None
+    with _shared_lock:
+        provider = _shared.get(name)
+        if provider is None:
+            kwargs: dict[str, object] = {"cache_dir": model_dir} if name == "fastembed" else {}
+            try:
+                provider = get_embedding_provider(name, **kwargs)
+                provider.embed(["warm-up"])  # load now, so failure surfaces here, not mid-ranking
+            except Exception:  # noqa: BLE001 - any load failure means "no semantic signals", not a crash
+                return None
+            _shared[name] = provider
+        return provider

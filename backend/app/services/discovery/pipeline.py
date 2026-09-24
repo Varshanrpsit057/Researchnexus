@@ -18,6 +18,7 @@ Phase 11 gap workflow needs (Architecture §9).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,10 +33,13 @@ from app.external.http import ExternalHttpClient
 from app.llm.session import resolve_llm_session
 from app.retrieval.embeddings import EmbeddingProvider
 from app.retrieval.faiss_store import VectorIndex
+from app.security.key_vault import KeyVaultDecryptionError, KeyVaultMisconfigured
 from app.services.discovery.base import DiscoveryFilters, SeedView, StrategyContext
 from app.services.discovery.budget import DiscoveryBudget
 from app.services.discovery.citation import CitationStrategy
 from app.services.discovery.keyword import KeywordStrategy, QueryExpansionStrategy
+from app.services.discovery.recommend import RecommendationStrategy
+from app.services.discovery.resolve import resolve_seed
 from app.services.discovery.runner import RunnerOutput, run_discovery_strategies
 from app.services.discovery.semantic import SemanticChunkStrategy
 from app.services.discovery.semantic_doc import SpecterDocStrategy
@@ -50,10 +54,27 @@ _MVP_STRATEGIES = [
     DiscoveryStrategy.KEYWORD,
     DiscoveryStrategy.QUERY_EXPANSION,
     DiscoveryStrategy.CITATION,
+    DiscoveryStrategy.RECOMMENDATION,
     DiscoveryStrategy.SEMANTIC,
     DiscoveryStrategy.SEMANTIC_DOC,
 ]
-_RETRIEVAL = {DiscoveryStrategy.KEYWORD, DiscoveryStrategy.QUERY_EXPANSION, DiscoveryStrategy.CITATION}
+_RETRIEVAL = {
+    DiscoveryStrategy.KEYWORD,
+    DiscoveryStrategy.QUERY_EXPANSION,
+    DiscoveryStrategy.CITATION,
+    DiscoveryStrategy.RECOMMENDATION,
+}
+# Parallel strategies share the hosts, so requests to each are spaced to stay
+# under their rate limits: Semantic Scholar allows about one a second (keyed
+# or not); OpenAlex answers 429 to quick bursts.
+_S2_HOST = "api.semanticscholar.org"
+_HOST_MIN_INTERVAL_S = {_S2_HOST: 1.05, "api.openalex.org": 0.15}
+# Discovery runs on a deadline: a source that is slow or asks for a long
+# back-off is dropped for this run (the others cover it), never waited out.
+_EXTERNAL_TIMEOUT_CAP_S = 12.0
+_EXTERNAL_RETRIES_CAP = 2
+_MAX_RETRY_WAIT_S = 5.0
+_RESOLVE_TIMEOUT_S = 20.0
 
 
 class SeedPaperNotFound(Exception):
@@ -74,7 +95,8 @@ class DiscoveryOptions:
     require_abstract: bool = False
     deadline_s: float = 90.0
     max_total_candidates: int = 200
-    max_external_calls: int = 40
+    # resolution, citations, recommendations and four keyword sources
+    max_external_calls: int = 80
     per_strategy_timeout_s: float = 30.0
     http: ExternalHttpClient | None = None
     chunk_embedder: EmbeddingProvider | None = None
@@ -104,6 +126,7 @@ def _build_strategies(requested: list[DiscoveryStrategy], options: DiscoveryOpti
         DiscoveryStrategy.KEYWORD: KeywordStrategy,
         DiscoveryStrategy.QUERY_EXPANSION: QueryExpansionStrategy,
         DiscoveryStrategy.CITATION: CitationStrategy,
+        DiscoveryStrategy.RECOMMENDATION: RecommendationStrategy,
         DiscoveryStrategy.SEMANTIC: lambda: SemanticChunkStrategy(
             corpus_index=options.corpus_index, corpus_records=options.corpus_records
         ),
@@ -130,15 +153,29 @@ async def run_discovery(
         raise ProfileRequired(seed_paper_id)
 
     chunks = repo.get_chunks_for_paper(db, seed_paper_id)
-    session = resolve_llm_session(db, current_user, settings) if current_user is not None else None
+    # A saved key only improves the search plan; discovery never requires one,
+    # so a key that can't be read (e.g. saved under an older vault secret)
+    # falls back to the deterministic plan instead of failing the run.
+    key_warnings: list[str] = []
+    try:
+        session = resolve_llm_session(db, current_user, settings) if current_user is not None else None
+    except (KeyVaultDecryptionError, KeyVaultMisconfigured):
+        session = None
+        key_warnings.append("search_plan_fallback_key_unusable")
     reference_dois = extract_reference_dois([r.get("raw_text", "") for r in (paper.references or [])])
     plan, plan_warnings = await generate_search_plan(profile, session=session, citation_anchors=reference_dois)
+    plan_warnings = [*key_warnings, *plan_warnings]
 
     http = options.http or ExternalHttpClient(
-        timeout_s=settings.external_timeout_s,
-        max_retries=settings.external_max_retries,
+        timeout_s=min(settings.external_timeout_s, _EXTERNAL_TIMEOUT_CAP_S),
+        max_retries=min(settings.external_max_retries, _EXTERNAL_RETRIES_CAP),
         backoff_base_s=settings.external_backoff_base_s,
         cache_ttl_s=settings.external_cache_ttl_s,
+        host_headers=(
+            {_S2_HOST: {"x-api-key": settings.semantic_scholar_api_key}} if settings.semantic_scholar_api_key else None
+        ),
+        host_min_interval_s=_HOST_MIN_INTERVAL_S,
+        max_retry_wait_s=_MAX_RETRY_WAIT_S,
     )
     filters = DiscoveryFilters(
         max_results_per_strategy=options.max_results_per_strategy,
@@ -168,6 +205,15 @@ async def run_discovery(
     )
 
     requested = options.strategies or list(_MVP_STRATEGIES)
+    # find the seed's own OpenAlex / S2 records first: citations and
+    # recommendations both start from them
+    resolve_warnings: list[str] = []
+    if DiscoveryStrategy.CITATION in requested or DiscoveryStrategy.RECOMMENDATION in requested:
+        try:
+            resolve_warnings = await asyncio.wait_for(resolve_seed(ctx), timeout=_RESOLVE_TIMEOUT_S)
+        except asyncio.TimeoutError:  # noqa: UP041 - py3.10: asyncio.TimeoutError is not the builtin
+            resolve_warnings = ["resolve_timed_out"]
+
     built = _build_strategies(requested, options)
     retrieval = [s for s in built if s.strategy in _RETRIEVAL]  # type: ignore[attr-defined]
     scoring = [s for s in built if s.strategy not in _RETRIEVAL]  # type: ignore[attr-defined]
@@ -178,7 +224,8 @@ async def run_discovery(
         scoring_strategies=scoring,  # type: ignore[arg-type]
         per_strategy_timeout_s=options.per_strategy_timeout_s,
         seed_identity=SeedIdentity(
-            doi=normalize_doi(paper.doi),
+            # the resolved DOI too, so the seed never comes back as its own result
+            doi=normalize_doi(ctx.seed.doi),
             arxiv_id=normalize_arxiv_id(paper.arxiv_id),
             title_hash=title_hash(paper.title),
         ),
@@ -194,7 +241,7 @@ async def run_discovery(
         count_raw=out.count_raw,
         count_after_dedupe=out.count_after_dedupe,
         count_after_filter=out.count_after_filter,
-        warnings=[*plan_warnings, *out.warnings],
+        warnings=[*plan_warnings, *resolve_warnings, *out.warnings],
     )
 
 

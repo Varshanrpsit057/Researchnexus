@@ -113,6 +113,9 @@ def run_gaps_job(
     finally:
         db.close()
 
+DISCOVERY_STAGE_TIMEOUT_S = 150.0
+
+
 def run_discover_related_job(
     session_factory: sessionmaker,
     job_id: str,
@@ -123,32 +126,43 @@ def run_discover_related_job(
     """`POST /papers/{id}/discover-related` -- runs discovery (S5+S6) ->
     ranking (S9-S10) -> trail typing (S11) for an already-analysed seed
     paper, in that fixed order, each stage logged via
-    `ResearchOrchestrator.run_stage`. No LLM session is used (discovery's
-    search-plan generation and trail's LLM-confirm both degrade to their
-    deterministic fallback paths already tested in Phases 5 and 7) --
-    browsing discovery results never requires a BYOK key; only later
-    generative steps (chat, gaps, directions) do."""
+    `ResearchOrchestrator.run_stage`. Browsing discovery results never
+    requires a BYOK key: when the owner has a working one, the search plan
+    is generated with it; otherwise discovery uses its deterministic
+    fallback plan (trail's LLM-confirm stays on its fallback path either
+    way). Ranking uses the local relevance model (see
+    app/services/discovery/relevance.py), never an LLM."""
     from app.domain.orchestrator import StageName
-    from app.services.discovery.pipeline import DiscoveryOptions, run_discovery
+    from app.services.discovery.pipeline import run_discovery
+    from app.services.discovery.relevance import discovery_options, rank_options, relevance_embedder
     from app.services.orchestrator.orchestrator import ResearchOrchestrator
-    from app.services.ranking.pipeline import RankOptions, rank_search_run
+    from app.services.ranking.pipeline import rank_search_run
     from app.services.trail.pipeline import TrailOptions, build_trail
 
     db = session_factory()
     try:
         repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"stage": "discovery"})
         orchestrator = ResearchOrchestrator(db=db, settings=settings)
+        owner = repo.get_user(db, owner_id)
+        embedder = relevance_embedder(settings)
         try:
             discovery_result = asyncio.run(
                 orchestrator.run_stage(
                     StageName.DISCOVERY,
                     "run_discovery",
                     lambda: run_discovery(
-                        db, seed_paper_id=paper_id, current_user=None, settings=settings, options=DiscoveryOptions()
+                        db,
+                        seed_paper_id=paper_id,
+                        current_user=owner,
+                        settings=settings,
+                        options=discovery_options(embedder),
                     ),
                     owner_id=owner_id,
                     job_id=job_id,
                     input_for_hash={"seed_paper_id": paper_id},
+                    # discovery bounds itself (a 90s deadline, per-source time
+                    # caps); this outer limit only has to sit above that
+                    timeout_s=DISCOVERY_STAGE_TIMEOUT_S,
                 )
             )
 
@@ -157,7 +171,9 @@ def run_discover_related_job(
                 orchestrator.run_stage(
                     StageName.RANKING,
                     "rank_search_run",
-                    lambda: rank_search_run(db, run_id=discovery_result.run_id, settings=settings, options=RankOptions()),
+                    lambda: rank_search_run(
+                        db, run_id=discovery_result.run_id, settings=settings, options=rank_options(settings, embedder)
+                    ),
                     owner_id=owner_id,
                     job_id=job_id,
                     input_for_hash={"run_id": discovery_result.run_id},
@@ -176,7 +192,8 @@ def run_discover_related_job(
                 )
             )
         except Exception as e:  # noqa: BLE001 - record on the job, never crash the worker
-            repo.update_job(db, job_id, status=JobStatus.FAILED, error=str(e))
+            # a timeout's message is empty; never record a failure without a reason
+            repo.update_job(db, job_id, status=JobStatus.FAILED, error=str(e) or type(e).__name__)
             return
 
         status = JobStatus.SUCCEEDED if discovery_result.status != "partial" else JobStatus.PARTIAL

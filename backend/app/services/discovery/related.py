@@ -69,6 +69,7 @@ def assemble_related_results(db: Session, run_id: str) -> RelatedResultsView:
             "raw": run.candidate_count_raw,
             "after_dedupe": run.candidate_count_after_dedupe,
             "after_filter": run.candidate_count_after_filter,
+            "off_topic": run.candidate_count_off_topic,
         },
         extra_citation_hop_used=run.extra_citation_hop_used,
         weights_version=weights_version,
