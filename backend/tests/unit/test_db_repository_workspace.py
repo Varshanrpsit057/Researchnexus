@@ -137,6 +137,99 @@ def test_delete_workspace_cascades_papers_and_clears_trail_membership(db: Sessio
     assert edge.workspace_id is None and edge.owner_id is None
 
 
+# --- one run imported into several workspaces (migration 0014) --------------
+
+
+def _run_with_edge(db: Session, *, state: UserState = UserState.PENDING) -> tuple[str, str]:
+    uid = _user(db)
+    seed = _paper(db, "Seed")
+    tgt = _paper(db, "Target")
+    repo.create_search_run(db, SearchRun(run_id="run_1", seed_paper_id=seed))
+    edge = TrailEdge(
+        edge_id="edge_1",
+        run_id="run_1",
+        source_paper_id=seed,
+        target_paper_id=tgt,
+        relationship_type=RelationshipType.SIMILAR,
+        detection_method=DetectionMethod.RULE,
+        evidence=[Evidence(span=SourceSpan(paper_id=tgt, quote="q"), role="target_claim")],
+        confidence=Confidence.MEDIUM,
+    )
+    edge.user_state = state.value
+    repo.save_trail_edges(db, "run_1", [edge])
+    repo.create_workspace(db, _ws(uid, seed, wid="ws_1", run_id="run_1"))
+    repo.create_workspace(db, _ws(uid, seed, wid="ws_2", run_id="run_1"))
+    return uid, seed
+
+
+def test_a_second_workspace_gets_its_own_unreviewed_copy_and_the_first_keeps_its_edge(db: Session) -> None:
+    uid, _ = _run_with_edge(db)
+    assert repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid) == 1
+    repo.accept_reject_workspace_edge(db, "ws_1", uid, "edge_1", UserState.ACCEPTED)
+
+    assert repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid) == 1
+
+    [first] = repo.get_workspace_trail_edges(db, "ws_1")
+    [second] = repo.get_workspace_trail_edges(db, "ws_2")
+    assert first.edge_id == "edge_1" and first.user_state == "accepted"  # not moved, not reset
+    assert second.edge_id != "edge_1" and second.user_state == "pending"
+    assert second.evidence == first.evidence and second.relationship_type == first.relationship_type
+    row = db.get(PaperRelationshipORM, second.edge_id)
+    assert row is not None and row.copied_from == "edge_1"
+
+
+def test_attaching_a_run_twice_to_the_same_workspace_adds_nothing(db: Session) -> None:
+    uid, _ = _run_with_edge(db)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid)
+    assert repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid) == 0
+    assert repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid) == 0
+    assert db.query(PaperRelationshipORM).count() == 2
+
+
+def test_run_scoped_reads_see_the_runs_own_trail_not_workspace_copies(db: Session) -> None:
+    uid, _ = _run_with_edge(db)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid)
+    [copy] = repo.get_workspace_trail_edges(db, "ws_2")
+    repo.accept_reject_workspace_edge(db, "ws_2", uid, copy.edge_id, UserState.REJECTED)
+
+    assert [e.edge_id for e in repo.get_trail_edges(db, "run_1")] == ["edge_1"]
+    # a rejection in one workspace's copy does not stop the run proposing the edge
+    assert repo.get_rejected_trail_keys(db, "run_1") == set()
+
+
+def test_rebuilding_a_runs_trail_keeps_its_edges_in_their_workspaces(db: Session) -> None:
+    uid, seed = _run_with_edge(db)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid)
+    repo.accept_reject_workspace_edge(db, "ws_1", uid, "edge_1", UserState.ACCEPTED)
+
+    # the trail pipeline re-saves the run (its edges come back with no workspace)
+    rebuilt = repo.get_trail_edges(db, "run_1")[0].model_copy(update={"workspace_id": None, "rule_fired": "rebuilt"})
+    repo.save_trail_edges(db, "run_1", [rebuilt])
+
+    [first] = repo.get_workspace_trail_edges(db, "ws_1")
+    assert first.edge_id == "edge_1" and first.rule_fired == "rebuilt" and first.user_state == "accepted"
+    assert len(repo.get_workspace_trail_edges(db, "ws_2")) == 1  # the copy is left alone
+
+
+def test_deleting_a_workspace_drops_its_copies_and_releases_its_primaries_unreviewed(db: Session) -> None:
+    uid, _ = _run_with_edge(db)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_1", owner_id=uid)
+    repo.attach_run_edges_to_workspace(db, run_id="run_1", workspace_id="ws_2", owner_id=uid)
+    repo.accept_reject_workspace_edge(db, "ws_1", uid, "edge_1", UserState.REJECTED)
+    [copy] = repo.get_workspace_trail_edges(db, "ws_2")
+
+    assert repo.delete_workspace(db, "ws_2", uid) is True
+    assert db.get(PaperRelationshipORM, copy.edge_id) is None
+    assert [e.user_state for e in repo.get_workspace_trail_edges(db, "ws_1")] == ["rejected"]
+
+    assert repo.delete_workspace(db, "ws_1", uid) is True
+    primary = db.get(PaperRelationshipORM, "edge_1")
+    assert primary is not None and primary.workspace_id is None and primary.user_state == "pending"
+
+
 def test_add_get_remove_workspace_paper(db: Session) -> None:
     uid = _user(db)
     seed = _paper(db, "Seed")

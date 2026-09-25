@@ -16,7 +16,8 @@ stand-in; Phase 9 swaps in the FAISS-backed implementation behind the same
 `WorkspaceChunkIndex` protocol.
 
 `get_graph` (Phase 13) rebuilds the workspace's `ResearchGraph` from its
-current papers and non-rejected Phase 7 trail edges on every read and
+current papers and non-rejected Phase 7 trail edges (with the papers those
+edges reach, members or not) on every read and
 re-persists it (`workspaces.graph_json`) -- the graph has no state of its
 own beyond those two already-authoritative sources, so a fresh, deterministic
 rebuild is simpler and safer than an incremental diff and is automatically
@@ -51,7 +52,7 @@ from app.domain.workspace import (
 )
 from app.jobs.runner import new_id
 from app.retrieval.workspace_index import get_workspace_index
-from app.services.graph.builder import build_graph
+from app.services.graph.builder import PaperDetails, build_graph
 
 
 class WorkspaceNotFound(Exception):
@@ -132,9 +133,12 @@ def create_workspace(
     # database's own FOREIGN KEY constraint failure as an unhandled 500
     # instead of the workspace being created without that historical link,
     # same as it already degrades when there is no import_run_id at all.
+    # Another user's run is treated exactly like a missing one: its trail is
+    # theirs (tenant isolation), so nothing of it is imported.
     verified_run_id: str | None = None
-    if req.import_run_id is not None and repo.get_search_run(db, req.import_run_id) is not None:
-        verified_run_id = req.import_run_id
+    run = repo.get_search_run(db, req.import_run_id) if req.import_run_id is not None else None
+    if run is not None and run.owner_id in (None, owner.id):
+        verified_run_id = run.run_id
 
     workspace_id = new_id("ws")
     seed_paper = WorkspacePaper(
@@ -297,27 +301,56 @@ def grouped_trail(
 ) -> dict:
     ws = _require_workspace(db, owner, workspace_id)
     groups: dict[str, list[dict]] = {rt.value: [] for rt in RelationshipType}
+    # Each edge's rule fired on the target's measured ranking signals; they
+    # live on its run's ranked papers, looked up once per run.
+    rankings: dict[str, dict[str, RankedPaper]] = {}
+
+    def ranking_for(run_id: str, paper_id: str) -> RankedPaper | None:
+        if run_id not in rankings:
+            paper_of = repo.get_search_candidate_paper_ids(db, run_id)
+            rankings[run_id] = {
+                paper_of[r.candidate_id]: r for r in repo.get_ranked_papers(db, run_id) if r.candidate_id in paper_of
+            }
+        return rankings[run_id].get(paper_id)
+
     for edge in repo.get_workspace_trail_edges(db, workspace_id):
         if state is None and edge.user_state == UserState.REJECTED.value:
             continue  # rejected edges are hidden unless explicitly asked for
-        if state is not None and edge.user_state != state:
+        if state not in (None, "all") and edge.user_state != state:
             continue
         if type_filter and edge.relationship_type.value != type_filter:
             continue
         if band and edge.confidence.value != band:
             continue
         target = repo.get_paper(db, edge.target_paper_id)
+        ranked = ranking_for(edge.run_id, edge.target_paper_id)
         groups[edge.relationship_type.value].append(
             {
                 "target": {
                     "id": edge.target_paper_id,
                     "title": target.title if target else None,
                     "year": target.year if target else None,
+                    "authors": list(target.authors or []) if target else [],
+                    "venue": target.venue if target else None,
                 },
                 "edge": edge.model_dump(mode="json"),
+                # None when the edge's run has no ranking for it -- absent, never invented
+                "ranking": {
+                    "final_rank": ranked.final_rank,
+                    "band": ranked.band.value,
+                    "signals": ranked.signals.model_dump(exclude_none=True),
+                }
+                if ranked is not None
+                else None,
             }
         )
-    return {"seed_paper_id": ws.seed_paper_id, "groups": groups}
+    seed = repo.get_paper(db, ws.seed_paper_id)
+    return {
+        "seed_paper_id": ws.seed_paper_id,
+        # the chain starts here: every edge runs from the seed to a target
+        "seed": {"id": ws.seed_paper_id, "title": seed.title if seed else None, "year": seed.year if seed else None},
+        "groups": groups,
+    }
 
 
 def set_edge_state(
@@ -337,12 +370,19 @@ def set_edge_state(
 
 def get_graph(db: Session, *, owner: User, workspace_id: str) -> ResearchGraph:
     ws = _require_workspace(db, owner, workspace_id)
-    titles: dict[str, str] = {}
-    for p in ws.papers:
-        paper = repo.get_paper(db, p.paper_id)
-        titles[p.paper_id] = paper.title if paper is not None else p.paper_id
     trail_edges = repo.get_workspace_trail_edges(db, workspace_id)
-    graph = build_graph(ws, trail_edges, titles)
+    # members, plus the papers at the far end of the workspace's trail edges
+    paper_ids = {p.paper_id for p in ws.papers}
+    paper_ids.update(pid for e in trail_edges for pid in (e.source_paper_id, e.target_paper_id))
+    titles: dict[str, str] = {}
+    details: dict[str, PaperDetails] = {}
+    for pid in paper_ids:
+        paper = repo.get_paper(db, pid)
+        if paper is None:
+            continue
+        titles[pid] = paper.title
+        details[pid] = PaperDetails(year=paper.year, authors=list(paper.authors or []), venue=paper.venue)
+    graph = build_graph(ws, trail_edges, titles, details)
     repo.set_workspace_graph(db, workspace_id, owner.id, graph)
     return graph
 

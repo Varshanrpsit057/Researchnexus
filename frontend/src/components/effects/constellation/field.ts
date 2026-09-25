@@ -32,6 +32,48 @@ const ACTIVATION_DECAY = 1.6;
 
 export type Rgba = readonly [number, number, number, number];
 
+/** A point the field condenses onto: a research-graph node's centre and
+ * drawn radius, in viewport CSS pixels. */
+export interface MorphTarget {
+  x: number;
+  y: number;
+  r: number;
+}
+
+/** The morph timeline, in seconds from the moment the targets arrive. The
+ * graph page runs its own DOM timeline (nodes emerging, edges drawing)
+ * against the same clock, so the two meet exactly. */
+export const MORPH = {
+  /** pulses and flow speed up, then settle */
+  energize: [0, 0.45, 1.4, 2.4],
+  /** anchors and their recruits travel onto the targets */
+  converge: [0.3, 1.7],
+  /** links not touching a converging node dim to the calm level */
+  fade: [0.45, 1.6],
+  /** the converged knots dissolve under the drawn graph */
+  handoff: [2.2, 2.9],
+  /** leaving the graph: back to the full field */
+  release: 0.9,
+  /** freed particles fade back in, at home, over this long */
+  recover: 2.2,
+} as const;
+/** Link level kept while a graph is on screen: the field stays alive behind it, quieter. */
+export const CALM_LINK = 0.3;
+const CALM_NODE_RATIO = 0.6;
+const RECRUIT_RADIUS = 340;
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const easeInOutCubic = (v: number) => (v < 0.5 ? 4 * v * v * v : 1 - Math.pow(-2 * v + 2, 3) / 2);
+const easeOutCubic = (v: number) => 1 - Math.pow(1 - v, 3);
+
+/** 0 -> 1 -> 0 envelope over [a, b, c, d]. */
+function envelope(u: number, [a, b, c, d]: readonly number[]): number {
+  if (u <= a || u >= d) return 0;
+  if (u < b) return easeOutCubic((u - a) / (b - a));
+  if (u <= c) return 1;
+  return 1 - easeInOutCubic((u - c) / (d - c));
+}
+
 // Colours are rounded to three decimals exactly as the Canvas 2D style
 // strings are, so both renderers use the same values.
 const round3 = (v: number) => Number(v.toFixed(3));
@@ -171,6 +213,12 @@ export interface Field {
   build(width: number, height: number): void;
   /** Advance by `dt` seconds of motion (0 for a still frame) and fill `frame`. */
   step(now: number, dt: number, pointer: { x: number; y: number }): Frame;
+  /** Condense onto these points (see MORPH), then stay calm until `release`. */
+  morph(targets: MorphTarget[]): void;
+  /** Back to the full field, from a morph or its calm aftermath. */
+  release(): void;
+  /** Still frames only: jump straight to (or out of) the calm level. */
+  calmNow(on: boolean): void;
 }
 
 export function createField(random: () => number = Math.random): Field {
@@ -224,6 +272,125 @@ export function createField(random: () => number = Math.random): Field {
     glows: new Items(4),
   };
 
+  // --- morph: the field condensing into a research graph -------------------
+  // Each target takes one "anchor" (the nearest glowing major node, which
+  // becomes the graph node) and a few "recruits" (nearby nodes that swirl in
+  // around it). Morph particles are driven by the timeline instead of the
+  // flow; afterwards they dissolve and fade back in at home, so the field's
+  // density is never left disturbed.
+  let fade = new Float32Array(0); // per node, 1 = fully drawn
+  let role = new Uint8Array(0); // 0 free, 1 anchor, 2 recruit
+  let mNode = new Int32Array(0);
+  let mOx = new Float32Array(0); // origin, world coords
+  let mOy = new Float32Array(0);
+  let mTx = new Float32Array(0); // target centre, screen coords
+  let mTy = new Float32Array(0);
+  let mAng = new Float32Array(0); // recruit's slot on the ring around its target
+  let mRad = new Float32Array(0);
+  let mCount = 0;
+  let pendingTargets: MorphTarget[] | null = null;
+  let pendingRelease = false;
+  let morphT0 = -1;
+  let flashed = false;
+  // unrelated-link level over time: eases from `from` to `to`
+  const calm = { from: 1, to: 1, t0: 0, dur: 0 };
+  const calmAt = (t: number) => calm.from + (calm.to - calm.from) * easeInOutCubic(calm.dur > 0 ? clamp01((t - calm.t0) / calm.dur) : 1);
+
+  function restoreMorphNodes() {
+    for (let m = 0; m < mCount; m++) {
+      const i = mNode[m];
+      if (i >= n) continue;
+      px[i] = mOx[m];
+      py[i] = mOy[m];
+      role[i] = 0;
+      fade[i] = 0;
+    }
+    mCount = 0;
+  }
+
+  function startMorph(t: number, targets: MorphTarget[], parX: number, parY: number) {
+    restoreMorphNodes();
+    const perTarget = width < 640 ? 5 : 8;
+    const cap = targets.length * (1 + perTarget);
+    mNode = new Int32Array(cap);
+    mOx = new Float32Array(cap);
+    mOy = new Float32Array(cap);
+    mTx = new Float32Array(cap);
+    mTy = new Float32Array(cap);
+    mAng = new Float32Array(cap);
+    mRad = new Float32Array(cap);
+    mCount = 0;
+    const add = (i: number, r: number, tg: MorphTarget, ang: number, rad: number) => {
+      role[i] = r;
+      mNode[mCount] = i;
+      mOx[mCount] = px[i];
+      mOy[mCount] = py[i];
+      mTx[mCount] = tg.x;
+      mTy[mCount] = tg.y;
+      mAng[mCount] = ang;
+      mRad[mCount] = rad;
+      mCount++;
+    };
+    const d2To = (i: number, tg: MorphTarget) => {
+      const dx = px[i] + parX - tg.x;
+      const dy = py[i] + parY - tg.y;
+      return dx * dx + dy * dy;
+    };
+    // anchors: the nearest free glowing node to each target
+    for (const tg of targets) {
+      let best = -1;
+      let bestD = Infinity;
+      for (let s = 0; s < majors.length; s++) {
+        const i = majors[s];
+        if (role[i]) continue;
+        const d = d2To(i, tg);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best < 0) {
+        for (let i = 0; i < n; i++) {
+          if (role[i]) continue;
+          const d = d2To(i, tg);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        }
+      }
+      if (best >= 0) add(best, 1, tg, 0, 0);
+    }
+    // recruits: the few nearest free nodes within reach of each target
+    const near = new Int32Array(perTarget);
+    const nearD = new Float32Array(perTarget);
+    const reach2 = RECRUIT_RADIUS * RECRUIT_RADIUS;
+    for (const tg of targets) {
+      let found = 0;
+      for (let i = 0; i < n; i++) {
+        if (role[i]) continue;
+        const d = d2To(i, tg);
+        if (d > reach2 || (found === perTarget && d >= nearD[found - 1])) continue;
+        let k = found < perTarget ? found++ : perTarget - 1;
+        while (k > 0 && nearD[k - 1] > d) {
+          near[k] = near[k - 1];
+          nearD[k] = nearD[k - 1];
+          k--;
+        }
+        near[k] = i;
+        nearD[k] = d;
+      }
+      for (let k = 0; k < found; k++) {
+        const i = near[k];
+        // keep the direction it arrives from; settle on a ring around the node
+        add(i, 2, tg, Math.atan2(py[i] + parY - tg.y, px[i] + parX - tg.x), tg.r + 6 + random() * 16);
+      }
+    }
+    morphT0 = t;
+    flashed = false;
+    Object.assign(calm, { from: calmAt(t), to: CALM_LINK, t0: t + MORPH.fade[0], dur: MORPH.fade[1] - MORPH.fade[0] });
+  }
+
   function growLinks() {
     linkCap *= 2;
     const a = new Int32Array(linkCap);
@@ -269,6 +436,11 @@ export function createField(random: () => number = Math.random): Field {
     twSpeed = new Float32Array(target);
     activation = new Float32Array(target);
     major = new Uint8Array(target);
+    // a rebuild (resize) drops any morph in flight; the calm level carries over
+    fade = new Float32Array(target).fill(1);
+    role = new Uint8Array(target);
+    mCount = 0;
+    morphT0 = -1;
 
     let placed = 0;
     for (let guard = 0; placed < target && guard < target * 40; guard++) {
@@ -341,9 +513,31 @@ export function createField(random: () => number = Math.random): Field {
     const parY = (pointer.y - 0.5) * 10;
     const moving = dt > 0;
 
+    // 0. morph bookkeeping: start or end one, and where its timeline is
+    if (pendingTargets) {
+      startMorph(t, pendingTargets, parX, parY);
+      pendingTargets = null;
+    }
+    if (pendingRelease) {
+      pendingRelease = false;
+      restoreMorphNodes();
+      morphT0 = -1;
+      Object.assign(calm, { from: calmAt(t), to: 1, t0: t, dur: MORPH.release });
+    }
+    const u = morphT0 >= 0 ? t - morphT0 : -1;
+    const surge = u >= 0 ? envelope(u, MORPH.energize) : 0;
+    const cLink = calmAt(t);
+    const cNode = 1 - (1 - cLink) * CALM_NODE_RATIO;
+    // while calm, the field also pulses less; during the surge, far more
+    const energy = surge > 0 ? 1 + 2.4 * surge : 1 - 0.45 * ((1 - cLink) / (1 - CALM_LINK));
+    const converge = u >= 0 ? easeInOutCubic(clamp01((u - MORPH.converge[0]) / (MORPH.converge[1] - MORPH.converge[0]))) : 0;
+
     // 1. advect every node along the slowly evolving divergence-free flow
     if (moving) {
+      const speed = 1 + 0.9 * surge;
       for (let i = 0; i < n; i++) {
+        if (role[i]) continue; // morph particles follow the timeline instead
+        if (fade[i] < 1) fade[i] = Math.min(1, fade[i] + dt / MORPH.recover);
         const x = px[i];
         const y = py[i];
         let vx = driftX[i];
@@ -354,14 +548,41 @@ export function createField(random: () => number = Math.random): Field {
           vx += c * f.uy;
           vy -= c * f.ux;
         }
-        let nx = x + vx * dt;
-        let ny = y + vy * dt;
+        let nx = x + vx * dt * speed;
+        let ny = y + vy * dt * speed;
         if (nx < -WORLD_MARGIN) nx += worldW;
         else if (nx >= worldW - WORLD_MARGIN) nx -= worldW;
         if (ny < -WORLD_MARGIN) ny += worldH;
         else if (ny >= worldH - WORLD_MARGIN) ny -= worldH;
         px[i] = nx;
         py[i] = ny;
+      }
+    }
+
+    // 1b. morph particles: onto their targets, then dissolve and go home
+    if (mCount > 0 && u >= 0) {
+      const dissolve = u < MORPH.handoff[0] ? 1 : 1 - easeOutCubic(clamp01((u - MORPH.handoff[0]) / (MORPH.handoff[1] - MORPH.handoff[0])));
+      const swirl = Math.max(0, u - MORPH.converge[0]) * 0.5;
+      const flash = !flashed && u >= MORPH.converge[1];
+      for (let m = 0; m < mCount; m++) {
+        const i = mNode[m];
+        let tx = mTx[m] - parX;
+        let ty = mTy[m] - parY;
+        if (role[i] === 2) {
+          const a = mAng[m] + swirl;
+          tx += Math.cos(a) * mRad[m];
+          ty += Math.sin(a) * mRad[m];
+        } else if (flash) {
+          activation[i] = 1; // the anchor ignites as the graph node emerges on it
+        }
+        px[i] = mOx[m] + (tx - mOx[m]) * converge;
+        py[i] = mOy[m] + (ty - mOy[m]) * converge;
+        fade[i] = dissolve;
+      }
+      if (flash) flashed = true;
+      if (u >= MORPH.handoff[1]) {
+        restoreMorphNodes();
+        morphT0 = -1;
       }
     }
 
@@ -441,10 +662,11 @@ export function createField(random: () => number = Math.random): Field {
 
     // 4. pulses: activations riding the curved backbone, hop by hop
     if (moving && majors.length > 0) {
-      pulseAccum += dt * pulseRate;
+      pulseAccum += dt * pulseRate * energy;
+      const pulseCap = maxPulses * Math.max(1, energy);
       while (pulseAccum >= 1) {
         pulseAccum -= 1;
-        if (pulses.length >= maxPulses) continue;
+        if (pulses.length >= pulseCap) continue;
         const s = (random() * majors.length) | 0;
         if (adjCount[s] === 0) continue;
         pulses.push({
@@ -499,7 +721,12 @@ export function createField(random: () => number = Math.random): Field {
       // so dense pockets never pop or flicker as neighbours come and go
       const crowd = Math.max(degree[i * 2 + cls], degree[j * 2 + cls]);
       const soft = LINK_SOFT_DEGREE[cls];
-      const level = (1 - q * q) * (crowd > soft ? soft / crowd : 1);
+      let level = (1 - q * q) * (crowd > soft ? soft / crowd : 1);
+      // links into a converging knot stay lit; everything else calms down
+      level = role[i] | role[j] ? Math.min(1, level * 1.35) : level * cLink;
+      const fi = fade[i];
+      const fj = fade[j];
+      if (fi < 1 || fj < 1) level *= fi < fj ? fi : fj;
       if (level < 0.06) continue;
       const code = cls * ALPHA_BUCKETS + Math.min(ALPHA_BUCKETS - 1, (level * ALPHA_BUCKETS) | 0);
       if (cls === 1) {
@@ -519,7 +746,8 @@ export function createField(random: () => number = Math.random): Field {
       const x = px[i] + parX;
       const y = py[i] + parY;
       if (x < -20 || x > width + 20 || y < -20 || y > height + 20) continue;
-      H.push3(x, y, radius[i] * 6.4);
+      const size = radius[i] * 6.4 * (role[i] ? 1.25 : cNode) * fade[i];
+      if (size > 1) H.push3(x, y, size);
     }
 
     // 7. nodes, with their size-class x brightness-bucket style code
@@ -529,9 +757,14 @@ export function createField(random: () => number = Math.random): Field {
       const x = px[i] + parX;
       const y = py[i] + parY;
       if (x < -6 || x > width + 6 || y < -6 || y > height + 6) continue;
+      const f = fade[i];
+      if (f < 0.02) continue;
       const tw = 0.7 + 0.3 * Math.sin(t * twSpeed[i] + twPhase[i]);
-      const level = Math.min(0.999, bright[i] * tw + activation[i] * 0.6);
-      N.push4(x, y, radius[i] + activation[i] * 1.8, major[i] * NODE_BUCKETS + ((level * NODE_BUCKETS) | 0));
+      const lift = role[i] ? 1.15 : cNode;
+      const level = Math.min(0.999, (bright[i] * tw * lift + activation[i] * 0.6) * f);
+      // a fading node shrinks away: the colour buckets have an alpha floor
+      const grow = role[i] === 1 ? 2.2 * converge : 0;
+      N.push4(x, y, (radius[i] + activation[i] * 1.8 + grow) * (f < 1 ? f : 1), major[i] * NODE_BUCKETS + ((level * NODE_BUCKETS) | 0));
     }
 
     // 8. travelling pulses: a fading trail of small dots, then additive glows
@@ -574,6 +807,14 @@ export function createField(random: () => number = Math.random): Field {
       G.push4(x, y, radius[i] * 5 + a * 30, Math.min(1, a * 0.85));
     }
     for (let h = 0; h < heads.length; h += 2) G.push4(heads[h], heads[h + 1], HEAD_GLOW_SIZE, HEAD_GLOW_ALPHA);
+    // each converging anchor gathers a glow: the knot the graph node emerges from
+    if (mCount > 0 && converge > 0) {
+      for (let m = 0; m < mCount; m++) {
+        const i = mNode[m];
+        if (role[i] !== 1) continue;
+        G.push4(px[i] + parX, py[i] + parY, 14 + 24 * converge, Math.min(1, (0.2 + 0.65 * converge) * fade[i]));
+      }
+    }
 
     for (let s = 0; s < majors.length; s++) {
       const i = majors[s];
@@ -582,5 +823,23 @@ export function createField(random: () => number = Math.random): Field {
     return frame;
   }
 
-  return { frame, build, step };
+  return {
+    frame,
+    build,
+    step,
+    morph(targets) {
+      pendingTargets = targets;
+      pendingRelease = false;
+    },
+    release() {
+      pendingTargets = null;
+      pendingRelease = true;
+    },
+    calmNow(on) {
+      restoreMorphNodes();
+      fade.fill(1);
+      morphT0 = -1;
+      Object.assign(calm, { from: on ? CALM_LINK : 1, to: on ? CALM_LINK : 1, t0: 0, dur: 0 });
+    },
+  };
 }

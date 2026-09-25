@@ -40,4 +40,8 @@ class ChatMessage(BaseModel):
     tokens_completion: int = 0
     faithfulness: float | None = None
     answerable: bool = True
+    # assistant turns: why the answer looks the way it does
+    suggestion: str | None = None  # what to try instead, when not answerable
+    unsupported_dropped: int = 0  # sentences cut for lacking a supporting source
+    warnings: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)

@@ -8,10 +8,11 @@ concern, separate from parsing logic).
 
 from __future__ import annotations
 
+import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -724,12 +725,21 @@ def _trail_edge_domain_from_orm(row: PaperRelationshipORM) -> TrailEdge:
     )
 
 
+def _primary_rows(run_id: str) -> Select[tuple[PaperRelationshipORM]]:
+    """A run's own trail rows, not the copies later workspaces hold."""
+    return select(PaperRelationshipORM).where(
+        PaperRelationshipORM.run_id == run_id, PaperRelationshipORM.copied_from.is_(None)
+    )
+
+
 def save_trail_edges(db: Session, run_id: str, edges: list[TrailEdge]) -> None:
     """Replace this run's non-rejected trail edges. Rows a user has
     `rejected` are kept untouched (the builder already skips those keys, so
-    a rejected edge is never re-proposed on a re-run)."""
+    a rejected edge is never re-proposed on a re-run). Only the run's
+    primaries are touched: a rebuild never detaches a primary from the
+    workspace that owns it, and never touches a workspace's own copies."""
     keep_ids = {e.edge_id for e in edges}
-    for row in db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.run_id == run_id)).scalars().all():
+    for row in db.execute(_primary_rows(run_id)).scalars().all():
         if row.user_state == UserState.REJECTED.value:
             continue
         if row.id not in keep_ids:
@@ -739,7 +749,6 @@ def save_trail_edges(db: Session, run_id: str, edges: list[TrailEdge]) -> None:
         existing = db.get(PaperRelationshipORM, edge.edge_id)
         payload = dict(
             run_id=edge.run_id,
-            workspace_id=edge.workspace_id,
             source_paper_id=edge.source_paper_id,
             target_paper_id=edge.target_paper_id,
             relationship_type=edge.relationship_type.value,
@@ -752,7 +761,15 @@ def save_trail_edges(db: Session, run_id: str, edges: list[TrailEdge]) -> None:
             confidence_basis=edge.confidence_basis,
         )
         if existing is None:
-            db.add(PaperRelationshipORM(id=edge.edge_id, user_state=edge.user_state, created_at=edge.created_at, **payload))
+            db.add(
+                PaperRelationshipORM(
+                    id=edge.edge_id,
+                    workspace_id=edge.workspace_id,
+                    user_state=edge.user_state,
+                    created_at=edge.created_at,
+                    **payload,
+                )
+            )
         elif existing.user_state != UserState.REJECTED.value:
             for key, value in payload.items():
                 setattr(existing, key, value)
@@ -760,11 +777,12 @@ def save_trail_edges(db: Session, run_id: str, edges: list[TrailEdge]) -> None:
 
 
 def get_trail_edges(db: Session, run_id: str) -> list[TrailEdge]:
+    """The run's own trail (its primaries), one row per connection."""
     rows = (
         db.execute(
-            select(PaperRelationshipORM)
-            .where(PaperRelationshipORM.run_id == run_id)
-            .order_by(PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type)
+            _primary_rows(run_id).order_by(
+                PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type
+            )
         )
         .scalars()
         .all()
@@ -776,6 +794,7 @@ def get_rejected_trail_keys(db: Session, run_id: str) -> set[tuple[str, str]]:
     rows = db.execute(
         select(PaperRelationshipORM.target_paper_id, PaperRelationshipORM.relationship_type).where(
             PaperRelationshipORM.run_id == run_id,
+            PaperRelationshipORM.copied_from.is_(None),
             PaperRelationshipORM.user_state == UserState.REJECTED.value,
         )
     ).all()
@@ -967,15 +986,20 @@ def delete_workspace(db: Session, workspace_id: str, owner_id: str) -> bool:
     if row is None:
         return False
     # paper_relationships.workspace_id is a plain nullable column (no FK
-    # cascade); release membership so orphaned trail rows do not point at a
-    # dead workspace. The edges stay run-scoped.
+    # cascade). The workspace's own copies go with it; primaries it owned
+    # are released back to the run, without its review decisions, so the
+    # next workspace to import the run starts its own review.
     for edge in (
         db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.workspace_id == workspace_id))
         .scalars()
         .all()
     ):
+        if edge.copied_from is not None:
+            db.delete(edge)
+            continue
         edge.workspace_id = None
         edge.owner_id = None
+        edge.user_state = UserState.PENDING.value
     db.delete(row)
     db.commit()
     return True
@@ -1083,21 +1107,57 @@ def workspace_child_counts(db: Session, workspace_id: str) -> dict[str, int]:
     }
 
 
+def _copied_edge_id(primary_id: str, workspace_id: str) -> str:
+    digest = hashlib.sha256(f"{primary_id}|{workspace_id}".encode()).hexdigest()
+    return f"edge_{digest[:20]}"
+
+
 def attach_run_edges_to_workspace(
     db: Session, *, run_id: str, workspace_id: str, owner_id: str
 ) -> int:
-    """Stamp workspace_id / owner_id onto the Phase 7 trail rows for a run,
-    making them the workspace trail (GET /workspaces/{id}/trail)."""
-    rows = (
-        db.execute(select(PaperRelationshipORM).where(PaperRelationshipORM.run_id == run_id))
-        .scalars()
-        .all()
-    )
-    for row in rows:
-        row.workspace_id = workspace_id
-        row.owner_id = owner_id
+    """Give a workspace the run's Phase 7 trail (GET /workspaces/{id}/trail).
+
+    A primary no workspace holds yet is stamped with this workspace. One
+    another workspace already holds is *copied* for this one -- never moved:
+    the copy starts unreviewed, and the other workspace keeps its rows and
+    its decisions. Idempotent; returns how many edges the workspace gained.
+    """
+    attached = 0
+    for row in db.execute(_primary_rows(run_id)).scalars().all():
+        if row.workspace_id == workspace_id:
+            continue
+        if row.workspace_id is None:
+            row.workspace_id = workspace_id
+            row.owner_id = owner_id
+            attached += 1
+            continue
+        copy_id = _copied_edge_id(row.id, workspace_id)
+        if db.get(PaperRelationshipORM, copy_id) is not None:
+            continue
+        db.add(
+            PaperRelationshipORM(
+                id=copy_id,
+                run_id=row.run_id,
+                workspace_id=workspace_id,
+                owner_id=owner_id,
+                copied_from=row.id,
+                source_paper_id=row.source_paper_id,
+                target_paper_id=row.target_paper_id,
+                relationship_type=row.relationship_type,
+                detection_method=row.detection_method,
+                rule_fired=row.rule_fired,
+                llm_confirmed=row.llm_confirmed,
+                evidence=list(row.evidence or []),
+                supporting_references=list(row.supporting_references or []),
+                confidence=row.confidence,
+                confidence_basis=dict(row.confidence_basis or {}),
+                user_state=UserState.PENDING.value,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        attached += 1
     db.commit()
-    return len(rows)
+    return attached
 
 
 def get_workspace_trail_edges(db: Session, workspace_id: str) -> list[TrailEdge]:
@@ -1151,6 +1211,9 @@ def _chat_message_from_orm(row: ChatMessageORM) -> ChatMessage:
         tokens_completion=row.tokens_completion,
         faithfulness=row.faithfulness,
         answerable=row.answerable,
+        suggestion=row.suggestion,
+        unsupported_dropped=row.unsupported_dropped or 0,
+        warnings=list(row.warnings or []),
         created_at=row.created_at,
     )
 
@@ -1202,12 +1265,25 @@ def add_chat_message(db: Session, message: ChatMessage) -> ChatMessage:
             tokens_completion=message.tokens_completion,
             faithfulness=message.faithfulness,
             answerable=message.answerable,
+            suggestion=message.suggestion,
+            unsupported_dropped=message.unsupported_dropped,
+            warnings=list(message.warnings),
         )
     )
     db.commit()
     row = db.get(ChatMessageORM, message.message_id)
     assert row is not None
     return _chat_message_from_orm(row)
+
+
+def delete_chat_message(db: Session, message_id: str) -> None:
+    """Remove one message and the claims that grounded it (a regenerated answer)."""
+    for claim in db.execute(select(ClaimORM).where(ClaimORM.artefact_id == message_id)).scalars().all():
+        db.delete(claim)
+    row = db.get(ChatMessageORM, message_id)
+    if row is not None:
+        db.delete(row)
+    db.commit()
 
 
 def get_chat_messages(db: Session, session_id: str) -> list[ChatMessage]:
@@ -1260,13 +1336,16 @@ def save_claims(db: Session, claims: list[Claim]) -> None:
     db.commit()
 
 
+def _claim_order(claim_id: str) -> tuple[str, int]:
+    """Claim ids end in the sentence's index (`clm_<artefact>_<i>`); order by
+    that number, so an answer's 10th sentence never sorts before its 2nd."""
+    head, _, tail = claim_id.rpartition("_")
+    return (head, int(tail)) if tail.isdigit() else (claim_id, -1)
+
+
 def get_claims_for_artefact(db: Session, artefact_id: str) -> list[Claim]:
-    rows = (
-        db.execute(select(ClaimORM).where(ClaimORM.artefact_id == artefact_id).order_by(ClaimORM.id))
-        .scalars()
-        .all()
-    )
-    return [_claim_from_orm(r) for r in rows]
+    rows = db.execute(select(ClaimORM).where(ClaimORM.artefact_id == artefact_id)).scalars().all()
+    return [_claim_from_orm(r) for r in sorted(rows, key=lambda r: _claim_order(r.id))]
 
 
 def _citation_from_orm(row: CitationORM) -> Citation:

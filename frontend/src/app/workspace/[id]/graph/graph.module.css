@@ -1,0 +1,146 @@
+/* The research graph's own motion. The entrance is timed against the
+   background's morph (constellation/field.ts MORPH): every delay below is a
+   --delay custom property set per element from that shared clock. */
+
+.node {
+  transition: transform 640ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nodeBody {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* a node condenses out of the converged knot */
+.emerge {
+  animation: emerge 560ms cubic-bezier(0.16, 1, 0.3, 1) var(--delay) both;
+}
+
+@keyframes emerge {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+    filter: blur(3px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* an edge draws itself as one glowing stroke ... */
+.draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: draw 720ms cubic-bezier(0.65, 0, 0.35, 1) var(--delay) forwards,
+    drawOut 360ms ease-out calc(var(--delay) + 620ms) forwards;
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes drawOut {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ... then settles into its relationship's line style */
+.styledIn {
+  animation: styledIn 360ms ease-out calc(var(--delay) + 560ms) both;
+}
+
+@keyframes styledIn {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ambient: an activation pulse rides an accepted link now and then, the
+   same signal the background's backbone carries */
+.pulse {
+  stroke-dasharray: 0.035 1.2;
+  stroke-dashoffset: 0.04;
+  animation: pulse var(--cycle) linear var(--delay) infinite;
+}
+
+@keyframes pulse {
+  0% {
+    stroke-dashoffset: 0.04;
+  }
+  18%,
+  100% {
+    stroke-dashoffset: -1;
+  }
+}
+
+.breathe {
+  animation: breathe 5.2s ease-in-out infinite alternate;
+}
+
+@keyframes breathe {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fadeIn {
+  animation: fadeIn 220ms ease-out both;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+.dimmable {
+  transition: opacity 220ms ease-out;
+}
+
+.labels {
+  transition: opacity 180ms ease-out;
+}
+
+/* keyboard focus on an SVG node: a drawn ring, since outlines don't follow circles */
+.focusRing {
+  opacity: 0;
+}
+
+.nodeHit:focus {
+  outline: none;
+}
+
+.nodeHit:focus-visible .focusRing {
+  opacity: 1;
+}
+
+.grab {
+  cursor: grab;
+}
+
+.grabbing {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    display: none;
+  }
+  .breathe {
+    animation: none;
+    opacity: 0.85;
+  }
+  .node {
+    transition: none;
+  }
+}

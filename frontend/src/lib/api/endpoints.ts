@@ -10,6 +10,7 @@ import type {
   CitationFormat,
   CitationsResponse,
   ComparisonResponse,
+  EdgeUserState,
   DirectionsGenerateResponse,
   DiscoverJobResponse,
   DirectionsListResponse,
@@ -103,7 +104,8 @@ export const workspaces = {
     body: Partial<{ pinned: boolean; tags: string[]; note: string | null; order: number }>
   ) => apiFetch<WorkspacePaper>(`/api/v1/workspaces/${workspaceId}/papers/${paperId}`, { method: "PATCH", body }),
 
-  trail: (workspaceId: string, query?: { type?: string; band?: string; state?: string }) =>
+  // state: omitted = pending + accepted; "all" includes rejected edges too
+  trail: (workspaceId: string, query?: { type?: string; band?: string; state?: EdgeUserState | "all" }) =>
     apiFetch<GroupedTrail>(`/api/v1/workspaces/${workspaceId}/trail`, { query }),
   setEdgeState: (workspaceId: string, edgeId: string, user_state: "accepted" | "rejected" | "pending") =>
     apiFetch<TrailEdge>(`/api/v1/workspaces/${workspaceId}/trail/${edgeId}`, { method: "POST", body: { user_state } }),

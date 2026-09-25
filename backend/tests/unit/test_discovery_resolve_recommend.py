@@ -29,7 +29,7 @@ def _work(wid: str, title: str) -> dict[str, object]:
     return {"id": f"https://openalex.org/{wid}", "title": title, "publication_year": 2025}
 
 
-def _ctx(handler, seed: SeedView) -> StrategyContext:  # type: ignore[no-untyped-def]
+def _ctx(handler, seed: SeedView) -> StrategyContext:
     return StrategyContext(
         seed=seed,
         seed_chunks=[],

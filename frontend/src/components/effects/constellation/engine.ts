@@ -9,7 +9,7 @@
  *   it steps down to ~30 fps. The field itself -- node count, links, glow --
  *   never changes; the old approach of thinning the nodes did. */
 
-import { createField, seededRandom, type Frame } from "./field";
+import { createField, seededRandom, type Frame, type MorphTarget } from "./field";
 import { createCanvas2DRenderer, type Renderer } from "./render-2d";
 import { createWebGLRenderer } from "./render-gl";
 import type { AnyCanvas } from "./sprite";
@@ -33,6 +33,9 @@ export interface Engine {
   resize(width: number, height: number, dpr: number): void;
   pointer(x: number, y: number): void;
   setVisible(visible: boolean): void;
+  /** Condense the field onto a research graph's nodes (see field.ts MORPH). */
+  morph(targets: MorphTarget[]): void;
+  release(): void;
   stop(): void;
 }
 
@@ -162,6 +165,19 @@ export function startEngine(canvas: AnyCanvas, options: EngineOptions): Engine |
     pointer(x, y) {
       pointer.tx = x;
       pointer.ty = y;
+    },
+    morph(targets) {
+      // a still field cannot animate; it only quiets down behind the graph
+      if (still) {
+        field.calmNow(true);
+        drawStill();
+      } else field.morph(targets);
+    },
+    release() {
+      if (still) {
+        field.calmNow(false);
+        drawStill();
+      } else field.release();
     },
     setVisible(next) {
       visible = next;

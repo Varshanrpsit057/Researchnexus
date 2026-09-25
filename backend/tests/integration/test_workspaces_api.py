@@ -276,6 +276,9 @@ def test_trail_grouped_read_and_accept_reject(tmp_path: Path) -> None:
     assert client.get(f"/api/v1/workspaces/{wid}/trail", headers=_headers(token)).json()["groups"]["COMPETING"] == []
     shown = client.get(f"/api/v1/workspaces/{wid}/trail?state=rejected", headers=_headers(token)).json()
     assert len(shown["groups"]["COMPETING"]) == 1
+    # ?state=all returns every edge in one read, rejected included, each with its state
+    everything = client.get(f"/api/v1/workspaces/{wid}/trail?state=all", headers=_headers(token)).json()
+    assert [e["edge"]["user_state"] for e in everything["groups"]["COMPETING"]] == ["rejected"]
 
     assert client.get(f"/api/v1/workspaces/{wid}/trail?state=bogus", headers=_headers(token)).status_code == 422
     assert client.post(

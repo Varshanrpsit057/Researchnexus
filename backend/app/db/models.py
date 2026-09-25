@@ -26,6 +26,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -198,11 +199,26 @@ class RankedPaperORM(Base):
 
 
 class PaperRelationshipORM(Base):
+    """One typed trail edge. The trail pipeline writes one *primary* row per
+    (run, source, target, type); the first workspace to import the run owns
+    those rows, and every later workspace importing the same run gets its
+    own copy (`copied_from` = the primary's id), so each workspace keeps its
+    own connections and review decisions (migration 0014)."""
+
     __tablename__ = "paper_relationships"
     __table_args__ = (
+        # at most one row per connection per workspace ...
         UniqueConstraint(
+            "run_id", "source_paper_id", "target_paper_id", "relationship_type", "workspace_id",
+            name="ux_paper_rel_run_src_tgt_type_ws",
+        ),
+        # ... and exactly one primary per connection per run
+        Index(
+            "ux_paper_rel_primary",
             "run_id", "source_paper_id", "target_paper_id", "relationship_type",
-            name="ux_paper_rel_run_src_tgt_type",
+            unique=True,
+            sqlite_where=text("copied_from IS NULL"),
+            postgresql_where=text("copied_from IS NULL"),
         ),
         Index("ix_paper_relationships_workspace", "workspace_id"),
     )
@@ -211,6 +227,8 @@ class PaperRelationshipORM(Base):
     run_id: Mapped[str] = mapped_column(String(64), ForeignKey("search_runs.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # wired in Phase 8
     owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # a workspace's own copy of a run's primary edge; NULL on primaries
+    copied_from: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
     target_paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id"))
     relationship_type: Mapped[str] = mapped_column(String(32))
@@ -310,6 +328,10 @@ class ChatMessageORM(Base):
     tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
     faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
     answerable: Mapped[bool] = mapped_column(Boolean, default=True)
+    # an assistant turn's outcome beyond its text (migration 0015)
+    suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unsupported_dropped: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    warnings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

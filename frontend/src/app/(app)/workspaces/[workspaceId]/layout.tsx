@@ -77,6 +77,9 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
   const currentSlug = pathname === basePath ? "" : (pathname.slice(basePath.length + 1).split("/")[0] ?? "");
   // The overview itself is the cinematic /workspace/[id] page.
   const overviewPath = `/workspace/${workspaceId}`;
+  // sections that moved to the cinematic /workspace/[id]/... routes
+  const tabHref = (slug: string) =>
+    !slug ? overviewPath : slug === "trail" || slug === "graph" || slug === "chat" ? `/workspace/${workspaceId}/${slug}` : `${basePath}/${slug}`;
 
   return (
     <div className="space-y-6">
@@ -113,7 +116,7 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
         <span className="sr-only">Workspace section</span>
         <select
           value={currentSlug}
-          onChange={(e) => router.push(e.target.value ? `${basePath}/${e.target.value}` : overviewPath)}
+          onChange={(e) => router.push(tabHref(e.target.value))}
           className="h-10 w-full rounded-sm border border-border-strong bg-surface-raised px-3 text-sm font-medium text-ink"
         >
           {GROUPS.map((group) => (
@@ -136,7 +139,7 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
                 <p className="mb-1 px-4 font-mono text-[0.6875rem] uppercase tracking-wider text-ink-subtle">{group.label}</p>
                 <ul>
                   {group.tabs.map((tab) => {
-                    const href = tab.slug ? `${basePath}/${tab.slug}` : overviewPath;
+                    const href = tabHref(tab.slug);
                     const active = pathname === href;
                     return (
                       <li key={tab.slug || "overview"}>

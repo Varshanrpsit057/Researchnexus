@@ -43,6 +43,11 @@ class TrailContext:
     seed_datasets: list[tuple[str, SourceSpan | None]]
     seed_methods: list[str]
     seed_findings: list[tuple[str, SourceSpan | None]]
+    # for evidence selection (evidence.py): the seed's parsed reference list,
+    # and its research problem / methods with their verified source spans
+    seed_references: list[dict] = field(default_factory=list)
+    seed_problem: tuple[str, SourceSpan | None] | None = None
+    seed_method_spans: list[tuple[str, SourceSpan | None]] = field(default_factory=list)
 
 
 @dataclass

@@ -107,12 +107,12 @@ test.describe("Research workspace", () => {
     // accepted its edge, the second is still pending review.
     await expect(station(page, "Connections")).toContainText("2 connections");
     await expect(station(page, "Connections")).toContainText("1 awaiting review");
-    await expect(page.getByRole("link", { name: "Review connections" })).toHaveAttribute("href", `/workspaces/${workspaceId}/trail`);
+    await expect(page.getByRole("link", { name: "Review connections" })).toHaveAttribute("href", `/workspace/${workspaceId}/trail`);
     await expect(station(page, "Comparison")).toContainText("Not run yet");
-    await expect(page.getByRole("link", { name: /^Research trail/ })).toHaveAttribute("href", `/workspaces/${workspaceId}/trail`);
-    await expect(page.getByRole("link", { name: /^Research graph/ })).toHaveAttribute("href", `/workspaces/${workspaceId}/graph`);
+    await expect(page.getByRole("link", { name: /^Research trail/ })).toHaveAttribute("href", `/workspace/${workspaceId}/trail`);
+    await expect(page.getByRole("link", { name: /^Research graph/ })).toHaveAttribute("href", `/workspace/${workspaceId}/graph`);
     await expect(page.getByRole("link", { name: /^Citations/ })).toHaveAttribute("href", `/workspaces/${workspaceId}/citations`);
-    await expect(page.getByRole("link", { name: "Ask this workspace" })).toHaveAttribute("href", `/workspaces/${workspaceId}/chat`);
+    await expect(page.getByRole("link", { name: "Ask this workspace" })).toHaveAttribute("href", `/workspace/${workspaceId}/chat`);
 
     // 6. Add the remaining result from the workspace's own run.
     await page.getByRole("button", { name: "Add papers" }).click();

@@ -1,11 +1,28 @@
 """Multi-paper RAG chat (API spec §6 `POST /workspaces/{id}/chat`,
 `GET /workspaces/{id}/chat/sessions[/{sid}]`; Roadmap Phase 9).
 
-Streaming and non-streaming share one code path: the RAG pipeline produces
-a complete, verified `RagAnswer` (citations are known before the first
-token is rendered), then the SSE branch replays it as
-`token` / `citation` / `usage` / `done` events. A non-answerable turn emits
-a single `done` with `answerable:false` and bills no generation tokens.
+Streaming and non-streaming share one pipeline run. The RAG pipeline
+produces a complete, verified `RagAnswer` -- every sentence is checked
+against its source before any of it is shown -- so the SSE branch streams
+in two parts:
+
+- while the pipeline works: `status` events naming each stage as it starts
+  (searching, reading, writing, checking, rewriting);
+- then the verified answer, sentence by sentence: `token` events for a
+  sentence's words, immediately followed by that sentence's `citation`
+  (so a citation arrives exactly where it belongs in the text), then
+  `usage` and `done`. A failure mid-way is an `error` event.
+
+A turn is persisted only once it has an answer: the question, the answer,
+its claims, and the answer's outcome (suggestion when not answerable,
+sentences dropped for lacking support, warnings) are written together, so a
+failed attempt leaves nothing behind and retrying it cannot duplicate the
+question. `regenerate: true` re-answers a conversation's last question,
+replacing its answer.
+
+Session detail resolves every claim's supporting chunks into sources
+(paper, section, page, quote) from the stored chunks, so a reloaded
+conversation shows the same evidence as a live one.
 
 `mode:"themes"` currently falls back to normal QA with a warning -- the
 per-workspace GraphRAG route is Phase 13.
@@ -13,7 +30,10 @@ per-workspace GraphRAG route is Phase 13.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -23,19 +43,42 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import repository as repo
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.deps import CurrentUser
 from app.domain.chat import ChatMessage, ChatRole, ChatSession
+from app.domain.citation import Claim
 from app.domain.rag import RagAnswer
+from app.domain.user import User
+from app.domain.workspace import ResearchWorkspace
 from app.jobs.runner import new_id
-from app.llm.session import resolve_llm_session
-from app.services.rag.pipeline import RagRequest, answer_question, build_answer_claims
+from app.llm.client import LlmProviderError
+from app.llm.session import LlmSession, resolve_llm_session
+from app.services.rag.pipeline import (
+    RagRequest,
+    RagStage,
+    StageHook,
+    answer_question,
+    build_answer_claims,
+)
 from app.services.workspace import pipeline as ws_pipeline
+from app.telemetry.logging import get_logger
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["chat"])
+_log = get_logger(__name__)
 
 DbSession = Annotated[Session, Depends(get_db)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
+
+QUOTE_MAX = 700
+PROVIDER_ERROR = "The language model provider didn't answer. Try again in a moment."
+GENERATION_ERROR = "The language model didn't return a usable answer. Try again in a moment."
+
+
+class _GenerationFailed(Exception):
+    """No answer could be generated at all (the RAG stages absorb provider
+    errors and bad replies into `generation_failed`). A chat turn with no
+    answer is a failed turn, not an empty one: nothing is persisted."""
+INTERNAL_ERROR = "Something went wrong while answering. Try again."
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -43,10 +86,12 @@ def _err(status: int, code: str, message: str) -> HTTPException:
 
 
 class ChatBody(BaseModel):
-    message: str
+    message: str = ""
     session_id: str | None = None
     scope: dict | str = "all"
     mode: str = "qa"
+    # re-answer the conversation's last question, replacing its answer
+    regenerate: bool = False
 
 
 def _scope_ids(scope: dict | str) -> list[str] | None:
@@ -55,61 +100,93 @@ def _scope_ids(scope: dict | str) -> list[str] | None:
     return None
 
 
-def _claims_payload(db: Session, claims: list) -> list[dict]:
-    return [c.model_dump(mode="json") for c in claims]
+@dataclass
+class _Turn:
+    """A validated chat request, ready to answer."""
+
+    workspace: ResearchWorkspace
+    llm: LlmSession
+    owner: User
+    question: str
+    session_id: str | None  # None: a new conversation, created once answered
+    regenerate: bool
+    replace_ids: list[str] = field(default_factory=list)  # answers a regeneration replaces
+    scope_ids: list[str] | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
-@router.post("/{workspace_id}/chat")
-async def chat(
-    workspace_id: str,
-    body: ChatBody,
-    db: DbSession,
-    settings: AppSettings,
-    current_user: CurrentUser,
-    accept: Annotated[str | None, Header()] = None,
-) -> object:
+def _prepare(db: Session, workspace_id: str, body: ChatBody, owner: User, settings: Settings) -> _Turn:
     try:
-        workspace = ws_pipeline.get_workspace(db, owner=current_user, workspace_id=workspace_id)
+        workspace = ws_pipeline.get_workspace(db, owner=owner, workspace_id=workspace_id)
     except ws_pipeline.WorkspaceNotFound as e:
         raise _err(404, "not_found", "workspace not found") from e
 
-    session = resolve_llm_session(db, current_user, settings)
-    if session is None:
+    llm = resolve_llm_session(db, owner, settings)
+    if llm is None:
         raise _err(409, "llm_key_required", "no working LLM provider key saved")
 
-    if body.session_id is not None:
-        if repo.get_chat_session(db, body.session_id, workspace_id=workspace_id, owner_id=current_user.id) is None:
-            raise _err(404, "not_found", "chat session not found")
-        chat_session_id = body.session_id
-    else:
-        chat_session_id = new_id("cs")
-        repo.create_chat_session(
-            db,
-            ChatSession(
-                session_id=chat_session_id,
-                workspace_id=workspace_id,
-                owner_id=current_user.id,
-                title=body.message[:80],
-            ),
-        )
+    if body.session_id is not None and (
+        repo.get_chat_session(db, body.session_id, workspace_id=workspace_id, owner_id=owner.id) is None
+    ):
+        raise _err(404, "not_found", "chat session not found")
 
-    repo.add_chat_message(
-        db,
-        ChatMessage(message_id=new_id("cm"), session_id=chat_session_id, role=ChatRole.USER, content=body.message),
+    warnings = ["graphrag_not_available"] if body.mode == "themes" else []
+    turn = _Turn(
+        workspace=workspace,
+        llm=llm,
+        owner=owner,
+        question=body.message.strip(),
+        session_id=body.session_id,
+        regenerate=body.regenerate,
+        scope_ids=_scope_ids(body.scope),
+        warnings=warnings,
     )
+    if body.regenerate:
+        if body.session_id is None:
+            raise _err(422, "session_required", "regenerate needs the conversation's session_id")
+        history = repo.get_chat_messages(db, body.session_id)
+        last_q = max((i for i, m in enumerate(history) if m.role is ChatRole.USER), default=None)
+        if last_q is None:
+            raise _err(409, "nothing_to_regenerate", "this conversation has no question to answer again")
+        turn.question = history[last_q].content
+        turn.replace_ids = [m.message_id for m in history[last_q + 1 :] if m.role is ChatRole.ASSISTANT]
+    elif not turn.question:
+        raise _err(422, "empty_message", "ask a question first")
+    return turn
 
-    warnings: list[str] = []
-    if body.mode == "themes":
-        warnings.append("graphrag_not_available")
 
+async def _answer(db: Session, turn: _Turn, settings: Settings, on_stage: StageHook | None = None) -> RagAnswer:
     answer = await answer_question(
         db,
-        workspace=workspace,
-        request=RagRequest(query=body.message, scope_paper_ids=_scope_ids(body.scope)),
-        session=session,
+        workspace=turn.workspace,
+        request=RagRequest(query=turn.question, scope_paper_ids=turn.scope_ids),
+        session=turn.llm,
         settings=settings,
+        on_stage=on_stage,
     )
-    answer.warnings.extend(warnings)
+    if answer.answerable and not answer.sentences and "generation_failed" in answer.warnings:
+        raise _GenerationFailed
+    answer.warnings.extend(turn.warnings)
+    return answer
+
+
+def _persist(db: Session, turn: _Turn, answer: RagAnswer) -> tuple[str, str, list[Claim]]:
+    """Write the answered turn: its conversation (if new), the question
+    (unless regenerating), and the answer with its claims and outcome."""
+    workspace_id = turn.workspace.workspace_id
+    session_id = turn.session_id
+    if session_id is None:
+        session_id = new_id("cs")
+        repo.create_chat_session(
+            db,
+            ChatSession(session_id=session_id, workspace_id=workspace_id, owner_id=turn.owner.id, title=turn.question[:80]),
+        )
+    if not turn.regenerate:
+        repo.add_chat_message(
+            db, ChatMessage(message_id=new_id("cm"), session_id=session_id, role=ChatRole.USER, content=turn.question)
+        )
+    for old in turn.replace_ids:
+        repo.delete_chat_message(db, old)
 
     message_id = new_id("cm")
     chunk_to_paper = {c.chunk_id: c.paper_id for c in repo.get_chunks_by_ids(db, answer.used_chunk_ids)}
@@ -125,7 +202,7 @@ async def chat(
         db,
         ChatMessage(
             message_id=message_id,
-            session_id=chat_session_id,
+            session_id=session_id,
             role=ChatRole.ASSISTANT,
             content=answer.text,
             citations=[c.claim_id for c in claims],
@@ -133,75 +210,161 @@ async def chat(
             tokens_completion=answer.completion_tokens,
             faithfulness=answer.faithfulness,
             answerable=answer.answerable,
+            suggestion=answer.suggestion,
+            unsupported_dropped=answer.unsupported_dropped,
+            warnings=list(answer.warnings),
         ),
     )
+    return message_id, session_id, claims
 
-    if accept and "text/event-stream" in accept:
-        return StreamingResponse(
-            _sse(answer, message_id=message_id, session_id=chat_session_id, claims=claims, db=db),
-            media_type="text/event-stream",
-        )
+
+def _sources(db: Session, claims: list[Claim]) -> dict[str, list[dict]]:
+    """claim id -> the passages that support it: paper, section, page, quote."""
+    chunk_ids = sorted({cid for c in claims for cid in c.supporting_chunk_ids})
+    chunks = {c.chunk_id: c for c in repo.get_chunks_by_ids(db, chunk_ids)}
+    titles: dict[str, str | None] = {}
+    out: dict[str, list[dict]] = {}
+    for claim in claims:
+        sources = []
+        for cid in claim.supporting_chunk_ids:
+            chunk = chunks.get(cid)
+            if chunk is None:
+                continue  # the paper left the workspace index; the claim keeps its id only
+            if chunk.paper_id not in titles:
+                paper = repo.get_paper(db, chunk.paper_id)
+                titles[chunk.paper_id] = paper.title if paper is not None else None
+            text = chunk.text.strip()
+            sources.append(
+                {
+                    "chunk_id": cid,
+                    "paper_id": chunk.paper_id,
+                    "paper_title": titles[chunk.paper_id],
+                    "section": chunk.section,
+                    "page": chunk.page,
+                    "quote": text[:QUOTE_MAX],
+                    "truncated": len(text) > QUOTE_MAX,
+                }
+            )
+        out[claim.claim_id] = sources
+    return out
+
+
+def _claims_payload(claims: list[Claim], sources: dict[str, list[dict]]) -> list[dict]:
+    return [{**c.model_dump(mode="json"), "sources": sources.get(c.claim_id, [])} for c in claims]
+
+
+def _outcome(answer: RagAnswer, message_id: str, session_id: str, turn: _Turn) -> dict:
     return {
         "message_id": message_id,
-        "session_id": chat_session_id,
-        "text": answer.text,
+        "session_id": session_id,
         "answerable": answer.answerable,
         "faithfulness": answer.faithfulness,
         "unsupported_dropped": answer.unsupported_dropped,
         "suggestion": answer.suggestion,
-        "claims": _claims_payload(db, claims),
         "warnings": answer.warnings,
+        "replaced_message_ids": turn.replace_ids,
     }
 
 
-def _sse(answer: RagAnswer, *, message_id: str, session_id: str, claims: list, db: Session):
-    def event(name: str, data: dict) -> str:
-        return f"event: {name}\ndata: {json.dumps(data)}\n\n"
+@router.post("/{workspace_id}/chat")
+async def chat(
+    workspace_id: str,
+    body: ChatBody,
+    db: DbSession,
+    settings: AppSettings,
+    current_user: CurrentUser,
+    accept: Annotated[str | None, Header()] = None,
+) -> object:
+    turn = _prepare(db, workspace_id, body, current_user, settings)
 
-    if not answer.answerable:
-        yield event(
-            "done",
-            {
-                "message_id": message_id,
-                "session_id": session_id,
-                "answerable": False,
-                "suggestion": answer.suggestion,
-            },
-        )
-        return
+    if accept and "text/event-stream" in accept:
+        db.close()  # validation is done; the stream opens its own session
+        return StreamingResponse(_stream(turn, settings), media_type="text/event-stream")
 
-    for word in answer.text.split(" "):
-        if word:
-            yield event("token", {"text": word + " "})
+    try:
+        answer = await _answer(db, turn, settings)
+    except LlmProviderError as e:
+        raise _err(502, "provider_error", PROVIDER_ERROR) from e
+    except _GenerationFailed as e:
+        raise _err(502, "generation_failed", GENERATION_ERROR) from e
+    message_id, session_id, claims = _persist(db, turn, answer)
+    return {
+        **_outcome(answer, message_id, session_id, turn),
+        "text": answer.text,
+        "claims": _claims_payload(claims, _sources(db, claims)),
+    }
 
-    chunk_meta = {c.chunk_id: c for c in repo.get_chunks_by_ids(db, answer.used_chunk_ids)}
-    for i, claim in enumerate(claims, start=1):
-        cid = claim.supporting_chunk_ids[0]
-        meta = chunk_meta.get(cid)
-        yield event(
-            "citation",
-            {
-                "marker": f"[{i}]",
-                "claim_id": claim.claim_id,
-                "paper_id": claim.supporting_paper_ids[0] if claim.supporting_paper_ids else None,
-                "chunk_id": cid,
-                "quote": (meta.text[:280] if meta else ""),
-                "section": meta.section if meta else None,
-                "page": meta.page if meta else None,
-            },
-        )
 
-    yield event("usage", {"prompt": answer.prompt_tokens, "completion": answer.completion_tokens})
-    yield event(
-        "done",
-        {
-            "message_id": message_id,
-            "session_id": session_id,
-            "faithfulness": answer.faithfulness,
-            "answerable": True,
-            "unsupported_dropped": answer.unsupported_dropped,
-        },
-    )
+def _event(name: str, data: dict) -> str:
+    return f"event: {name}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream(turn: _Turn, settings: Settings) -> AsyncIterator[str]:
+    # its own session: the stream outlives the request's dependencies
+    db = get_session_factory()()
+    stages: asyncio.Queue[RagStage] = asyncio.Queue()
+    task = asyncio.create_task(_answer(db, turn, settings, on_stage=stages.put_nowait))
+    try:
+        # 1. progress, as the pipeline reaches each stage
+        while not task.done():
+            next_stage = asyncio.ensure_future(stages.get())
+            done, _ = await asyncio.wait({task, next_stage}, return_when=asyncio.FIRST_COMPLETED)
+            if next_stage in done:
+                yield _event("status", {"stage": next_stage.result()})
+            else:
+                next_stage.cancel()
+        while not stages.empty():
+            yield _event("status", {"stage": stages.get_nowait()})
+        try:
+            answer = task.result()
+        except LlmProviderError:
+            yield _event("error", {"code": "provider_error", "message": PROVIDER_ERROR})
+            return
+        except _GenerationFailed:
+            yield _event("error", {"code": "generation_failed", "message": GENERATION_ERROR})
+            return
+        except Exception:  # noqa: BLE001 - reported to the client, logged here
+            _log.exception("chat_stream_failed", workspace_id=turn.workspace.workspace_id)
+            yield _event("error", {"code": "internal", "message": INTERNAL_ERROR})
+            return
+
+        # 2. the verified answer, each citation right after its sentence
+        message_id, session_id, claims = _persist(db, turn, answer)
+        sources = _sources(db, claims)
+        pending = iter(claims)
+        marker = 0
+        for sentence in answer.sentences if answer.answerable else []:
+            for word in sentence.text.split(" "):
+                if word:
+                    yield _event("token", {"text": word + " "})
+            if not sentence.chunk_ids:
+                continue  # flagged, not cited: it has no claim
+            claim = next(pending, None)
+            if claim is None:
+                continue
+            marker += 1
+            cited = sources.get(claim.claim_id, [])
+            first = cited[0] if cited else {}
+            yield _event(
+                "citation",
+                {
+                    "marker": f"[{marker}]",
+                    "claim_id": claim.claim_id,
+                    "sentence": claim.sentence,
+                    "paper_id": first.get("paper_id"),
+                    "chunk_id": claim.supporting_chunk_ids[0],
+                    "quote": first.get("quote", ""),
+                    "section": first.get("section"),
+                    "page": first.get("page"),
+                    "sources": cited,
+                },
+            )
+        yield _event("usage", {"prompt": answer.prompt_tokens, "completion": answer.completion_tokens})
+        yield _event("done", _outcome(answer, message_id, session_id, turn))
+    finally:
+        if not task.done():
+            task.cancel()  # the reader went away mid-answer: stop, persist nothing
+        db.close()
 
 
 @router.get("/{workspace_id}/chat/sessions")
@@ -210,8 +373,19 @@ def list_sessions(workspace_id: str, db: DbSession, current_user: CurrentUser) -
         ws_pipeline.get_workspace(db, owner=current_user, workspace_id=workspace_id)
     except ws_pipeline.WorkspaceNotFound as e:
         raise _err(404, "not_found", "workspace not found") from e
-    sessions = repo.list_chat_sessions(db, workspace_id, current_user.id)
-    return {"sessions": [s.model_dump(mode="json") for s in sessions]}
+    out = []
+    for s in repo.list_chat_sessions(db, workspace_id, current_user.id):
+        messages = repo.get_chat_messages(db, s.session_id)
+        out.append(
+            {
+                **s.model_dump(mode="json"),
+                "questions": sum(1 for m in messages if m.role is ChatRole.USER),
+                "last_active_at": (messages[-1].created_at if messages else s.created_at).isoformat(),
+            }
+        )
+    # most recently active first
+    out.sort(key=lambda s: s["last_active_at"], reverse=True)
+    return {"sessions": out}
 
 
 @router.get("/{workspace_id}/chat/sessions/{session_id}")
@@ -224,14 +398,11 @@ def get_session(workspace_id: str, session_id: str, db: DbSession, current_user:
     if session is None:
         raise _err(404, "not_found", "chat session not found")
 
-    messages = repo.get_chat_messages(db, session_id)
     out: list[dict] = []
-    for m in messages:
+    for m in repo.get_chat_messages(db, session_id):
         payload = m.model_dump(mode="json")
         if m.role is ChatRole.ASSISTANT and m.citations:
-            payload["claims"] = [
-                c.model_dump(mode="json")
-                for c in repo.get_claims_for_artefact(db, m.message_id)
-            ]
+            claims = repo.get_claims_for_artefact(db, m.message_id)
+            payload["claims"] = _claims_payload(claims, _sources(db, claims))
         out.append(payload)
     return {"session": session.model_dump(mode="json"), "messages": out}

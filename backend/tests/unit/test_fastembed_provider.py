@@ -12,7 +12,7 @@ class _StubModel:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]):  # type: ignore[no-untyped-def]
+    def embed(self, texts: list[str]):
         self.calls.append(list(texts))
         for t in texts:
             yield np.array([len(t), 1.0, 0.0], dtype="float32")

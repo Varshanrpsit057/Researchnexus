@@ -89,7 +89,12 @@ export default function HomePage() {
   if (!isLoading && !isAuthenticated) return null;
 
   const firstName = me?.email ? me.email.split("@")[0] : "researcher";
-  const wsHref = (suffix: string) => (latestWorkspace ? `/workspaces/${latestWorkspace.workspace_id}/${suffix}` : "/workspaces");
+  const wsHref = (suffix: string) =>
+    !latestWorkspace
+      ? "/workspaces"
+      : ["trail", "graph", "chat"].includes(suffix)
+        ? `/workspace/${latestWorkspace.workspace_id}/${suffix}`
+        : `/workspaces/${latestWorkspace.workspace_id}/${suffix}`;
 
   const PIPELINE: { label: string; desc: string; icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>; href: string }[] = [
     { label: "Discover", desc: "Search arXiv, OpenAlex, Semantic Scholar, and Crossref.", icon: MagnifyingGlass, href: "/papers" },

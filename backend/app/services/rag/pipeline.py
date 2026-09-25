@@ -18,8 +18,10 @@ Guarantees carried out of this module:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -38,6 +40,17 @@ from app.services.rag.generate import DraftAnswer, generate_answer
 from app.services.rag.rerank import rerank
 from app.services.rag.retriever import retrieve
 from app.services.rag.verify import verify_sentences
+
+# What the pipeline is doing right now, for a caller streaming progress:
+# searching (retrieve + rerank), reading (the contextual filter), writing
+# (generation), checking (per-sentence verification), rewriting (the one
+# faithfulness-gate regeneration).
+RagStage = Literal["searching", "reading", "writing", "checking", "rewriting"]
+StageHook = Callable[[RagStage], None]
+
+
+def _noop(_: RagStage) -> None:
+    return None
 
 
 @dataclass
@@ -79,7 +92,10 @@ async def answer_question(
     settings: Settings,
     index: WorkspaceChunkIndex | None = None,
     reranker: CrossEncoderReranker | None = None,
+    on_stage: StageHook | None = None,
 ) -> RagAnswer:
+    stage = on_stage or _noop
+    stage("searching")
     index = index or _build_index(db, workspace, settings)
     reranker = reranker or get_reranker(settings.rag_reranker)
     budget = _Budget()
@@ -88,6 +104,7 @@ async def answer_question(
         db, index, request.query, k=settings.rag_retrieve_k, scope_paper_ids=request.scope_paper_ids
     )
     reranked = rerank(request.query, retrieved, reranker, settings.rag_rerank_top_n)
+    stage("reading")
     filtered, pt, ct = await filter_chunks(session, request.query, reranked)
     budget.add(pt, ct)
 
@@ -105,7 +122,7 @@ async def answer_question(
     chunk_text = {c.chunk_id: c.text for c in kept}
 
     sentences, faith, regenerated = await _generate_verify_gate(
-        session, request.query, kept, chunk_text, settings, budget
+        session, request.query, kept, chunk_text, settings, budget, stage
     )
 
     rendered, dropped = _apply_support_policy(sentences, settings.rag_drop_unsupported)
@@ -136,18 +153,21 @@ async def _generate_verify_gate(
     chunk_text: dict[str, str],
     settings: Settings,
     budget: _Budget,
+    stage: StageHook = _noop,
 ) -> tuple[list[AnswerSentence], float, bool]:
     async def one_pass(q: str) -> tuple[DraftAnswer, list[AnswerSentence], float]:
         draft = await generate_answer(session, q, kept)
         budget.add(draft.prompt_tokens, draft.completion_tokens)
         if not draft.ok:
             return draft, [], 0.0
+        stage("checking")
         verified, pt, ct = await verify_sentences(session, draft.sentences, chunk_text)
         budget.add(pt, ct)
         supported_text = [s.text for s in verified if s.is_supported]
         score = score_faithfulness(" ".join(supported_text), [chunk_text[c] for c in chunk_text])
         return draft, verified, score
 
+    stage("writing")
     draft, sentences, faith = await one_pass(query)
     if not draft.ok:
         budget.warnings.append("generation_failed")
@@ -158,6 +178,7 @@ async def _generate_verify_gate(
             f"{query}\n\n(The previous answer failed a faithfulness check. "
             "Ground every sentence strictly in the context and cite the exact chunk.)"
         )
+        stage("rewriting")
         draft2, sentences2, faith2 = await one_pass(retry_q)
         if draft2.ok:
             return sentences2, faith2, True

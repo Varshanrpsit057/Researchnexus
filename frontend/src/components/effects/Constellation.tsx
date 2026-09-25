@@ -4,6 +4,8 @@ import { useEffect, useRef } from "react";
 import type { Engine, EngineOptions, RendererChoice } from "./constellation/engine";
 import { startEngine } from "./constellation/engine";
 import type { FromWorker, ToWorker } from "./constellation/constellation.worker";
+import type { MorphTarget } from "./constellation/field";
+import { onBackgroundCommand } from "@/lib/background-bus";
 
 interface ConstellationProps {
   className?: string;
@@ -22,6 +24,8 @@ interface Bridge {
   resize(width: number, height: number): void;
   pointer(x: number, y: number): void;
   visible(visible: boolean): void;
+  morph(targets: MorphTarget[]): void;
+  release(): void;
   stop(): void;
 }
 
@@ -53,6 +57,8 @@ function makeCanvas(): HTMLCanvasElement {
  *   to ~30 fps rather than thinning the field when a device falls behind;
  * - it stops entirely while the tab is hidden.
  * Under prefers-reduced-motion it draws one still frame and never animates.
+ * The research graph page can morph it (lib/background-bus.ts): the field
+ * condenses onto the graph's nodes, then stays calmer until released.
  * The active path is exposed as data-renderer / data-thread on the canvas. */
 export default function Constellation({ className }: ConstellationProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -101,6 +107,8 @@ export default function Constellation({ className }: ConstellationProps) {
         resize: (w, h) => e.resize(w, h, dpr),
         pointer: (x, y) => e.pointer(x, y),
         visible: (v) => e.setVisible(v),
+        morph: (targets) => e.morph(targets),
+        release: () => e.release(),
         stop: () => e.stop(),
       };
     }
@@ -136,6 +144,8 @@ export default function Constellation({ className }: ConstellationProps) {
         resize: (w, h) => (fallback ? fallback.resize(w, h) : post({ type: "resize", width: w, height: h, dpr })),
         pointer: (x, y) => (fallback ? fallback.pointer(x, y) : post({ type: "pointer", x, y })),
         visible: (v) => (fallback ? fallback.visible(v) : post({ type: "visible", visible: v })),
+        morph: (targets) => (fallback ? fallback.morph(targets) : post({ type: "morph", targets })),
+        release: () => (fallback ? fallback.release() : post({ type: "release" })),
         stop: () => {
           if (fallback) fallback.stop();
           else post({ type: "stop" });
@@ -146,6 +156,13 @@ export default function Constellation({ className }: ConstellationProps) {
 
     const bridge = startInWorker() ?? startOnMainThread();
 
+    // a page (the research graph) can ask the field to condense onto its nodes
+    const offCommand = onBackgroundCommand((cmd) => {
+      // exposed for tests: "graph" while condensed behind a research graph
+      host.dataset.mode = cmd.type === "morph" ? "graph" : "field";
+      if (cmd.type === "morph") bridge?.morph(cmd.targets);
+      else bridge?.release();
+    });
     const onResize = () => bridge?.resize(window.innerWidth, window.innerHeight);
     const onPointer = (e: PointerEvent) => bridge?.pointer(e.clientX / window.innerWidth, e.clientY / window.innerHeight);
     const onVisibility = () => bridge?.visible(!document.hidden);
@@ -155,6 +172,7 @@ export default function Constellation({ className }: ConstellationProps) {
 
     return () => {
       stopped = true;
+      offCommand();
       bridge?.stop();
       window.removeEventListener("resize", onResize);
       window.removeEventListener("pointermove", onPointer);
@@ -163,5 +181,5 @@ export default function Constellation({ className }: ConstellationProps) {
     };
   }, []);
 
-  return <div ref={hostRef} className={className} aria-hidden />;
+  return <div ref={hostRef} className={className} data-mode="field" data-testid="constellation" aria-hidden />;
 }

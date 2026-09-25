@@ -91,21 +91,26 @@ test.describe("Explore -> Curate", () => {
     await expect(page.getByText(targetPaperId)).toBeVisible({ timeout: 5_000 });
 
     // 5. The trail edge to that paper should already read ACCEPTED, not
-    //    PENDING -- the real, live proof of the auto-accept behavior.
+    //    PENDING -- the real, live proof of the auto-accept behavior. (The
+    //    old /workspaces/.../trail URL forwards to the trail page, which
+    //    opens on Accepted when nothing is left to review.)
     await page.goto(`/workspaces/${workspaceId}/trail`);
-    await expect(page.getByText("A Playwright Fixture Related Paper")).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText("accepted", { exact: true })).toBeVisible();
-    await expect(page.getByText("Fixture Reference 2024")).toBeVisible();
+    await page.waitForURL(new RegExp(`/workspace/${workspaceId}/trail$`));
+    const edgeRow = page.getByRole("article", { name: "A Playwright Fixture Related Paper" });
+    await expect(page.getByRole("button", { name: "Accepted 1", exact: true })).toHaveAttribute("aria-pressed", "true", { timeout: 10_000 });
+    await expect(edgeRow).toContainText("Accepted");
+    await edgeRow.getByRole("button", { name: /Show the evidence/ }).click();
+    await expect(edgeRow).toContainText("a fixture evidence sentence for testing");
 
     // 6. Reject it for real, then confirm the workspace overview (a
     //    *separate* SWR cache key) reflects the change -- the trail it
     //    summarises hides rejected edges, so this is a real cross-page
     //    consistency check, not just a Trail-local one.
-    await page.getByRole("button", { name: "Reject", exact: true }).click();
-    // The default "Pending + accepted" filter hides a just-rejected edge
-    // outright -- switch to the Rejected filter to see its withdrawn stamp.
-    await page.getByRole("button", { name: "Rejected", exact: true }).click();
-    await expect(page.getByText("withdrawn", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Undo accepting the connection to A Playwright Fixture Related Paper" }).click();
+    await page.getByRole("button", { name: "To review 1", exact: true }).click();
+    await page.getByRole("button", { name: "Reject the connection to A Playwright Fixture Related Paper" }).click();
+    await page.getByRole("button", { name: "Rejected 1", exact: true }).click();
+    await expect(page.getByRole("article", { name: "A Playwright Fixture Related Paper" })).toContainText("Rejected");
     await page.goto(`/workspace/${workspaceId}`);
     await expect(page.getByRole("link", { name: /^Connections\s*:/ })).toContainText("None yet", { timeout: 10_000 });
   });

@@ -247,7 +247,7 @@ class _TopicEmbedder:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    def embed(self, texts: list[str]):  # type: ignore[no-untyped-def]
+    def embed(self, texts: list[str]):
         import numpy as np
 
         self.seen.extend(texts)

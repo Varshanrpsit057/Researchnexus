@@ -50,6 +50,35 @@ describe("streamChat", () => {
     expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ session_id: "sess_1", faithfulness: 0.9 }));
   });
 
+  it("reports each pipeline stage, and a mid-stream failure with its code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        streamResponse([
+          `event: status
+data: {"stage":"searching"}
+
+`,
+          `event: status
+data: {"stage":"reading"}
+
+`,
+          `event: error
+data: {"code":"generation_failed","message":"No usable answer."}
+
+`,
+        ])
+      )
+    );
+    const onStatus = vi.fn();
+    const onError = vi.fn();
+    await streamChat("ws_1", { message: "q", regenerate: true, session_id: "cs_1" }, { onStatus, onError });
+    expect(onStatus.mock.calls.map(([s]) => s.stage)).toEqual(["searching", "reading"]);
+    expect(onError).toHaveBeenCalledWith("No usable answer.", "generation_failed");
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toMatchObject({ regenerate: true, session_id: "cs_1" });
+  });
+
   it("splits events that arrive split across multiple stream chunks", async () => {
     vi.stubGlobal(
       "fetch",

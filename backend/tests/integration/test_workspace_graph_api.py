@@ -69,9 +69,9 @@ def _seed_run_with_trail_edge(rtype: RelationshipType = RelationshipType.COMPETI
     """A discovery run with one seed->target trail edge; returns the target paper id.
 
     Importing the run onto a workspace (`import_run_id=`) attaches the edge
-    but does NOT make the target a workspace member -- callers must still
-    `POST .../papers` it in for the edge to become graph-eligible, matching
-    how `_accept_edges_for_target` only fires once a paper actually joins.
+    but does NOT make the target a workspace member: the graph shows it as a
+    connected paper until it is `POST .../papers`-ed in, which is also what
+    accepts the edge (`_accept_edges_for_target`).
     """
     factory = get_session_factory()
     db = factory()
@@ -135,44 +135,75 @@ def test_missing_workspace_is_404(tmp_path: Path) -> None:
     assert client.get("/api/v1/workspaces/ws_ghost/graph", headers=_headers(token)).status_code == 404
 
 
-def test_adding_a_paper_adds_its_node_and_trail_edge_to_the_graph(tmp_path: Path) -> None:
+def test_an_imported_run_shows_its_connections_and_adding_the_paper_makes_it_a_member(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)
     _seed_analysed_paper()
     tgt = _seed_run_with_trail_edge(RelationshipType.COMPETING)
     wid = _create_ws(client, token, import_run_id="run_1")["workspace_id"]
 
+    # Regression: the edge used to be invisible until its paper was added.
     before = client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()
-    assert before["node_count"] == 1 and before["edge_count"] == 0
+    assert before["node_count"] == 2 and before["edge_count"] == 1
+    target = next(n for n in before["nodes"] if n["id"] == tgt)
+    assert target["in_workspace"] is False and target["role"] is None
+    assert target["label"] == "Rival"
+    edge = before["edges"][0]
+    assert edge["src"] == "pap_seed" and edge["dst"] == tgt
+    assert edge["type"] == "COMPETES_WITH"
+    assert edge["relationship_types"] == ["COMPETING"]
+    assert edge["trail_edge_ids"] == ["edge_1"]
+    assert edge["user_state"] == "pending"
+    assert edge["evidence"][0]["quote"] == "a supporting sentence"
 
     add = client.post(f"/api/v1/workspaces/{wid}/papers", json={"paper_ids": [tgt]}, headers=_headers(token))
     assert add.status_code == 201, add.text
 
     after = client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()
     assert after["node_count"] == 2
-    assert {n["id"] for n in after["nodes"]} == {"pap_seed", tgt}
+    nodes = {n["id"]: n for n in after["nodes"]}
+    assert nodes["pap_seed"]["role"] == "seed"
+    assert nodes[tgt]["in_workspace"] is True and nodes[tgt]["role"] == "related"
     assert after["edge_count"] == 1
-    edge = after["edges"][0]
-    assert edge["src"] == "pap_seed" and edge["dst"] == tgt
-    assert edge["type"] == "COMPETES_WITH"
-    assert edge["evidence"][0]["quote"] == "a supporting sentence"
+    assert after["edges"][0]["user_state"] == "accepted"  # joining accepted it
 
 
-def test_removing_a_paper_drops_its_node_and_edges_from_the_graph(tmp_path: Path) -> None:
+def test_an_edge_accepted_in_the_trail_review_stays_in_the_graph_without_adding_the_paper(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    token = _token(client)
+    _seed_analysed_paper()
+    tgt = _seed_run_with_trail_edge(RelationshipType.FOUNDATIONAL, target_title="An Earlier Paper")
+    wid = _create_ws(client, token, import_run_id="run_1")["workspace_id"]
+
+    accepted = client.post(f"/api/v1/workspaces/{wid}/trail/edge_1", json={"user_state": "accepted"}, headers=_headers(token))
+    assert accepted.status_code == 200, accepted.text
+
+    graph = client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()
+    assert graph["edge_count"] == 1
+    assert graph["edges"][0]["type"] == "CITES"
+    assert graph["edges"][0]["user_state"] == "accepted"
+    assert next(n for n in graph["nodes"] if n["id"] == tgt)["in_workspace"] is False
+
+
+def test_removing_a_paper_leaves_it_connected_until_its_edge_is_rejected(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)
     _seed_analysed_paper()
     tgt = _seed_run_with_trail_edge()
     wid = _create_ws(client, token, import_run_id="run_1")["workspace_id"]
     client.post(f"/api/v1/workspaces/{wid}/papers", json={"paper_ids": [tgt]}, headers=_headers(token))
-    assert client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()["node_count"] == 2
 
     removed = client.delete(f"/api/v1/workspaces/{wid}/papers/{tgt}", headers=_headers(token))
     assert removed.status_code == 200
 
     after = client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()
-    assert after["node_count"] == 1
-    assert after["edge_count"] == 0
+    assert after["node_count"] == 2 and after["edge_count"] == 1
+    assert next(n for n in after["nodes"] if n["id"] == tgt)["in_workspace"] is False
+
+    client.post(f"/api/v1/workspaces/{wid}/trail/edge_1", json={"user_state": "rejected"}, headers=_headers(token))
+    rejected = client.get(f"/api/v1/workspaces/{wid}/graph", headers=_headers(token)).json()
+    assert rejected["node_count"] == 1
+    assert rejected["edge_count"] == 0
 
 
 def test_rejecting_a_trail_edge_removes_it_from_the_graph_but_keeps_the_node(tmp_path: Path) -> None:

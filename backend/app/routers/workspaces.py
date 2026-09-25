@@ -244,8 +244,10 @@ def get_trail(
     band: Annotated[str | None, Query()] = None,
     state: Annotated[str | None, Query()] = None,
 ) -> dict:
-    if state is not None and state not in {s.value for s in UserState}:
-        raise _err(422, "invalid_parameter", "state must be pending|accepted|rejected")
+    # "all" returns every edge, rejected ones included, in one read (each
+    # carries its own user_state); omitted = pending + accepted
+    if state is not None and state not in {s.value for s in UserState} | {"all"}:
+        raise _err(422, "invalid_parameter", "state must be pending|accepted|rejected|all")
     try:
         return pipeline.grouped_trail(
             db,

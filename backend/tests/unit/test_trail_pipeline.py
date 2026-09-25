@@ -305,3 +305,76 @@ def test_provenance_is_persisted_on_every_edge(db: Session, settings: Settings) 
         assert edge.rule_fired  # WHY the relationship was assigned
         assert "signal_agreement" in edge.confidence_basis
         assert edge.evidence and all(ev.span.quote for ev in edge.evidence)
+
+
+# --- verbatim evidence (app/services/trail/evidence.py) ----------------------
+# Found live: every edge of a real discovery run carried only the target's
+# title as its "evidence span". An edge must quote text that shows the link.
+
+
+def _edge(db: Session, run_id: str, rtype: RelationshipType):
+    return next(e for e in repo.get_trail_edges(db, run_id) if e.relationship_type == rtype)
+
+
+def test_a_foundational_edge_quotes_the_seeds_own_reference_entry(db: Session, settings: Settings) -> None:
+    run_id = _build_run(db)
+    reference = "[4] V.Karpukhin et al., DensePassageRetrieval for open-domain QA. EMNLP, 2016."
+    seed = db.get(PaperORM, "pap_seed")
+    assert seed is not None
+    seed.references = [{"order": 0, "raw_text": "[1] Unrelated Work on Protein Folding, 2019."}, {"order": 1, "raw_text": reference}]
+    db.commit()
+
+    asyncio.run(build_trail(db, run_id=run_id, settings=settings, options=TrailOptions()))
+    edge = _edge(db, run_id, RelationshipType.FOUNDATIONAL)
+    cited = [ev for ev in edge.evidence if ev.role == "seed_reference"]
+    assert len(cited) == 1
+    assert cited[0].span.paper_id == "pap_seed"
+    assert cited[0].span.section == "References"
+    assert cited[0].span.quote == reference
+    assert not any(ev.role == "citation" for ev in edge.evidence)  # the title placeholder is gone
+
+
+def test_a_signal_edge_quotes_a_target_sentence_and_the_seeds_problem(db: Session, settings: Settings) -> None:
+    run_id = _build_run(db)
+    profile = repo.get_profile(db, "pap_seed")
+    assert profile is not None
+    problem_span = SourceSpan(paper_id="pap_seed", section="Introduction", quote="knowledge-intensive question answering")
+    repo.upsert_profile(
+        db,
+        profile.model_copy(
+            update={"research_problem": ProfileField(value="knowledge intensive question answering", source_span=problem_span)}
+        ),
+    )
+    abstract = (
+        "We study generative readers for open-domain systems. "
+        "Our reader fuses many retrieved passages for knowledge intensive question answering at scale. "
+        "It is fast."
+    )
+    _add_candidate(
+        db, run_id, cand_id="c_sim", title="Fusion-in-Decoder", abstract=abstract, year=2020,
+        rel=CitationRelationship.NONE, hops=None, signals=SignalScores(semantic_doc=0.8), rank=4,
+    )
+
+    asyncio.run(build_trail(db, run_id=run_id, settings=settings, options=TrailOptions()))
+    edge = next(
+        e for e in repo.get_trail_edges(db, run_id)
+        if e.relationship_type == RelationshipType.SIMILAR and e.target_paper_id != "pap_seed"
+        and any(ev.role == "target_claim" for ev in e.evidence)
+    )
+    target = next(ev for ev in edge.evidence if ev.role == "target_claim")
+    assert target.span.section == "Abstract"
+    assert target.span.quote == "Our reader fuses many retrieved passages for knowledge intensive question answering at scale."
+    assert abstract[target.span.char_start : target.span.char_end] == target.span.quote  # verbatim
+    seed_claims = [ev for ev in edge.evidence if ev.role == "seed_claim"]
+    assert [ev.span for ev in seed_claims] == [problem_span]
+    assert not any(ev.role == "similarity_signal" for ev in edge.evidence)
+
+
+def test_a_shared_dataset_is_quoted_in_its_sentence(db: Session, settings: Settings) -> None:
+    run_id = _build_run(db)
+    asyncio.run(build_trail(db, run_id=run_id, settings=settings, options=TrailOptions()))
+    edge = _edge(db, run_id, RelationshipType.DATASET_RELATED)
+    shared = next(ev for ev in edge.evidence if ev.role == "shared_dataset")
+    assert shared.span.quote == "We evaluate on Natural Questions."
+    assert shared.span.section == "Abstract"
+    assert (shared.span.char_start, shared.span.char_end) == (0, len("We evaluate on Natural Questions."))

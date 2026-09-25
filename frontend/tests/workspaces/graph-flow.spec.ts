@@ -1,5 +1,6 @@
 // spec: Slice 4 (Research workspace) critical flow -- evidence navigation
-// on the Graph page specifically. Overview/Papers/Trail's own real-backend
+// on the Graph page specifically (the Phase 8 graph at /workspace/[id]/graph;
+// tests/graph/graph-flow.spec.ts covers the rest of that page). Overview/Papers/Trail's own real-backend
 // coverage lives in curate-flow.spec.ts; this spec is scoped to what that
 // one doesn't reach: selecting a graph node must lead somewhere -- to the
 // paper itself, and to the actual evidence behind a relationship -- not
@@ -56,18 +57,20 @@ test.describe("Research workspace -> Graph evidence navigation", () => {
     await page.getByRole("button", { name: "Add" }).click();
     await expect(page.getByText(targetPaperId)).toBeVisible({ timeout: 5_000 });
 
+    // the old URL forwards to the graph page
     await page.goto(`/workspaces/${workspaceId}/graph`);
-    await expect(page.getByText("2 nodes")).toBeVisible({ timeout: 5_000 });
-    // Click the target paper's own node (its dot, drawn at the layout's
-    // computed position -- select via the accessible role/name instead of
-    // a hardcoded coordinate).
-    await page.getByRole("button", { name: /Fixture Related Paper/ }).click();
+    await page.waitForURL(new RegExp(`/workspace/${workspaceId}/graph$`));
+    const stage = page.getByTestId("graph-stage");
+    await expect(stage).toHaveAttribute("data-phase", "settled", { timeout: 10_000 });
+    await expect(page.getByText("2 papers in the workspace · 1 connection", { exact: true })).toBeVisible();
+    // Point at the target paper's node (found by its accessible name, not a
+    // hardcoded coordinate): it is a member, and joining accepted its edge.
+    await stage.getByRole("button", { name: /^A Playwright Fixture Related Paper\. In this workspace\./ }).click();
 
-    const link = page.getByRole("link", { name: "View paper" });
-    await expect(link).toBeVisible();
-    await expect(link).toHaveAttribute("href", `/papers/${targetPaperId}`);
-
-    await page.getByText(/evidence span/).click();
-    await expect(page.getByText("a fixture evidence sentence for testing")).toBeVisible();
+    const panel = page.getByRole("complementary");
+    await expect(panel.getByRole("link", { name: "Open paper" })).toHaveAttribute("href", `/papers/${targetPaperId}`);
+    await expect(panel).toContainText("Accepted");
+    // its connection opens on the real evidence behind it
+    await expect(panel.getByText("a fixture evidence sentence for testing")).toBeVisible();
   });
 });

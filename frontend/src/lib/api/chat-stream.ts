@@ -1,19 +1,23 @@
 import { getToken } from "@/lib/auth/token";
 import { API_BASE_URL, ApiError } from "./client";
-import type { SseCitationEvent, SseDoneEvent, SseUsageEvent } from "./types";
+import type { SseCitationEvent, SseDoneEvent, SseErrorEvent, SseStatusEvent, SseUsageEvent } from "./types";
 
 interface ChatStreamCallbacks {
+  /** The pipeline reached a stage (searching, reading, writing, checking, rewriting). */
+  onStatus?: (status: SseStatusEvent) => void;
   onToken?: (text: string) => void;
   onCitation?: (citation: SseCitationEvent) => void;
   onUsage?: (usage: SseUsageEvent) => void;
   onDone?: (done: SseDoneEvent) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, code?: string) => void;
 }
 
 interface ChatStreamBody {
   message: string;
   session_id?: string | null;
   scope?: "all" | { paper_ids: string[] };
+  /** Re-answer the session's last question, replacing its answer. */
+  regenerate?: boolean;
 }
 
 /**
@@ -90,6 +94,9 @@ function dispatchEvent(raw: string, callbacks: ChatStreamCallbacks): void {
   }
 
   switch (eventName) {
+    case "status":
+      callbacks.onStatus?.(data as SseStatusEvent);
+      break;
     case "token":
       callbacks.onToken?.((data as { text: string }).text);
       break;
@@ -102,8 +109,10 @@ function dispatchEvent(raw: string, callbacks: ChatStreamCallbacks): void {
     case "done":
       callbacks.onDone?.(data as SseDoneEvent);
       break;
-    case "error":
-      callbacks.onError?.((data as { message: string }).message);
+    case "error": {
+      const err = data as SseErrorEvent;
+      callbacks.onError?.(err.message, err.code);
       break;
+    }
   }
 }

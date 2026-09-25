@@ -185,7 +185,9 @@ def run_discover_related_job(
                 orchestrator.run_stage(
                     StageName.TRAIL,
                     "build_trail",
-                    lambda: build_trail(db, run_id=discovery_result.run_id, settings=settings, options=TrailOptions()),
+                    lambda: build_trail(
+                        db, run_id=discovery_result.run_id, settings=settings, options=TrailOptions(embedder=embedder)
+                    ),
                     owner_id=owner_id,
                     job_id=job_id,
                     input_for_hash={"run_id": discovery_result.run_id},

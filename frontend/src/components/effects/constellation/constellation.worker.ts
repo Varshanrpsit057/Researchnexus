@@ -3,12 +3,15 @@
  * the app's own UI thread. */
 
 import { startEngine, type Engine, type EngineOptions } from "./engine";
+import type { MorphTarget } from "./field";
 
 export type ToWorker =
   | { type: "init"; canvas: OffscreenCanvas; options: EngineOptions }
   | { type: "resize"; width: number; height: number; dpr: number }
   | { type: "pointer"; x: number; y: number }
   | { type: "visible"; visible: boolean }
+  | { type: "morph"; targets: MorphTarget[] }
+  | { type: "release" }
   | { type: "stop" };
 
 export type FromWorker = { type: "ready"; renderer: Engine["rendererName"] } | { type: "failed" };
@@ -36,6 +39,12 @@ scope.onmessage = (e) => {
       break;
     case "visible":
       engine?.setVisible(msg.visible);
+      break;
+    case "morph":
+      engine?.morph(msg.targets);
+      break;
+    case "release":
+      engine?.release();
       break;
     case "stop":
       engine?.stop();

@@ -301,7 +301,9 @@ class ResearchOrchestrator:
         _progress("trail")
         await self.run_stage(
             StageName.TRAIL, "build_trail",
-            lambda: build_trail(self.db, run_id=discovery_result.run_id, settings=self.settings, options=TrailOptions()),
+            lambda: build_trail(
+                self.db, run_id=discovery_result.run_id, settings=self.settings, options=TrailOptions(embedder=embedder)
+            ),
             owner_id=owner.id, job_id=job_id, input_for_hash={"run_id": discovery_result.run_id},
         )
 

@@ -299,3 +299,77 @@ def test_grouped_trail_hides_rejected_by_default(db: Session, owner: User, setti
     assert default["groups"]["COMPETING"] == []
     shown = grouped_trail(db, owner=owner, workspace_id=ws.workspace_id, state="rejected")
     assert len(shown["groups"]["COMPETING"]) == 1
+
+
+def test_grouped_trail_carries_the_seed_and_each_targets_measured_signals(
+    db: Session, owner: User, settings: Settings
+) -> None:
+    # The trail must be able to show WHY an edge exists: the rule fired on
+    # measured ranking signals, which live on the run's ranked papers, and
+    # the chain starts at the seed paper, so both come with the trail.
+    seed = _seed_with_profile(db)
+    tgt = _paper(db, "Cand 1")
+    repo.create_search_run(db, SearchRun(run_id="run_1", seed_paper_id=seed))
+    repo.add_search_candidate(
+        db, candidate_id="cand_1", run_id="run_1", paper_id=tgt,
+        discovery_methods=[DiscoveryStrategy.KEYWORD], possible_duplicate_of=None, provenance={},
+    )
+    repo.save_ranked_papers(
+        db,
+        "run_1",
+        [
+            RankedPaper(
+                candidate_id="cand_1",
+                signals=SignalScores(semantic_doc=0.81, method_sim=0.62),
+                weights_version="w0-initial",
+                fused_score=0.7,
+                rerank_score=None,
+                final_rank=3,
+                band=Confidence.HIGH,
+                explanation=RankingExplanation(bullet_reasons=["b"], prose="p", signals_used=["semantic_doc"]),
+            )
+        ],
+        {"cand_1": tgt},
+    )
+    repo.save_trail_edges(
+        db,
+        "run_1",
+        [
+            TrailEdge(
+                edge_id="edge_1", run_id="run_1", source_paper_id=seed, target_paper_id=tgt,
+                relationship_type=RelationshipType.SIMILAR, detection_method=DetectionMethod.RULE,
+                evidence=[Evidence(span=SourceSpan(paper_id=tgt, quote="q"), role="target_claim")],
+                confidence=Confidence.MEDIUM,
+            )
+        ],
+    )
+    ws = create_workspace(db, owner=owner, req=_req(import_run_id="run_1"), settings=settings)
+
+    trail = grouped_trail(db, owner=owner, workspace_id=ws.workspace_id)
+    assert trail["seed"] == {"id": seed, "title": "Retrieval-Augmented Generation", "year": None}
+    entry = trail["groups"]["SIMILAR"][0]
+    assert entry["ranking"]["final_rank"] == 3
+    assert entry["ranking"]["band"] == "high"
+    assert entry["ranking"]["signals"]["semantic_doc"] == 0.81
+    assert entry["ranking"]["signals"]["method_sim"] == 0.62
+
+
+def test_grouped_trail_entry_without_a_ranking_says_so(db: Session, owner: User, settings: Settings) -> None:
+    seed = _seed_with_profile(db)
+    tgt = _paper(db, "Cand 1")
+    repo.create_search_run(db, SearchRun(run_id="run_1", seed_paper_id=seed))
+    repo.save_trail_edges(
+        db,
+        "run_1",
+        [
+            TrailEdge(
+                edge_id="edge_1", run_id="run_1", source_paper_id=seed, target_paper_id=tgt,
+                relationship_type=RelationshipType.SIMILAR, detection_method=DetectionMethod.RULE,
+                evidence=[Evidence(span=SourceSpan(paper_id=tgt, quote="q"), role="target_claim")],
+                confidence=Confidence.MEDIUM,
+            )
+        ],
+    )
+    ws = create_workspace(db, owner=owner, req=_req(import_run_id="run_1"), settings=settings)
+    entry = grouped_trail(db, owner=owner, workspace_id=ws.workspace_id)["groups"]["SIMILAR"][0]
+    assert entry["ranking"] is None  # absent, never invented

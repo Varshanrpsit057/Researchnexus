@@ -393,17 +393,30 @@ export interface TrailTarget {
   id: string;
   title: string | null;
   year: number | null;
+  authors?: string[];
+  venue?: string | null;
+}
+
+/** The target's standing in the discovery run the edge came from: the
+ * measured signals the relationship rule fired on. Null when that run has
+ * no ranking for it. */
+export interface TrailRanking {
+  final_rank: number;
+  band: Confidence;
+  signals: Partial<Record<keyof SignalScores, number>>;
 }
 
 export interface TrailGroupEntry {
   target: TrailTarget;
   edge: TrailEdge;
+  ranking?: TrailRanking | null;
 }
 
 export type TrailGroups = Record<RelationshipType, TrailGroupEntry[]>;
 
 export interface GroupedTrail {
   seed_paper_id: string;
+  seed?: { id: string; title: string | null; year: number | null };
   groups: TrailGroups;
 }
 
@@ -455,6 +468,25 @@ export interface ChatSession {
   owner_id: string;
   title: string | null;
   created_at: string;
+  /** Session list only: how many questions were asked, and when the last message landed. */
+  questions?: number;
+  last_active_at?: string;
+}
+
+/** A passage that supports one sentence of an answer, resolved from the stored chunk. */
+export interface ChatSource {
+  chunk_id: string;
+  paper_id: string;
+  paper_title: string | null;
+  section: string | null;
+  page: number | null;
+  quote: string;
+  /** The quote was cut to a readable length. */
+  truncated: boolean;
+}
+
+export interface ChatClaim extends Claim {
+  sources: ChatSource[];
 }
 
 export interface ChatMessage {
@@ -467,8 +499,13 @@ export interface ChatMessage {
   tokens_completion: number;
   faithfulness: number | null;
   answerable: boolean;
+  /** Assistant turns: what to try instead when the workspace can't answer. */
+  suggestion?: string | null;
+  /** Sentences left out because no source supported them. */
+  unsupported_dropped?: number;
+  warnings?: string[];
   created_at: string;
-  claims?: Claim[];
+  claims?: ChatClaim[];
 }
 
 export interface ChatSessionsResponse {
@@ -492,6 +529,12 @@ export interface ChatResponse {
   warnings: string[];
 }
 
+export type RagStage = "searching" | "reading" | "writing" | "checking" | "rewriting";
+
+export interface SseStatusEvent {
+  stage: RagStage;
+}
+
 export interface SseCitationEvent {
   marker: string;
   claim_id: string;
@@ -500,6 +543,9 @@ export interface SseCitationEvent {
   quote: string;
   section: string | null;
   page: number | null;
+  /** The cited sentence and every passage that supports it (absent from older backends). */
+  sentence?: string;
+  sources?: ChatSource[];
 }
 
 export interface SseUsageEvent {
@@ -514,6 +560,14 @@ export interface SseDoneEvent {
   answerable: boolean;
   unsupported_dropped?: number;
   suggestion?: string | null;
+  warnings?: string[];
+  /** A regenerated answer replaced these. */
+  replaced_message_ids?: string[];
+}
+
+export interface SseErrorEvent {
+  code: string;
+  message: string;
 }
 
 // --- summary / keypoints ------------------------------------------------
@@ -708,6 +762,14 @@ export interface GraphNode {
   label: string;
   paper_ids: string[];
   span: SourceSpan | null;
+  /** PAPER nodes: false for a paper reached only through a trail edge
+   * (a connected paper that was never added to the workspace). Absent from
+   * older backends, where every node was a member. */
+  in_workspace?: boolean;
+  role?: WorkspacePaperRole | null;
+  year?: number | null;
+  authors?: string[];
+  venue?: string | null;
 }
 
 export interface GraphEdgeRecord {
@@ -716,6 +778,11 @@ export interface GraphEdgeRecord {
   type: GraphEdgeType;
   evidence: SourceSpan[];
   confidence: Confidence;
+  /** The trail edges folded into this graph edge (absent from older backends). */
+  trail_edge_ids?: string[];
+  relationship_types?: RelationshipType[];
+  /** "pending" while any of those trail edges still awaits review. */
+  user_state?: Exclude<EdgeUserState, "rejected">;
 }
 
 export interface ResearchGraph {

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from app.domain.graph import GraphEdgeType, GraphNodeType
 from app.domain.profile import Confidence, SourceSpan
-from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge
+from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
 from app.domain.workspace import AddedBy, ResearchWorkspace, WorkspacePaper, WorkspacePaperRole
-from app.services.graph.builder import build_graph
+from app.services.graph.builder import PaperDetails, build_graph
 
 _TITLES = {"pap_seed": "Seed Paper", "pap_a": "Paper A", "pap_b": "Paper B"}
 
@@ -155,13 +155,91 @@ def test_pending_and_accepted_edges_are_both_included() -> None:
     assert g.edge_count == 1
 
 
-def test_an_edge_whose_target_left_the_workspace_is_dropped() -> None:
-    # pap_a is not a member of this workspace (e.g. it was removed) -- the
-    # trail row can still exist in the DB, but the graph must never show an
-    # edge whose endpoint has no corresponding node.
-    g = build_graph(_ws(["pap_seed"]), [_edge("pap_a", RelationshipType.SIMILAR)], _TITLES)
+def test_a_trail_edge_to_a_non_member_keeps_its_paper_as_a_connected_node() -> None:
+    # Regression: importing a discovery run attaches its trail edges before
+    # any of its papers join, and accepting an edge does not add the paper.
+    # The graph used to drop every such edge, leaving a real workspace with
+    # 19 reviewed connections graphed as two unconnected dots.
+    g = build_graph(_ws(["pap_seed"]), [_edge("pap_a", RelationshipType.SIMILAR, user_state="accepted")], _TITLES)
+    assert g.node_count == 2
+    assert g.edge_count == 1
+    connected = next(n for n in g.nodes if n.id == "pap_a")
+    assert connected.in_workspace is False
+    assert connected.role is None
+    assert connected.label == "Paper A"
+    assert g.edges[0].src == "pap_seed" and g.edges[0].dst == "pap_a"
+    assert g.edges[0].user_state == UserState.ACCEPTED
+
+
+def test_a_rejected_edge_to_a_non_member_adds_no_node() -> None:
+    g = build_graph(_ws(["pap_seed"]), [_edge("pap_a", RelationshipType.SIMILAR, user_state="rejected")], _TITLES)
+    assert {n.id for n in g.nodes} == {"pap_seed"}
     assert g.edge_count == 0
-    assert g.node_count == 1
+
+
+def test_every_edge_endpoint_has_a_node() -> None:
+    edges = [
+        _edge("pap_a", RelationshipType.SIMILAR, edge_id="edge_1"),
+        _edge("pap_b", RelationshipType.FOUNDATIONAL, edge_id="edge_2", user_state="accepted"),
+    ]
+    g = build_graph(_ws(["pap_seed"]), edges, _TITLES)
+    ids = {n.id for n in g.nodes}
+    assert all(e.src in ids and e.dst in ids for e in g.edges)
+
+
+def test_members_come_first_then_connected_papers() -> None:
+    g = build_graph(_ws(["pap_seed", "pap_b"]), [_edge("pap_a", RelationshipType.SIMILAR)], _TITLES)
+    assert [(n.id, n.in_workspace) for n in g.nodes] == [("pap_b", True), ("pap_seed", True), ("pap_a", False)]
+
+
+# --- node details -----------------------------------------------------------
+
+
+def test_member_nodes_carry_their_workspace_role() -> None:
+    g = build_graph(_ws(["pap_seed", "pap_a"]), [], _TITLES)
+    roles = {n.id: n.role for n in g.nodes}
+    assert roles == {"pap_seed": WorkspacePaperRole.SEED, "pap_a": WorkspacePaperRole.RELATED}
+
+
+def test_paper_details_are_carried_onto_nodes() -> None:
+    details = {"pap_a": PaperDetails(year=2019, authors=["A. Author", "B. Author"], venue="ACL")}
+    g = build_graph(_ws(["pap_seed"]), [_edge("pap_a", RelationshipType.SIMILAR)], _TITLES, details)
+    node = next(n for n in g.nodes if n.id == "pap_a")
+    assert (node.year, node.authors, node.venue) == (2019, ["A. Author", "B. Author"], "ACL")
+    seed = next(n for n in g.nodes if n.id == "pap_seed")
+    assert (seed.year, seed.authors, seed.venue) == (None, [], None)  # unknown, never invented
+
+
+# --- trail provenance and review state ---------------------------------------
+
+
+def test_an_edge_keeps_its_trail_edge_id_and_relationship_type() -> None:
+    g = build_graph(_ws(), [_edge("pap_a", RelationshipType.FOUNDATIONAL, edge_id="edge_f")], _TITLES)
+    assert g.edges[0].type == GraphEdgeType.CITES
+    assert g.edges[0].trail_edge_ids == ["edge_f"]
+    assert g.edges[0].relationship_types == [RelationshipType.FOUNDATIONAL]
+    assert g.edges[0].user_state == UserState.PENDING
+
+
+def test_a_merged_edge_lists_both_trail_edges_and_stays_pending_while_either_is() -> None:
+    edges = [
+        _edge("pap_a", RelationshipType.SIMILAR, edge_id="edge_sim", user_state="accepted"),
+        _edge("pap_a", RelationshipType.RECENT, edge_id="edge_rec", user_state="pending"),
+    ]
+    g = build_graph(_ws(), edges, _TITLES)
+    assert g.edge_count == 1
+    assert g.edges[0].trail_edge_ids == ["edge_rec", "edge_sim"]
+    assert g.edges[0].relationship_types == [RelationshipType.RECENT, RelationshipType.SIMILAR]
+    assert g.edges[0].user_state == UserState.PENDING
+
+
+def test_a_merged_edge_is_accepted_once_every_trail_edge_is() -> None:
+    edges = [
+        _edge("pap_a", RelationshipType.SIMILAR, edge_id="edge_sim", user_state="accepted"),
+        _edge("pap_a", RelationshipType.RECENT, edge_id="edge_rec", user_state="accepted"),
+    ]
+    g = build_graph(_ws(), edges, _TITLES)
+    assert g.edges[0].user_state == UserState.ACCEPTED
 
 
 # --- deterministic construction ---------------------------------------------

@@ -26,7 +26,7 @@ import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import { Reveal } from "@/components/effects/Reveal";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { AddPapersPanel } from "./AddPapersPanel";
-import { C, InlineError, focusRing, panel, primaryButton, quietButton } from "./ui";
+import { C, InlineError, WorkspaceLoadError, focusRing, panel, primaryButton, quietButton } from "./ui";
 import {
   buildStations,
   nextStation,
@@ -87,6 +87,12 @@ async function latestComparisonOrNull(workspaceId: string): Promise<ComparisonRe
     if (err instanceof ApiError && err.status === 404) return null;
     throw err;
   }
+}
+
+/** A workspace section's link. `base` is the legacy /workspaces/{id} root;
+ * sections rebuilt in the cinematic app live under /workspace/{id}. */
+function sectionHref(base: string, slug: string): string {
+  return ["trail", "graph", "chat"].includes(slug) ? `${base.replace("/workspaces/", "/workspace/")}/${slug}` : `${base}/${slug}`;
 }
 
 function formatUsd(value: number): string {
@@ -153,37 +159,9 @@ export default function WorkspacePage() {
   if (!ready) return null;
 
   if (workspaceError) {
-    const notFound = workspaceError instanceof ApiError && workspaceError.status === 404;
     return (
       <PageShell>
-        <div className="mx-auto mt-10 max-w-md rounded-2xl px-6 py-12 text-center" style={{ ...panel, border: `1px dashed ${C.lineStrong}` }}>
-          <h1 className="text-lg font-bold">{notFound ? "Workspace not found" : "Could not load this workspace"}</h1>
-          <p className="mt-2 text-sm" style={{ color: C.muted }}>
-            {notFound
-              ? "It may have been deleted, or it belongs to a different account."
-              : workspaceError instanceof ApiError && workspaceError.status >= 500
-                ? "The server hit an error while loading it. Try again in a moment."
-                : workspaceError instanceof ApiError
-                  ? `${workspaceError.message}. Try again.`
-                  : "The server couldn't be reached. Check your connection and try again."}
-          </p>
-          <div className="mt-6 flex justify-center gap-2">
-            {notFound ? (
-              <Link href="/workspaces" className={`rounded-full px-5 py-2.5 text-sm font-semibold ${focusRing}`} style={primaryButton}>
-                All workspaces
-              </Link>
-            ) : (
-              <button
-                type="button"
-                onClick={() => mutateWorkspace()}
-                className={`rounded-full px-5 py-2.5 text-sm font-semibold ${focusRing}`}
-                style={primaryButton}
-              >
-                Try again
-              </button>
-            )}
-          </div>
-        </div>
+        <WorkspaceLoadError error={workspaceError} onRetry={() => mutateWorkspace()} />
       </PageShell>
     );
   }
@@ -297,7 +275,7 @@ function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: stri
               </Link>
             )}
             <Link
-              href={`${base}/chat`}
+              href={sectionHref(base, "chat")}
               className={`inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold ${focusRing}`}
               style={primaryButton}
             >
@@ -383,7 +361,7 @@ function ResearchPath({ stations, next, base }: { stations: Station[]; next: Sta
           <ol className="relative grid gap-5 lg:grid-cols-5 lg:gap-3">
           {stations.map((s) => {
             const isNext = next?.key === s.key;
-            const href = s.key === "papers" ? "#papers" : `${base}/${s.slug}`;
+            const href = s.key === "papers" ? "#papers" : sectionHref(base, s.slug);
             return (
               <li key={s.key} className="relative">
                 <Link
@@ -421,7 +399,7 @@ function ResearchPath({ stations, next, base }: { stations: Station[]; next: Sta
               {next.detail}
             </p>
             <Link
-              href={next.key === "papers" ? "#papers" : `${base}/${next.slug}`}
+              href={next.key === "papers" ? "#papers" : sectionHref(base, next.slug)}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`}
               style={primaryButton}
             >
@@ -691,10 +669,10 @@ function GoDeeper({
   paperCount: number;
 }) {
   const rows = [
-    { href: `${base}/trail`, icon: GitBranch, title: "Research trail", detail: trailSummary(trail) },
-    { href: `${base}/graph`, icon: Graph, title: "Research graph", detail: "Papers, methods, and datasets on one map" },
+    { href: sectionHref(base, "trail"), icon: GitBranch, title: "Research trail", detail: trailSummary(trail) },
+    { href: sectionHref(base, "graph"), icon: Graph, title: "Research graph", detail: "Papers and their connections on one map, through time" },
     {
-      href: `${base}/chat`,
+      href: sectionHref(base, "chat"),
       icon: ChatCircleText,
       title: "Chat",
       detail:
