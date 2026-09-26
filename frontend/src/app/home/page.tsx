@@ -92,7 +92,7 @@ export default function HomePage() {
   const wsHref = (suffix: string) =>
     !latestWorkspace
       ? "/workspaces"
-      : ["trail", "graph", "chat"].includes(suffix)
+      : ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(suffix)
         ? `/workspace/${latestWorkspace.workspace_id}/${suffix}`
         : `/workspaces/${latestWorkspace.workspace_id}/${suffix}`;
 

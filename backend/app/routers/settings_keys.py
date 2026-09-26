@@ -76,6 +76,31 @@ async def put_key(body: ApiKeyRequest, current_user: CurrentUser, db: DbSession,
     return _serialize(record)
 
 
+@router.post("/api/v1/settings/llm-keys/{provider}/check")
+async def check_key(provider: str, current_user: CurrentUser, db: DbSession, settings: AppSettings) -> dict[str, object]:
+    """Probe the stored key again -- a key can be revoked or run out of credit
+    after it was saved. Decrypted for this request only; never returned."""
+    parsed = _parse_provider(provider)
+    ciphertext = repo.get_api_key_ciphertext(db, current_user.id, parsed)
+    stored = next((k for k in repo.list_api_keys(db, current_user.id) if k.provider == parsed), None)
+    if ciphertext is None or stored is None:
+        raise HTTPException(
+            status_code=404, detail={"error": {"code": "not_found", "message": f"no {parsed.value} key saved"}}
+        )
+    result = await probe(parsed, KeyVault(settings.key_vault_secret).decrypt(ciphertext))
+    record = repo.upsert_api_key(
+        db,
+        new_key_id=stored.id,
+        owner_id=current_user.id,
+        provider=parsed,
+        key_ciphertext=ciphertext,
+        key_last4=stored.key_last4,
+        status=ApiKeyStatus.WORKING if result.success else ApiKeyStatus.FAILED,
+        checked_at=datetime.now(timezone.utc),
+    )
+    return {"key": _serialize(record), "result": result.model_dump(mode="json", exclude_none=True)}
+
+
 @router.delete("/api/v1/settings/llm-keys/{provider}", status_code=204)
 def delete_key(provider: str, current_user: CurrentUser, db: DbSession) -> None:
     parsed = _parse_provider(provider)

@@ -144,3 +144,24 @@
     transition: none;
   }
 }
+
+/* once the graph takes the stage the page dims behind it: a deep navy that
+   keeps the atmosphere, never flat black. --dim-delay / --dim-dur come from
+   MORPH.fade, the same window in which the field quiets its own links. */
+.dim {
+  background: radial-gradient(120% 92% at 50% 55%, rgba(10, 18, 44, 0.46) 0%, rgba(6, 11, 28, 0.62) 55%, rgba(3, 5, 14, 0.78) 100%);
+  opacity: 0;
+  transition: opacity 360ms ease-out;
+}
+
+.dim[data-on="true"] {
+  opacity: 1;
+  transition: opacity var(--dim-dur) cubic-bezier(0.45, 0, 0.2, 1) var(--dim-delay);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dim,
+  .dim[data-on="true"] {
+    transition: none;
+  }
+}

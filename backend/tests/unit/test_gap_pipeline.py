@@ -86,12 +86,21 @@ def workspace(db: Session) -> ResearchWorkspace:
     return ws
 
 
-def _session(*, articulate_ok: bool = True, self_support: bool = True) -> LlmSession:
+def _session(*, articulate_ok: bool = True, self_support: bool = True, profile_ok: bool = True) -> LlmSession:
     def handler(request: httpx.Request) -> httpx.Response:
         body = request.content.decode()
-        if "phrase a research gap" in body:
+        if "scientific paper analysis assistant" in body:
+            if not profile_ok:
+                return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}})
+            # quotes copied from the abstract the pipeline sent
+            payload: object = {
+                "domain": {"value": "IR", "quote": None},
+                "research_problem": {"value": "dense retrieval", "quote": "dense retrieval"},
+                "limitations": {"items": [{"value": "English only", "quote": "English only"}]},
+            }
+        elif "phrase a research gap" in body:
             if not articulate_ok:
-                payload: object = {"statement": "The papers ignore quantum annealing.", "why_unaddressed": "quantum annealing untried", "proposed_direction": "use quantum annealing"}
+                payload = {"statement": "The papers ignore quantum annealing.", "why_unaddressed": "quantum annealing untried", "proposed_direction": "use quantum annealing"}
             elif "limitation" in body and "English only" in body:
                 payload = {
                     "statement": "Two papers report the same English only limitation and none of them resolves it.",
@@ -180,3 +189,50 @@ def test_rejected_gap_is_not_reproposed_on_rerun(db, workspace, settings) -> Non
 def test_gap_types_filter_limits_the_pipeline(db, workspace, settings) -> None:
     _run(db, workspace, settings, _session(), gap_types={GapType.GENERALIZATION_GAP})
     assert {g.gap_type for g in repo.get_gaps(db, "ws_1")} <= {GapType.GENERALIZATION_GAP}
+
+
+def _abstract_only_member(db: Session, ws: ResearchWorkspace, pid: str, abstract: str | None) -> ResearchWorkspace:
+    """A discovered paper: no text of its own beyond the abstract, and no profile."""
+    db.add(PaperORM(id=pid, title=pid.upper(), title_hash=title_hash(pid), year=2022, abstract=abstract, has_full_text=False))
+    db.commit()
+    member = WorkspacePaper(workspace_id=ws.workspace_id, paper_id=pid, added_by=AddedBy.TRAIL)
+    repo.add_workspace_paper(db, member, "usr_1")
+    got = repo.get_workspace(db, ws.workspace_id, "usr_1")
+    assert got is not None
+    return got
+
+
+def test_a_paper_without_a_profile_is_profiled_from_its_abstract_and_joins_the_gaps(db, workspace, settings) -> None:
+    ws = _abstract_only_member(db, workspace, "p4", "We study dense retrieval for English only corpora.")
+
+    res = _run(db, ws, settings, _session())
+
+    assert (res.profiled, res.unprofiled) == (1, 0)
+    profile = repo.get_profile(db, "p4")
+    assert profile is not None and profile.grounding == "abstract"
+    shared = next(g for g in repo.get_gaps(db, "ws_1") if g.gap_type is GapType.GENERALIZATION_GAP)
+    assert set(shared.supporting_papers) == {"p1", "p2", "p4"}
+    from_abstract = next(e for e in shared.supporting_evidence if e.paper_id == "p4")
+    assert from_abstract.span.section == "Abstract" and from_abstract.span.quote == "English only"
+    # two of three papers are backed by full text; the abstract-only one is not
+    assert shared.evidence_coverage == pytest.approx(2 / 3, abs=1e-5)
+
+
+def test_without_a_model_an_unprofiled_paper_is_counted_not_guessed(db, workspace, settings) -> None:
+    ws = _abstract_only_member(db, workspace, "p4", "We study dense retrieval for English only corpora.")
+
+    res = _run(db, ws, settings, None)
+
+    assert (res.profiled, res.unprofiled) == (0, 1)
+    assert repo.get_profile(db, "p4") is None
+
+
+def test_a_paper_that_cannot_be_profiled_is_counted_and_nothing_is_stored(db, workspace, settings) -> None:
+    ws = _abstract_only_member(db, workspace, "p4", "We study dense retrieval for English only corpora.")
+    ws = _abstract_only_member(db, ws, "p5", None)  # no abstract, no text
+
+    res = _run(db, ws, settings, _session(profile_ok=False))
+
+    assert (res.profiled, res.unprofiled) == (0, 2)
+    assert repo.get_profile(db, "p4") is None and repo.get_profile(db, "p5") is None
+    assert res.gap_count >= 1  # the profiled papers' gaps still come through

@@ -110,6 +110,20 @@ def test_create_then_get_workspace(tmp_path: Path) -> None:
     assert body["cost_used"] == 0.0
 
 
+def test_workspace_times_read_back_as_utc(tmp_path: Path) -> None:
+    # SQLite drops a timestamp's zone; without it a browser reads the time as local
+    client = _make_client(tmp_path)
+    token = _token(client)
+    _seed_analysed_paper()
+    ws = _create_ws(client, token)
+
+    got = client.get(f"/api/v1/workspaces/{ws['workspace_id']}", headers=_headers(token)).json()
+    listed = client.get("/api/v1/workspaces", headers=_headers(token)).json()["workspaces"][0]
+    for body in (got, listed):
+        assert body["created_at"].endswith(("Z", "+00:00")), body["created_at"]
+        assert body["updated_at"].endswith(("Z", "+00:00")), body["updated_at"]
+
+
 def test_create_with_unanalysed_seed_is_409(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)
@@ -165,6 +179,22 @@ def test_patch_workspace_updates_title_and_budget(tmp_path: Path) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["title"] == "new" and body["token_budget_usd"] == 9.0
+
+
+def test_a_workspace_budget_must_be_a_positive_amount(tmp_path: Path) -> None:
+    # a zero or negative cap would silently block every model stage in the workspace
+    client = _make_client(tmp_path)
+    token = _token(client)
+    _seed_analysed_paper()
+    wid = _create_ws(client, token)["workspace_id"]
+    for bad in (0, -1):
+        resp = client.patch(f"/api/v1/workspaces/{wid}", json={"token_budget_usd": bad}, headers=_headers(token))
+        assert resp.status_code == 422, bad
+    assert client.post(
+        "/api/v1/workspaces", json={"title": "x", "seed_paper_id": "pap_seed", "token_budget_usd": 0}, headers=_headers(token)
+    ).status_code == 422
+    title_only = client.patch(f"/api/v1/workspaces/{wid}", json={"title": "kept"}, headers=_headers(token)).json()
+    assert (title_only["title"], title_only["token_budget_usd"]) == ("kept", 5.0)
 
 
 def test_add_pin_tag_annotate_and_remove_paper(tmp_path: Path) -> None:

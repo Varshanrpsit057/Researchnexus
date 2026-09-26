@@ -8,6 +8,7 @@ import type {
   ChatSessionDetailResponse,
   ChatSessionsResponse,
   CitationFormat,
+  CitationLedger,
   CitationsResponse,
   ComparisonResponse,
   EdgeUserState,
@@ -16,6 +17,8 @@ import type {
   DirectionsListResponse,
   DirectionUserState,
   GapsJobResponse,
+  KeyCheckResponse,
+  HealthResponse,
   GapsListResponse,
   GapUserState,
   GroupedTrail,
@@ -46,6 +49,11 @@ export const auth = {
   createSession: (email: string, password: string) =>
     apiFetch<SessionResponse>("/api/v1/auth/session", { method: "POST", body: { email, password } }),
   me: () => apiFetch<MeResponse>("/api/v1/me"),
+  updateMe: (body: { default_provider: LlmProvider | null }) => apiFetch<MeResponse>("/api/v1/me", { method: "PATCH", body }),
+};
+
+export const service = {
+  health: () => apiFetch<HealthResponse>("/health"),
 };
 
 // --- BYOK keys --------------------------------------------------------
@@ -58,6 +66,9 @@ export const llmKeys = {
     apiFetch<ApiKeySummary>("/api/v1/settings/llm-keys", { method: "PUT", body: { provider, api_key } }),
   remove: (provider: LlmProvider) =>
     apiFetch<void>(`/api/v1/settings/llm-keys/${provider}`, { method: "DELETE" }),
+  /** Probe the stored key again, server side; the key never travels. */
+  check: (provider: LlmProvider) =>
+    apiFetch<KeyCheckResponse>(`/api/v1/settings/llm-keys/${provider}/check`, { method: "POST" }),
 };
 
 // --- papers -----------------------------------------------------------
@@ -150,6 +161,7 @@ export const workspaces = {
       body: { user_state },
     }),
 
+  citationLedger: (workspaceId: string) => apiFetch<CitationLedger>(`/api/v1/workspaces/${workspaceId}/citations`),
   citations: (workspaceId: string, body: { paper_ids?: string[] | "all"; formats?: CitationFormat[] }) =>
     apiFetch<CitationsResponse>(`/api/v1/workspaces/${workspaceId}/citations`, { method: "POST", body }),
 };

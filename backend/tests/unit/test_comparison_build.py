@@ -15,7 +15,7 @@ from app.db import repository as repo
 from app.db.base import Base
 from app.domain.candidate import NormalizedCandidate
 from app.domain.chunk import ChunkKind, PaperChunk
-from app.domain.comparison import ComparisonSchema
+from app.domain.comparison import CellStatus, ComparisonSchema
 from app.domain.user import LlmProvider
 from app.domain.workspace import (
     AddedBy,
@@ -27,6 +27,7 @@ from app.domain.workspace import (
 from app.llm.providers.openai_compat import OpenAiCompatClient
 from app.llm.session import LlmSession
 from app.retrieval.workspace_index import FaissWorkspaceIndex
+from app.services.ingest.abstract_chunks import abstract_chunk_id, ensure_abstract_chunks
 from app.services.normalize.canonical import title_hash
 from app.services.synthesis.compare import build_comparison
 
@@ -228,3 +229,61 @@ def test_build_is_deterministic(db, workspace, settings) -> None:
     b = _run(db, ws, settings, _session(payload), paper_ids=[p1])
     assert a.comparison.model_dump(exclude={"created_at"}) == b.comparison.model_dump(exclude={"created_at"})
     assert [c.model_dump() for c in a.claims] == [c.model_dump() for c in b.claims]
+
+
+# --- why a cell looks the way it does (CellStatus) ------------------------------
+
+
+def test_every_cell_says_why_it_is_empty(db, workspace, settings) -> None:
+    ws = workspace
+    p1 = ws.papers[0].paper_id
+    res = _run(db, ws, settings, _session({
+        p1: {"cells": [
+            {"column": "method", "value": "dense retrieval", "chunk_id": "a0", "quote": "We use dense retrieval on the NQ dataset"},
+            {"column": "dataset", "value": "MS MARCO", "chunk_id": "a0", "quote": "on the MS MARCO dataset"},  # not in the text
+            {"column": "result", "value": None, "chunk_id": None, "quote": None},
+        ]},
+    }), paper_ids=[p1], columns=("method", "dataset", "result", "metric"))
+    cells = res.comparison.rows[0].cells
+    assert cells["method"].status is CellStatus.FOUND
+    assert cells["dataset"].status is CellStatus.UNSUPPORTED and cells["dataset"].text is None  # never shown
+    assert cells["result"].status is CellStatus.NOT_STATED
+    assert cells["metric"].status is CellStatus.NOT_STATED  # read, and the model found nothing
+
+
+def test_a_paper_that_could_not_be_read_is_not_extracted_not_absent(db, workspace, settings) -> None:
+    ws = workspace
+    p2 = ws.papers[1].paper_id
+    failed = _run(db, ws, settings, _session({p2: "not valid json"}), paper_ids=[p2])
+    assert {c.status for c in failed.comparison.rows[0].cells.values()} == {CellStatus.NOT_EXTRACTED}
+    no_session = _run(db, ws, settings, None, paper_ids=[p2])
+    assert {c.status for c in no_session.comparison.rows[0].cells.values()} == {CellStatus.NOT_EXTRACTED}
+
+
+def test_a_paper_with_no_text_says_so(db, workspace, settings) -> None:
+    empty = repo.upsert_discovered_paper(db, NormalizedCandidate(title="No text at all", title_hash=title_hash("No text at all")))
+    ws = workspace.model_copy(
+        update={"papers": [*workspace.papers, WorkspacePaper(workspace_id="ws_1", paper_id=empty, added_by=AddedBy.TRAIL, grounding=Grounding.ABSTRACT)]}
+    )
+    res = _run(db, ws, settings, _session({}), paper_ids=[empty])
+    assert {c.status for c in res.comparison.rows[0].cells.values()} == {CellStatus.NO_TEXT}
+    assert f"no_text:{empty}" in res.warnings
+
+
+def test_an_abstract_only_paper_is_compared_through_its_abstract(db, workspace, settings) -> None:
+    # Regression: discovered papers have no PDF and were never chunked, so
+    # every one of their comparison cells came back empty.
+    abstract = "We propose a late-interaction reranker evaluated on MS MARCO with MRR at 10."
+    pid = repo.upsert_discovered_paper(
+        db, NormalizedCandidate(title="Late interaction", title_hash=title_hash("Late interaction"), abstract=abstract)
+    )
+    ws = workspace.model_copy(
+        update={"papers": [*workspace.papers, WorkspacePaper(workspace_id="ws_1", paper_id=pid, added_by=AddedBy.TRAIL, grounding=Grounding.ABSTRACT)]}
+    )
+    assert ensure_abstract_chunks(db, [p.paper_id for p in ws.papers]) == 1
+    res = _run(db, ws, settings, _session({
+        pid: {"cells": [{"column": "dataset", "value": "MS MARCO", "chunk_id": abstract_chunk_id(pid), "quote": "evaluated on MS MARCO"}]},
+    }), paper_ids=[pid])
+    cell = res.comparison.rows[0].cells["dataset"]
+    assert cell.status is CellStatus.FOUND and cell.text == "MS MARCO"
+    assert cell.span is not None and cell.span.section == "Abstract" and cell.grounding == "abstract"

@@ -111,7 +111,7 @@ test.describe("Research workspace", () => {
     await expect(station(page, "Comparison")).toContainText("Not run yet");
     await expect(page.getByRole("link", { name: /^Research trail/ })).toHaveAttribute("href", `/workspace/${workspaceId}/trail`);
     await expect(page.getByRole("link", { name: /^Research graph/ })).toHaveAttribute("href", `/workspace/${workspaceId}/graph`);
-    await expect(page.getByRole("link", { name: /^Citations/ })).toHaveAttribute("href", `/workspaces/${workspaceId}/citations`);
+    await expect(page.getByRole("link", { name: /^Citations/ })).toHaveAttribute("href", `/workspace/${workspaceId}/citations`);
     await expect(page.getByRole("link", { name: "Ask this workspace" })).toHaveAttribute("href", `/workspace/${workspaceId}/chat`);
 
     // 6. Add the remaining result from the workspace's own run.

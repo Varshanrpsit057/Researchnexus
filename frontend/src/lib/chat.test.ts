@@ -87,5 +87,8 @@ describe("chat helpers", () => {
     expect(relativeTime("2026-09-26T11:15:00Z", now)).toBe("45 min ago");
     expect(relativeTime("2026-09-26T07:00:00Z", now)).toBe("5 h ago");
     expect(relativeTime("2026-09-25T06:00:00Z", now)).toBe("yesterday");
+    // a zone-less stamp is UTC, whatever the browser's timezone
+    expect(relativeTime("2026-09-26T11:59:40", now)).toBe("just now");
+    expect(relativeTime("2026-09-26T17:29:40+05:30", now)).toBe("just now");
   });
 });

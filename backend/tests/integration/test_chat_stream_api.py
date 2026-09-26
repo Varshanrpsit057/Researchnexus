@@ -109,7 +109,9 @@ def test_a_reloaded_conversation_keeps_its_evidence_and_outcome(tmp_path: Path, 
 
     sessions = client.get(f"/api/v1/workspaces/{wid}/chat/sessions", headers=_h(token)).json()["sessions"]
     assert [(s["session_id"], s["questions"]) for s in sessions] == [(done["session_id"], 1)]
-    assert sessions[0]["last_active_at"]
+    # times carry their zone, so a browser in any timezone reads them right
+    assert sessions[0]["last_active_at"].endswith("+00:00")
+    assert sessions[0]["created_at"].endswith(("Z", "+00:00")) and user["created_at"].endswith(("Z", "+00:00"))
 
 
 def test_an_unanswerable_question_keeps_its_suggestion_after_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,3 +206,61 @@ def test_claims_come_back_in_sentence_order_past_ten_sentences(tmp_path: Path) -
         assert [c.sentence for c in repo.get_claims_for_artefact(db, "cm_1")] == [f"sentence {i}" for i in range(12)]
     finally:
         db.close()
+
+
+def test_stage_events_cross_a_real_socket_while_the_model_is_still_working(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Progressive, not buffered: served by a real uvicorn server, the first
+    stages reach the client while the provider has not answered yet."""
+    import asyncio
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    gate = threading.Event()
+    answer = _rag_router(generate=TWO_SENTENCES, verify=BOTH_SUPPORTED)
+
+    async def held(request: httpx.Request) -> httpx.Response:
+        while not gate.is_set():  # the model is "thinking" until the test releases it
+            await asyncio.sleep(0.02)
+        return answer(request)
+
+    client, token, wid = _ready(tmp_path, monkeypatch, held)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(client.app, host="127.0.0.1", port=port, log_level="warning", lifespan="off"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert server.started
+    threading.Timer(15, gate.set).start()  # never hang the suite
+
+    try:
+        seen: list[str] = []
+        released_at_first_status = None
+        with httpx.stream(
+            "POST",
+            f"http://127.0.0.1:{port}/api/v1/workspaces/{wid}/chat",
+            json={"message": QUESTION},
+            headers={**_h(token), "Accept": "text/event-stream"},
+            timeout=httpx.Timeout(20.0),
+        ) as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                if not line.startswith("event: "):
+                    continue
+                name = line[len("event: "):]
+                seen.append(name)
+                if name == "status" and released_at_first_status is None:
+                    released_at_first_status = gate.is_set()
+                    gate.set()  # let the model answer now
+        assert released_at_first_status is False  # it arrived before the model said a word
+        assert seen[0] == "status" and seen[-1] == "done" and "citation" in seen
+    finally:
+        gate.set()
+        server.should_exit = True
+        thread.join(timeout=10)

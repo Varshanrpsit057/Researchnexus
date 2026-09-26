@@ -11,7 +11,9 @@ Two stages:
    was actually retrieved for that paper and the quote is a verbatim span
    of it. Anything else -> the cell is `null` (missing), never a guess.
    Every kept cell becomes a persisted `Claim`
-   (`artefact_kind="comparison_cell"`).
+   (`artefact_kind="comparison_cell"`), and every cell records why it
+   looks the way it does (`CellStatus`): found; not stated in the text it
+   read; proposed but unsupported; no text to read; or not extracted.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.domain.citation import ArtefactKind, Claim
 from app.domain.comparison import (
+    CellStatus,
     Comparison,
     ComparisonCell,
     ComparisonRow,
@@ -127,10 +130,10 @@ class ComparisonResult:
     completion_tokens: int = 0
 
 
-def _empty_row(paper_id: str, columns: list[str], grounding: str) -> ComparisonRow:
+def _empty_row(paper_id: str, columns: list[str], grounding: str, status: CellStatus) -> ComparisonRow:
     return ComparisonRow(
         paper_id=paper_id,
-        cells={c: ComparisonCell(column=c, grounding=grounding) for c in columns},
+        cells={c: ComparisonCell(column=c, grounding=grounding, status=status) for c in columns},
     )
 
 
@@ -189,7 +192,10 @@ async def build_comparison(
     for p_idx, pid in enumerate(paper_ids):
         grounding = grounding_by_paper.get(pid, Grounding.FULL_TEXT.value)
         retrieved = retrieve(db, index, query, k=settings.compare_retrieve_k, scope_paper_ids=[pid])
-        row = _empty_row(pid, columns, grounding)
+        # until the paper is read, nothing about it is concluded
+        row = _empty_row(pid, columns, grounding, CellStatus.NOT_EXTRACTED if retrieved else CellStatus.NO_TEXT)
+        if not retrieved:
+            result.warnings.append(f"no_text:{pid}")
 
         if session is not None and retrieved:
             by_id = {c.chunk_id: c for c in retrieved}
@@ -204,12 +210,17 @@ async def build_comparison(
                 result.warnings.append(f"cell_extraction_failed:{pid}")
             else:
                 assert isinstance(parsed, _PaperCells)
+                # the text was read: a column it returns nothing for is not stated
+                for unread in row.cells.values():
+                    unread.status = CellStatus.NOT_STATED
                 for proposal in parsed.cells:
                     col = _norm_column(proposal.column)
                     if col not in row.cells:
                         continue  # LLM cannot introduce a column
                     cell = _grounded_cell(proposal, col, by_id, grounding)
                     if cell is None:
+                        if proposal.value and proposal.value.strip():
+                            row.cells[col].status = CellStatus.UNSUPPORTED  # proposed, not verifiable: never shown
                         continue
                     claim_id = f"clm_{comparison_id}_{p_idx}_{col}"
                     cell.claim_id = claim_id

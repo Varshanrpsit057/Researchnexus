@@ -179,3 +179,36 @@ def test_0015_keeps_an_answers_outcome_on_chat_messages(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert not {"suggestion", "unsupported_dropped", "warnings"} & cols
+
+
+def test_0016_stores_a_users_default_provider(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_default_provider.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "0015")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("INSERT INTO users (id, email, auth_provider, auth_subject, created_at) VALUES ('u1', 'a@b.c', 'local', 'a@b.c', '2026-01-01')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        existing = conn.execute("SELECT default_provider FROM users WHERE id = 'u1'").fetchone()
+    finally:
+        conn.close()
+    assert "default_provider" in cols
+    assert existing == (None,)  # existing users keep "first working key" until they choose
+
+    command.downgrade(cfg, "0015")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    finally:
+        conn.close()
+    assert "default_provider" not in cols

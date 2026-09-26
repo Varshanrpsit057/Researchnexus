@@ -23,6 +23,7 @@ import { papers as papersApi, workspaces } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
+import { latestComparisonOrNull } from "@/lib/compare";
 import { Reveal } from "@/components/effects/Reveal";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { AddPapersPanel } from "./AddPapersPanel";
@@ -78,21 +79,10 @@ function toLoadable<T>(q: { data?: T; error?: unknown }): Loadable<T> {
   return { status: "ready", data: q.data };
 }
 
-async function latestComparisonOrNull(workspaceId: string): Promise<ComparisonResponse | null> {
-  try {
-    return await workspaces.getLatestComparison(workspaceId);
-  } catch (err) {
-    // The API answers 404 until a comparison has been run -- that is "not
-    // run yet", not a failure.
-    if (err instanceof ApiError && err.status === 404) return null;
-    throw err;
-  }
-}
-
 /** A workspace section's link. `base` is the legacy /workspaces/{id} root;
  * sections rebuilt in the cinematic app live under /workspace/{id}. */
 function sectionHref(base: string, slug: string): string {
-  return ["trail", "graph", "chat"].includes(slug) ? `${base.replace("/workspaces/", "/workspace/")}/${slug}` : `${base}/${slug}`;
+  return ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(slug) ? `${base.replace("/workspaces/", "/workspace/")}/${slug}` : `${base}/${slug}`;
 }
 
 function formatUsd(value: number): string {
@@ -680,7 +670,7 @@ function GoDeeper({
           ? "Answers cite the exact passage they rest on"
           : `${chatCount} conversation${chatCount === 1 ? "" : "s"} so far`,
     },
-    { href: `${base}/citations`, icon: Quotes, title: "Citations", detail: `APA, IEEE, or BibTeX for ${paperCount} paper${paperCount === 1 ? "" : "s"}` },
+    { href: sectionHref(base, "citations"), icon: Quotes, title: "Citations", detail: `Where the workspace cites each of its ${paperCount} paper${paperCount === 1 ? "" : "s"}, with references to copy` },
   ];
 
   return (
@@ -717,7 +707,7 @@ function Decisions({ base, gaps, directions }: { base: string; gaps: ResearchGap
       <ul className="space-y-4">
         {acceptedGaps.map((g) => (
           <li key={g.gap_id}>
-            <Link href={`${base}/gaps`} className={`group block rounded-xl ${focusRing}`}>
+            <Link href={`${sectionHref(base, "gaps")}?gap=${encodeURIComponent(g.gap_id)}`} className={`group block rounded-xl ${focusRing}`}>
               <span className="text-[13px] font-semibold" style={{ color: C.mint }}>
                 Accepted gap · {g.gap_type.replace(/_/g, " ").toLowerCase()}
               </span>
@@ -729,7 +719,7 @@ function Decisions({ base, gaps, directions }: { base: string; gaps: ResearchGap
         ))}
         {acceptedDirections.map((d) => (
           <li key={d.direction_id}>
-            <Link href={`${base}/directions`} className={`group block rounded-xl ${focusRing}`}>
+            <Link href={`${sectionHref(base, "directions")}?direction=${encodeURIComponent(d.direction_id)}`} className={`group block rounded-xl ${focusRing}`}>
               <span className="text-[13px] font-semibold" style={{ color: C.mint }}>
                 Accepted direction
               </span>

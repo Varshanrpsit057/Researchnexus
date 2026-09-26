@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timezone
 
 from sqlalchemy import Select, func, select
@@ -78,7 +79,8 @@ def _user_domain_from_orm(row: UserORM) -> User:
         email=row.email,
         auth_provider=row.auth_provider,
         auth_subject=row.auth_subject,
-        created_at=row.created_at,
+        created_at=_utc(row.created_at),
+        default_provider=LlmProvider(row.default_provider) if row.default_provider else None,
     )
 
 
@@ -100,6 +102,16 @@ def get_user_by_email(db: Session, email: str) -> User | None:
     return _user_domain_from_orm(row) if row else None
 
 
+def set_default_provider(db: Session, user_id: str, provider: LlmProvider | None) -> User | None:
+    row = db.get(UserORM, user_id)
+    if row is None:
+        return None
+    row.default_provider = provider.value if provider else None
+    db.commit()
+    db.refresh(row)
+    return _user_domain_from_orm(row)
+
+
 # ---------------------------------------------------------------------------
 # ApiKey
 # ---------------------------------------------------------------------------
@@ -112,8 +124,8 @@ def _api_key_record_from_orm(row: ApiKeyORM) -> ApiKeyRecord:
         provider=LlmProvider(row.provider),
         key_last4=row.key_last4,
         status=ApiKeyStatus(row.status),
-        checked_at=row.checked_at,
-        created_at=row.created_at,
+        checked_at=_utc(row.checked_at) if row.checked_at else None,
+        created_at=_utc(row.created_at),
     )
 
 
@@ -151,8 +163,18 @@ def get_api_key_ciphertext(db: Session, owner_id: str, provider: LlmProvider) ->
 
 
 def list_api_keys(db: Session, owner_id: str) -> list[ApiKeyRecord]:
-    rows = db.execute(select(ApiKeyORM).where(ApiKeyORM.owner_id == owner_id)).scalars().all()
+    """In the order they were saved -- the fallback order when no default is set."""
+    rows = db.execute(
+        select(ApiKeyORM).where(ApiKeyORM.owner_id == owner_id).order_by(ApiKeyORM.created_at, ApiKeyORM.id)
+    ).scalars().all()
     return [_api_key_record_from_orm(r) for r in rows]
+
+
+def pick_working_key(db: Session, owner_id: str, preferred: LlmProvider | None = None) -> ApiKeyRecord | None:
+    """The key every LLM stage uses: the user's default provider when its key
+    works, else the first working key saved."""
+    working = [k for k in list_api_keys(db, owner_id) if k.status == ApiKeyStatus.WORKING]
+    return next((k for k in working if k.provider == preferred), None) or (working[0] if working else None)
 
 
 def has_working_api_key(db: Session, owner_id: str) -> bool:
@@ -169,6 +191,9 @@ def delete_api_key(db: Session, owner_id: str, provider: LlmProvider) -> bool:
     if row is None:
         return False
     db.delete(row)
+    user = db.get(UserORM, owner_id)
+    if user is not None and user.default_provider == provider.value:
+        user.default_provider = None  # a default without a key would silently mean "first working key"
     db.commit()
     return True
 
@@ -597,6 +622,14 @@ def _paper_external_ids(paper: PaperORM | None) -> dict[str, str]:
     return ids
 
 
+def get_run_citation_relationships(db: Session, run_id: str) -> dict[str, str]:
+    """Each candidate paper's citation relation to the run's seed, where it has one."""
+    rows = db.execute(
+        select(SearchCandidateORM.paper_id, SearchCandidateORM.citation_relationship).where(SearchCandidateORM.run_id == run_id)
+    ).all()
+    return {pid: rel for pid, rel in rows if rel and rel != CitationRelationship.NONE.value}
+
+
 def get_search_candidates(db: Session, run_id: str) -> list[PaperCandidate]:
     rows = (
         db.execute(
@@ -848,8 +881,8 @@ def _workspace_domain_from_orm(row: WorkspaceORM, papers: list[WorkspacePaperORM
         tokens_used=TokenUsage(prompt=row.tokens_prompt, completion=row.tokens_completion),
         cost_used_usd=row.cost_usd,
         source_run_id=row.source_run_id,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
+        created_at=_utc(row.created_at),
+        updated_at=_utc(row.updated_at),
     )
 
 
@@ -1190,13 +1223,18 @@ def accept_reject_workspace_edge(
 # ---------------------------------------------------------------------------
 
 
+def _utc(value: datetime) -> datetime:
+    """SQLite drops the zone of a stored timestamp; every one is written in UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _chat_session_from_orm(row: ChatSessionORM) -> ChatSession:
     return ChatSession(
         session_id=row.id,
         workspace_id=row.workspace_id,
         owner_id=row.owner_id,
         title=row.title,
-        created_at=row.created_at,
+        created_at=_utc(row.created_at),
     )
 
 
@@ -1214,7 +1252,7 @@ def _chat_message_from_orm(row: ChatMessageORM) -> ChatMessage:
         suggestion=row.suggestion,
         unsupported_dropped=row.unsupported_dropped or 0,
         warnings=list(row.warnings or []),
-        created_at=row.created_at,
+        created_at=_utc(row.created_at),
     )
 
 
@@ -1400,7 +1438,7 @@ def _comparison_from_orm(row: ComparisonORM) -> Comparison:
         rows=[ComparisonRow.model_validate(r) for r in (row.rows_json or [])],
         coverage=row.coverage,
         decontext_eval=row.decontext_eval,
-        created_at=row.created_at,
+        created_at=_utc(row.created_at),
     )
 
 
@@ -1481,7 +1519,7 @@ def _gap_from_orm(row: ResearchGapORM) -> ResearchGap:
         detection_rule=row.detection_rule,
         self_support_passed=row.self_support_passed,
         user_state=row.user_state,
-        generated_at=row.generated_at,
+        generated_at=_utc(row.generated_at),
         generator_model=row.generator_model,
     )
 
@@ -1489,12 +1527,17 @@ def _gap_from_orm(row: ResearchGapORM) -> ResearchGap:
 def save_gaps(db: Session, workspace_id: str, gaps: list[ResearchGap], *, owner_id: str | None = None) -> None:
     """Replace this workspace's candidate gaps. Rows a user has `accepted` or
     `rejected` are kept untouched -- a rerun never clobbers a human decision
-    (and the pipeline already skips a `rejected` gap_id)."""
+    (and the pipeline already skips a `rejected` gap_id) -- and so is a gap any
+    direction rests on: deleting it would cascade to those directions,
+    accepted ones included."""
     keep_ids = {g.gap_id for g in gaps}
+    directed = set(
+        db.execute(select(ResearchDirectionORM.gap_id).where(ResearchDirectionORM.workspace_id == workspace_id)).scalars().all()
+    )
     for row in db.execute(select(ResearchGapORM).where(ResearchGapORM.workspace_id == workspace_id)).scalars().all():
         if row.user_state != GapUserState.CANDIDATE.value:
             continue
-        if row.id not in keep_ids:
+        if row.id not in keep_ids and row.id not in directed:
             db.delete(row)
 
     for gap in gaps:
@@ -1588,24 +1631,34 @@ def _direction_from_orm(row: ResearchDirectionORM) -> ResearchDirection:
         confidence_basis=dict(row.confidence_basis or {}),
         flags=list(row.flags or []),
         user_state=row.user_state,
-        generated_at=row.generated_at,
+        generated_at=_utc(row.generated_at),
         generator_model=row.generator_model,
     )
 
 
 def save_directions(
-    db: Session, workspace_id: str, directions: list[ResearchDirection], *, owner_id: str | None = None
+    db: Session,
+    workspace_id: str,
+    directions: list[ResearchDirection],
+    *,
+    owner_id: str | None = None,
+    gap_ids: Collection[str] | None = None,
 ) -> None:
-    """Replace this workspace's candidate directions. Rows a user has
-    `accepted` or `rejected` are kept untouched -- a rerun never clobbers a
-    human decision."""
+    """Replace the candidate directions of the gaps this run regenerated
+    (`gap_ids`; every gap in the workspace when omitted). Directions are
+    generated per chosen gap, so another gap's unreviewed directions are left
+    alone, and rows a user has `accepted` or `rejected` are kept untouched --
+    a rerun never clobbers a human decision."""
     keep_ids = {d.direction_id for d in directions}
+    regenerated = None if gap_ids is None else set(gap_ids)
     for row in (
         db.execute(select(ResearchDirectionORM).where(ResearchDirectionORM.workspace_id == workspace_id))
         .scalars()
         .all()
     ):
         if row.user_state != DirectionUserState.CANDIDATE.value:
+            continue
+        if regenerated is not None and row.gap_id not in regenerated:
             continue
         if row.id not in keep_ids:
             db.delete(row)

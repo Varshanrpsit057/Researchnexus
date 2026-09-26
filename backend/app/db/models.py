@@ -46,6 +46,8 @@ class UserORM(Base):
     auth_provider: Mapped[str] = mapped_column(String(32), default="local")
     auth_subject: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # the provider every LLM stage uses when its key works (API spec §2 `default_provider`)
+    default_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ApiKeyORM(Base):

@@ -15,6 +15,7 @@ export default defineConfig({
   retries: 0,
   reporter: "list",
   use: {
+    // the project's one frontend port (the backend is always :8000)
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
   },

@@ -3,7 +3,9 @@ Model §8 "Pipeline (enforced in code order)"; Roadmap Phase 11).
 
 Fixed order, every step a hard gate:
 
-    matrix  ->  deterministic rule candidates (+ trail CONTRADICTION edges)
+    first-use profiles (a member without one is read by the model: its full
+      text, else its abstract, flagged `grounding="abstract"`)
+      ->  matrix  ->  deterministic rule candidates (+ trail CONTRADICTION edges)
       ->  evidence assembly (>= 2 real papers or DROP)
       ->  constrained LLM articulation (introduces an unsupported claim -> DROP)
       ->  Self-RAG self-support check (fails -> DROP)
@@ -32,6 +34,7 @@ from app.services.gaps.candidates import GapCandidate, contradiction_candidates,
 from app.services.gaps.confidence import assign_confidence, self_support_check
 from app.services.gaps.evidence import assemble
 from app.services.gaps.matrix import PaperMeta, build_matrix
+from app.services.profile.pipeline import profile_with_session
 
 
 @dataclass
@@ -49,6 +52,8 @@ class GapBuildResult:
     dropped_unsupported_articulation: int = 0
     dropped_self_support: int = 0
     skipped_rejected: int = 0
+    profiled: int = 0     # members profiled for this run (they had none)
+    unprofiled: int = 0   # members that still have no profile, so no rule could see them
     by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -88,6 +93,20 @@ def _paper_metas(db: Session, workspace: ResearchWorkspace) -> list[PaperMeta]:
     return metas
 
 
+async def _profile_missing(
+    db: Session, workspace: ResearchWorkspace, session: LlmSession | None, settings: Settings, result: GapBuildResult
+) -> None:
+    for wp in workspace.papers:
+        if repo.get_profile(db, wp.paper_id) is not None:
+            continue
+        paper = repo.get_paper(db, wp.paper_id)
+        profile = await profile_with_session(db, paper, session, settings) if session and paper else None
+        if profile is None:
+            result.unprofiled += 1
+        else:
+            result.profiled += 1
+
+
 async def build_gaps(
     db: Session,
     *,
@@ -96,11 +115,14 @@ async def build_gaps(
     session: LlmSession | None,
     settings: Settings,
 ) -> GapBuildResult:
+    result = GapBuildResult(workspace_id=workspace.workspace_id)
+    await _profile_missing(db, workspace, session, settings, result)
     profiles = {
         wp.paper_id: p
         for wp in workspace.papers
         if (p := repo.get_profile(db, wp.paper_id)) is not None
     }
+    abstract_only = {pid for pid, p in profiles.items() if p.grounding == "abstract"}
     metas = _paper_metas(db, workspace)
     matrix = build_matrix(profiles, metas)
 
@@ -112,11 +134,11 @@ async def build_gaps(
     candidates += contradiction
 
     rejected = repo.get_rejected_gap_ids(db, workspace.workspace_id)
-    result = GapBuildResult(workspace_id=workspace.workspace_id, candidate_count=len(candidates))
+    result.candidate_count = len(candidates)
     gaps: list[ResearchGap] = []
 
     for cand in candidates:
-        assembled = assemble(cand, min_papers=options.min_supporting_papers)
+        assembled = assemble(cand, min_papers=options.min_supporting_papers, abstract_only=abstract_only)
         if assembled is None:
             result.dropped_insufficient_evidence += 1
             continue

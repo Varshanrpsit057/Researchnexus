@@ -11,7 +11,7 @@ from app.db.base import Base
 from app.db.models import ResearchDirectionORM
 from app.domain.candidate import NormalizedCandidate
 from app.domain.direction import DirectionUserState, ResearchDirection
-from app.domain.gap import GapEvidence, GapType, ResearchGap
+from app.domain.gap import GapEvidence, GapType, GapUserState, ResearchGap
 from app.domain.profile import Confidence, SourceSpan
 from app.domain.workspace import AddedBy, ResearchWorkspace, WorkspacePaper, WorkspacePaperRole
 from app.services.normalize.canonical import title_hash
@@ -124,3 +124,32 @@ def test_deleting_the_workspace_cascades_to_directions(db: Session) -> None:
     repo.save_directions(db, "ws_1", [_direction("dir_1")], owner_id="usr_1")
     repo.delete_workspace(db, "ws_1", "usr_1")
     assert db.query(ResearchDirectionORM).filter_by(workspace_id="ws_1").count() == 0
+
+
+def test_saving_one_gaps_directions_leaves_another_gaps_candidates_alone(db: Session) -> None:
+    _workspace(db)
+    other = repo.get_gap(db, "gap_1", workspace_id="ws_1")
+    assert other is not None
+    repo.save_gaps(db, "ws_1", [other, other.model_copy(update={"gap_id": "gap_2"})], owner_id="usr_1")
+    repo.save_directions(db, "ws_1", [_direction("dir_a")], owner_id="usr_1", gap_ids=["gap_1"])
+
+    # directions are generated per chosen gap: a run for gap_2 must not wipe gap_1's unreviewed ones
+    repo.save_directions(db, "ws_1", [_direction("dir_b", gap_id="gap_2")], owner_id="usr_1", gap_ids=["gap_2"])
+    assert {d.direction_id for d in repo.get_directions(db, "ws_1")} == {"dir_a", "dir_b"}
+
+    # a rerun for gap_1 still replaces gap_1's own stale candidates
+    repo.save_directions(db, "ws_1", [_direction("dir_a2")], owner_id="usr_1", gap_ids=["gap_1"])
+    assert {d.direction_id for d in repo.get_directions(db, "ws_1")} == {"dir_a2", "dir_b"}
+
+
+def test_a_gap_rerun_keeps_a_gap_that_directions_rest_on(db: Session) -> None:
+    _workspace(db)
+    repo.save_directions(db, "ws_1", [_direction("dir_1")], owner_id="usr_1")
+    repo.set_direction_user_state(db, "dir_1", workspace_id="ws_1", owner_id="usr_1", state=DirectionUserState.ACCEPTED)
+    # the reader moves the gap back to review, then a rerun no longer finds it
+    repo.set_gap_user_state(db, "gap_1", workspace_id="ws_1", owner_id="usr_1", state=GapUserState.CANDIDATE)
+    repo.save_gaps(db, "ws_1", [], owner_id="usr_1")
+
+    assert repo.get_gap(db, "gap_1", workspace_id="ws_1") is not None
+    kept = repo.get_directions(db, "ws_1")
+    assert [(d.direction_id, d.user_state) for d in kept] == [("dir_1", "accepted")]

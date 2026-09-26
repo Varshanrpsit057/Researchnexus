@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import type { Camera } from "@/lib/graph/camera";
-import { zoomAt } from "@/lib/graph/camera";
+import { nodeZoom, zoomAt } from "@/lib/graph/camera";
 import { placeLabels } from "@/lib/graph/labels";
 import { NODE_RADIUS, type Layout } from "@/lib/graph/layout";
 import { EDGE_STYLE, type GEdge, type GNode, type GraphModel, type Visible } from "@/lib/graph/model";
@@ -66,10 +66,6 @@ function measureLabel(text: string, bold: boolean): number {
   measureCtx.font = `${bold ? 700 : 500} 12.5px ${getComputedStyle(document.body).fontFamily}`;
   return Math.ceil(measureCtx.measureText(text).width) + 2;
 }
-
-/** Screen size factor for nodes: they grow a little as you zoom in and
- * shrink a little as you zoom out, but never scale 1:1 with the map. */
-const nodeZoom = (k: number) => Math.max(0.75, Math.min(1.3, k));
 
 interface EdgeGeometry {
   d: string;

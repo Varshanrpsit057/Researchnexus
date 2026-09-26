@@ -201,12 +201,13 @@ export default function ChatPage() {
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 pt-5 lg:pt-6">
-            <div className="min-w-0 flex-1">
+          {/* the back link shares its row with the small-screen actions, so the title keeps the full width */}
+          <header className="shrink-0 pt-4 lg:pt-6">
+            <div className="flex items-center gap-2">
               {workspace ? (
                 <Link
                   href={`/workspace/${id}`}
-                  className={`inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-sm text-sm hover:text-white sm:min-h-0 ${focusRing}`}
+                  className={`inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-sm text-sm hover:text-white sm:min-h-0 ${focusRing}`}
                   style={{ color: C.muted }}
                 >
                   <ArrowLeft className="size-4 shrink-0" aria-hidden />
@@ -215,9 +216,7 @@ export default function ChatPage() {
               ) : (
                 <div className="h-5 w-48 rounded motion-safe:animate-pulse" style={{ background: "rgba(255,255,255,.08)" }} />
               )}
-              <h1 className="mt-1.5 text-[clamp(24px,3vw,32px)] font-extrabold leading-[1.1] tracking-[-0.025em]">Ask this workspace</h1>
-            </div>
-            <div className="flex items-center gap-2 lg:hidden">
+              <div className="ml-auto flex shrink-0 items-center gap-2 lg:hidden">
               <button
                 type="button"
                 onClick={() => setShowConversations((v) => !v)}
@@ -230,7 +229,9 @@ export default function ChatPage() {
                 Conversations{conversations.length > 0 && <span className="tabular-nums" style={{ color: C.muted }}>{conversations.length}</span>}
               </button>
               <NewConversation compact onClick={() => openSession(null)} />
+              </div>
             </div>
+            <h1 className="mt-1.5 text-[clamp(24px,3vw,32px)] font-extrabold leading-[1.1] tracking-[-0.025em]">Ask this workspace</h1>
           </header>
 
           {showConversations && (
@@ -355,12 +356,14 @@ export default function ChatPage() {
           {/* the composer */}
           <form onSubmit={submit} className="mx-auto w-full max-w-[760px] shrink-0 pb-4 pt-2 sm:pb-6">
             {noKey && (
-              <p className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]" style={{ color: C.warning }}>
-                <Warning className="size-4 shrink-0" weight="bold" aria-hidden />
-                No working LLM provider key is saved, so questions can&apos;t be answered yet.
-                <Link href="/settings" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
-                  Add a key
-                </Link>
+              <p className="mb-2 flex items-start gap-2 text-[13px] leading-snug" style={{ color: C.warning }}>
+                <Warning className="mt-px size-4 shrink-0" weight="bold" aria-hidden />
+                <span>
+                  No working LLM provider key is saved, so questions can&apos;t be answered yet.{" "}
+                  <Link href="/settings" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
+                    Add a key
+                  </Link>
+                </span>
               </p>
             )}
             <div
@@ -383,7 +386,7 @@ export default function ChatPage() {
                 }}
                 rows={1}
                 disabled={noKey}
-                placeholder={noKey ? "Add an LLM key in Settings to ask questions" : "Ask about these papers…"}
+                placeholder={noKey ? "Add a key to ask" : "Ask about these papers…"}
                 className="max-h-40 min-h-11 flex-1 resize-none bg-transparent py-2.5 text-[15px] leading-snug caret-[#5df0a8] outline-none placeholder:text-[#8f9bb8] disabled:cursor-not-allowed [field-sizing:content]"
                 style={{ color: C.ink }}
               />

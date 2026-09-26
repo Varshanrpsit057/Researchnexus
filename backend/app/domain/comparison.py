@@ -9,6 +9,11 @@ no support are `null`, not hallucinated"):
 - a `ComparisonCell` with `text` set always carries a `span` into a real
   `paper_chunks` row and a `claim_id` (a persisted `Claim` with
   `artefact_kind="comparison_cell"`).
+- every cell says *why* it looks the way it does (`status`): found in the
+  text; not stated there; a value was proposed but no verbatim passage
+  supports it (never shown); the paper had no text to read; or extraction
+  failed for that paper. Cells stored before statuses existed read back as
+  `found` or `unknown`.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.domain.profile import SourceSpan
 
@@ -35,6 +40,15 @@ class ComparisonSchema(BaseModel):
     generated_by: str = SchemaOrigin.DETERMINISTIC_UNION.value
 
 
+class CellStatus(str, Enum):
+    FOUND = "found"  # stated in the paper; `span` is the verbatim passage
+    NOT_STATED = "not_stated"  # the paper's text was read; it does not state this
+    UNSUPPORTED = "unsupported"  # a value was proposed, but no passage supports it verbatim
+    NO_TEXT = "no_text"  # the paper has no text in the workspace to read
+    NOT_EXTRACTED = "not_extracted"  # reading this paper failed; nothing was concluded
+    UNKNOWN = "unknown"  # stored before statuses were recorded
+
+
 class ComparisonCell(BaseModel):
     column: str
     text: str | None = None                     # None => missing, never invented
@@ -42,6 +56,15 @@ class ComparisonCell(BaseModel):
     claim_id: str | None = None
     grounding: str = "full_text"                 # "full_text" | "abstract"
     conflicting: list[str] = Field(default_factory=list)  # other verified values seen in evidence
+    status: CellStatus | None = None
+
+    @model_validator(mode="after")
+    def _derive_status(self) -> ComparisonCell:
+        if self.text is not None and self.span is not None:
+            self.status = CellStatus.FOUND  # a value with evidence is found, whatever was passed
+        elif self.status is None or self.status is CellStatus.FOUND:
+            self.status = CellStatus.UNKNOWN
+        return self
 
     @property
     def has_evidence(self) -> bool:

@@ -1,256 +1,232 @@
-// spec: Slice 6 (Compare -> Gap) critical flow.
+// spec: Phase 11 (Research Gaps) critical flow at /workspace/[id]/gaps.
 //
-// Both `compare` and `gaps` generation are LLM-gated, and the real backend
-// 409s `llm_key_required` synchronously for each -- before any synthesis
-// or job work starts (see routers/synthesis.py) -- since no working BYOK
-// key exists in this environment. Both POSTs are mocked at the network
-// layer for that reason. Everything else runs for real: auth, upload,
-// workspace creation, and adding a second paper by id (compare requires
-// >=2 workspace members); the initial `GET .../gaps` list is also real,
-// since listing needs no LLM key and a fresh workspace genuinely has zero
-// gaps -- proving the empty state without a mock.
-import { execFileSync } from "node:child_process";
+// The gaps under test are the real pipeline's output: seed-gaps.py runs
+// app/services/gaps/pipeline.py::build_gaps over the workspace's real
+// papers -- profiling the discovered ones from their abstracts, applying
+// the deterministic gap rules, and checking every statement against its
+// passages -- exactly as the POST's background job does. Only the language
+// model inside it is scripted (no BYOK key exists here). In the browser the
+// only mocks are the `me` flag saying a key is saved, the LLM-gated POST,
+// and its job's status, which carries the real run's own counts. Listing,
+// accepting and rejecting gaps are the real backend.
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures";
 
 const PYTHON = String.raw`H:\Researchnexus\backend\.venv\Scripts\python.exe`;
+const HELPERS = __dirname;
+const TRAIL_FIXTURE = path.join(__dirname, "..", "trail", "seed-trail-run.py");
 
-function seedProfile(paperId: string, title: string) {
-  execFileSync(PYTHON, [path.join(__dirname, "seed-real-profile.py"), paperId, title]);
-}
+const SIMILAR = "Phase 7 Fixture: Retrieval-Augmented Generators Revisited";
+const COMPETING = "Phase 7 Fixture: A Competing Symbolic Approach";
+const EXTENDING = "Phase 7 Fixture: Extending Parametric Memory with Dense Retrievers";
+const METRIC_GAP = "The 2 papers share no common metric, so their results are not directly comparable.";
 
-function seedSecondPaperAndEdge(seedPaperId: string, targetPaperId: string, workspaceId: string) {
-  execFileSync(PYTHON, [path.join(__dirname, "seed-second-paper-and-edge.py"), seedPaperId, targetPaperId, workspaceId]);
-}
+const py = (args: string[]) => execFileSync(PYTHON, args).toString();
 
-function cleanupSeededProfile(paperId: string) {
-  execFileSync(PYTHON, [path.join(__dirname, "cleanup-seeded-profile.py"), paperId]);
-}
-
-async function createWorkspaceWithTwoPapers(
-  page: import("@playwright/test").Page,
-  label: string
-): Promise<{ workspaceId: string; seedPaperId: string; secondPaperId: string }> {
-  const fileChooserPromise = page.waitForEvent("filechooser");
+async function uploadSeed(page: Page): Promise<string> {
+  const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Browse for a file" }).click();
-  const fileChooser = await fileChooserPromise;
-  await fileChooser.setFiles(path.join(process.cwd(), "tests", "fixtures", "sample-paper.pdf"));
+  await (await chooser).setFiles(path.join(process.cwd(), "tests", "fixtures", "sample-paper.pdf"));
   await page.waitForURL(/\/papers\/pap_/, { timeout: 15_000 });
-  const seedPaperId = page.url().split("/papers/")[1].split("?")[0];
-  seedProfile(seedPaperId, label);
-  await page.reload();
-  await page.getByText("Skip discovery, start a workspace with just this paper").click();
-  await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
-  await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
-  const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
-
-  const secondPaperId = `pap_pw_gap_${Date.now()}`;
-  seedSecondPaperAndEdge(seedPaperId, secondPaperId, workspaceId);
-  await page.goto(`/workspaces/${workspaceId}/papers`);
-  await page.getByLabel("Add a paper by ID").fill(secondPaperId);
-  await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByText(secondPaperId)).toBeVisible({ timeout: 5_000 });
-
-  return { workspaceId, seedPaperId, secondPaperId };
+  return page.url().split("/papers/")[1].split("?")[0];
 }
 
-const NOT_FOUND_COMPARISON = { detail: { error: { code: "not_found", message: "no comparison run yet" } } };
+function collectConsoleErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("console", (m) => {
+    // intentional failures: the simulated 500 and the missing workspace's real 404
+    if (m.type() === "error" && !/\b(500|404)\b/.test(m.text())) errors.push(m.text());
+  });
+  page.on("pageerror", (e) => errors.push(e.message));
+  return errors;
+}
 
-test.describe("Compare -> Gap", () => {
-  let seededPaperId: string | null = null;
+async function claimAKey(page: Page) {
+  await page.route("**/api/v1/me", async (route: Route) => {
+    const res = await route.fetch();
+    route.fulfill({ response: res, json: { ...(await res.json()), has_working_llm_key: true } });
+  });
+}
+
+test.describe("Research gaps", () => {
+  let seedId: string | null = null;
 
   test.afterEach(() => {
-    if (seededPaperId) cleanupSeededProfile(seededPaperId);
-    seededPaperId = null;
+    if (seedId) {
+      py([path.join(HELPERS, "cleanup-seeded-profile.py"), seedId]);
+      py([TRAIL_FIXTURE, "restore", seedId]);
+    }
+    seedId = null;
   });
 
-  test("comparing papers renders a coverage table, and a persisted result reappears on revisit", async ({ page }) => {
-    const { workspaceId, seedPaperId, secondPaperId } = await createWorkspaceWithTwoPapers(page, "Compare Flow Seed Paper");
-    seededPaperId = seedPaperId;
+  test("a workspace's papers yield gaps traced to their passages, to accept or reject", async ({ page }) => {
+    // 1. A real workspace: the uploaded seed plus three papers from a real discovery run.
+    seedId = await uploadSeed(page);
+    py([path.join(HELPERS, "seed-real-profile.py"), seedId, "Gap Flow Seed"]);
+    const stamp = Date.now();
+    const runId = `run_pw_gaps_${stamp}`;
+    py([TRAIL_FIXTURE, "seed", seedId, runId, `g${stamp}`]);
+    await page.route("**/api/v1/papers/*/discover-related", (route) =>
+      route.fulfill({ json: { job: { job_id: "job_pw_gd", kind: "discover", status: "queued", poll_url: "/api/v1/jobs/job_pw_gd" } } }),
+    );
+    await page.route("**/api/v1/jobs/job_pw_gd", (route) =>
+      route.fulfill({ json: { job_id: "job_pw_gd", status: "succeeded", progress: { stage: "done" }, result_ref: runId, error: null } }),
+    );
+    const consoleErrors = collectConsoleErrors(page);
+    await page.goto(`/discover/${seedId}`);
+    await expect(page.getByText(SIMILAR)).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
+    await page.waitForURL(/\/workspace\/ws_/, { timeout: 15_000 });
+    const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
+    await page.getByRole("button", { name: "Add papers" }).click();
+    for (const title of [SIMILAR, COMPETING, EXTENDING]) await page.getByRole("checkbox", { name: new RegExp(title) }).check();
+    await page.getByRole("button", { name: "Add 3 papers" }).click();
+    await expect(page.getByRole("heading", { name: /^Papers\s*4$/ })).toBeVisible({ timeout: 15_000 });
 
-    const comparisonResponse = {
-      comparison_id: "cmp_pw_1",
-      schema: ["method", "dataset"],
-      generated_by: "playwright-mock",
-      paper_ids: [seedPaperId, secondPaperId],
-      rows: [
-        {
-          paper_id: seedPaperId,
-          cells: {
-            method: { column: "method", text: "Retrieval-augmented generation", span: null, claim_id: null, grounding: "full_text", conflicting: [] },
-            dataset: { column: "dataset", text: "Natural Questions", span: null, claim_id: null, grounding: "full_text", conflicting: [] },
-          },
-        },
-        {
-          paper_id: secondPaperId,
-          cells: {
-            method: { column: "method", text: "Dense retrieval", span: null, claim_id: null, grounding: "full_text", conflicting: ["claim_x"] },
-            dataset: { column: "dataset", text: null, span: null, claim_id: null, grounding: "full_text", conflicting: [] },
-          },
-        },
-      ],
-      coverage: 0.85,
-      decontext_eval: 0.7,
-      warnings: [] as string[],
-    };
+    // 2. Workspace -> Gaps, from the overview's gaps station.
+    await page.getByRole("link", { name: /^Gaps\s*:/ }).click();
+    await page.waitForURL(new RegExp(`/workspace/${workspaceId}/gaps$`));
+    await expect(page.getByRole("heading", { level: 1, name: "Research gaps" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "No gaps yet" })).toBeVisible({ timeout: 10_000 });
+    // no key saved (real): a run can't start, and the page says which papers still need reading
+    await expect(page.getByText("No working LLM provider key is saved, so a run can't start yet.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Find gaps" })).toBeDisabled();
+    await expect(page.getByText(/1 of 4 papers has a research profile; the other 3 need a model to read their text first\./)).toBeVisible();
 
-    // A real comparison was never actually run (the POST below is mocked,
-    // so nothing lands in the backend's own `comparisons` table) -- this
-    // flag stands in for "does one exist yet" across the GET mock so the
-    // same test can prove both the pre-run empty state and the post-run
-    // persisted-on-reload render, mirroring discover-flow.spec.ts's
-    // mutable-flag approach for the same reason (a mock can't persist).
-    let hasComparison = false;
-    await page.route(`**/api/v1/workspaces/${workspaceId}/compare`, (route) => {
-      if (route.request().method() === "POST") {
-        hasComparison = true;
-        route.fulfill({ json: comparisonResponse });
-      } else {
-        route.fulfill(hasComparison ? { json: comparisonResponse } : { status: 404, json: NOT_FOUND_COMPARISON });
-      }
+    // 3. A run: the first fails, the second is the real pipeline's.
+    await claimAKey(page);
+    const jobs: Record<string, { status: string; progress: Record<string, string>; error: string | null }> = {};
+    let started = 0;
+    await page.route(`**/api/v1/workspaces/${workspaceId}/gaps`, (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      started += 1;
+      const jobId = `job_pw_gaps_${stamp}_${started}`;
+      jobs[jobId] = { status: "running", progress: { gaps: "running" }, error: null };
+      return route.fulfill({ status: 202, json: { job: { job_id: jobId, kind: "gaps", status: "queued", poll_url: `/api/v1/jobs/${jobId}` } } });
     });
-
-    await page.goto(`/workspaces/${workspaceId}/compare`);
-    await expect(page.getByText("No comparison yet")).toBeVisible({ timeout: 5_000 });
-
-    await page.locator("label", { hasText: seedPaperId }).click();
-    await page.locator("label", { hasText: secondPaperId }).click();
-    await page.getByRole("button", { name: /Compare 2 papers/ }).click();
-
-    await expect(page.getByText("85% coverage")).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText("70% decontextualised")).toBeVisible();
-    // Scoped to the table: the mocked cell text collides (case-
-    // insensitively, Playwright's default) with the real seed paper's own
-    // title, which the workspace chrome also renders on this page.
-    const table = page.locator("table");
-    await expect(table.getByText("Retrieval-augmented generation")).toBeVisible();
-    await expect(table.getByText("Dense retrieval")).toBeVisible();
-    await expect(table.getByText("conflicts with 1")).toBeVisible();
-
-    // The real regression: before this session's Slice 6 pass, `result`
-    // was local-only `useState`, so a reload always re-showed "No
-    // comparison yet" even though a real comparison was on record.
+    await page.route(`**/api/v1/jobs/job_pw_gaps_${stamp}_*`, (route) => {
+      const jobId = new URL(route.request().url()).pathname.split("/").pop()!;
+      route.fulfill({ json: { job_id: jobId, kind: "gaps", workspace_id: workspaceId, result_ref: null, ...jobs[jobId] } });
+    });
     await page.reload();
-    await expect(page.getByText("85% coverage")).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator("table").getByText("Retrieval-augmented generation")).toBeVisible();
-  });
-
-  test("generating gaps renders an evidence-backed card you can accept, and a failed run shows a clean retryable message", async ({ page }) => {
-    const { workspaceId, seedPaperId, secondPaperId } = await createWorkspaceWithTwoPapers(page, "Gap Flow Seed Paper");
-    seededPaperId = seedPaperId;
-
-    await page.goto(`/workspaces/${workspaceId}/gaps`);
-    // Real, unmocked GET: a fresh workspace has genuinely generated no
-    // gaps yet, so this proves the empty state without a mock.
-    await expect(page.getByText("No candidate gaps")).toBeVisible({ timeout: 5_000 });
-
-    // 1. A failed run first: clean primary message, raw detail demoted --
-    // the same treatment discover-flow.spec.ts already proved for
-    // discovery, now covering the identical gap in Gaps' own job-failure
-    // handling (the frontend previously had no failed-job branch at all).
-    await page.route(`**/api/v1/workspaces/${workspaceId}/gaps*`, (route) => {
-      if (route.request().method() === "POST") {
-        route.fulfill({ json: { job: { job_id: "job_pw_gap_1", kind: "gaps", status: "queued", poll_url: "/api/v1/jobs/job_pw_gap_1" } } });
-      } else {
-        route.continue();
-      }
-    });
-    let job1Status: "running" | "failed" = "running";
-    await page.route("**/api/v1/jobs/job_pw_gap_1", (route) => {
-      const body =
-        job1Status === "running"
-          ? { job_id: "job_pw_gap_1", status: "running", progress: { gaps: "running" }, result_ref: null, error: null }
-          : { job_id: "job_pw_gap_1", status: "failed", progress: { gaps: "running" }, result_ref: null, error: "synthesis_internal_ref_77" };
-      route.fulfill({ json: body });
-    });
-    await page.getByRole("button", { name: "Generate gaps" }).click();
-    await expect(page.getByText("Generating gaps from this workspace's papers")).toBeVisible();
-    job1Status = "failed";
-    await expect(page.getByText("Gap generation failed. Try again.")).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText("synthesis_internal_ref_77")).not.toBeVisible();
+    await page.getByRole("button", { name: "Find gaps" }).click();
+    await expect(page.getByText(/Profiling papers where needed, applying the gap rules/)).toBeVisible();
+    jobs[`job_pw_gaps_${stamp}_1`] = { status: "failed", progress: { gaps: "running" }, error: "synthesis_internal_ref_77" };
+    await expect(page.getByText("The run failed before it finished. Try again.")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("synthesis_internal_ref_77")).toBeHidden();
     await page.getByText("Technical details").click();
     await expect(page.getByText("synthesis_internal_ref_77")).toBeVisible();
 
-    // 2. Retry with a fresh job id (real backend behavior: `new_id` never
-    // repeats), this time succeeding, to verify the gap card's render and
-    // the accept transition.
-    const mockedGap = {
-      gap_id: "gap_pw_1",
-      workspace_id: workspaceId,
-      statement: "No compared method reports results under low-resource training data.",
-      gap_type: "EVALUATION_GAP",
-      supporting_papers: [seedPaperId, secondPaperId],
-      supporting_evidence: [
-        { paper_id: seedPaperId, role: "target_claim", span: { paper_id: seedPaperId, section: "Limitations", page: 8, char_start: null, char_end: null, quote: "we did not evaluate under low-resource conditions" } },
-      ],
-      conflicting_evidence: [] as unknown[],
-      why_unaddressed: "Both papers evaluate only on full-scale training sets.",
-      affected_methods: ["retrieval-augmented generation"],
-      affected_datasets: ["Natural Questions"],
-      evidence_coverage: 0.6,
-      novelty_assessment: "Moderate -- adjacent work exists but not for this method pairing.",
-      confidence: "medium",
-      confidence_basis: { agreement: "2 of 2 papers support this reading" },
-      proposed_direction: "Evaluate the compared methods under a low-resource training regime.",
-      detection_rule: "evaluation_axis_missing",
-      self_support_passed: true,
-      user_state: "candidate",
-      generated_at: "2026-01-01T00:00:00Z",
-      generator_model: "playwright-mock",
+    await page.getByRole("button", { name: "Find gaps" }).click();
+    await expect(page.getByText(/Profiling papers where needed/)).toBeVisible();
+    const real = JSON.parse(py([path.join(HELPERS, "seed-gaps.py"), workspaceId])) as {
+      progress: Record<string, string>;
+      gaps: { gap_id: string; statement: string; supporting_papers: string[] }[];
     };
-    let gapState: "candidate" | "accepted" = "candidate";
-    await page.unroute(`**/api/v1/workspaces/${workspaceId}/gaps*`);
-    await page.route(`**/api/v1/workspaces/${workspaceId}/gaps*`, (route) => {
-      if (route.request().method() === "POST") {
-        route.fulfill({ json: { job: { job_id: "job_pw_gap_2", kind: "gaps", status: "queued", poll_url: "/api/v1/jobs/job_pw_gap_2" } } });
-      } else {
-        const url = new URL(route.request().url());
-        const state = url.searchParams.get("state") ?? "candidate";
-        const gaps = state === gapState ? [{ ...mockedGap, user_state: gapState }] : [];
-        route.fulfill({ json: { gaps } });
-      }
-    });
-    let job2Status: "running" | "succeeded" = "running";
-    await page.route("**/api/v1/jobs/job_pw_gap_2", (route) => {
-      const body =
-        job2Status === "running"
-          ? { job_id: "job_pw_gap_2", status: "running", progress: { gaps: "running" }, result_ref: null, error: null }
-          : { job_id: "job_pw_gap_2", status: "succeeded", progress: { gaps: "done", count: "1" }, result_ref: workspaceId, error: null };
-      route.fulfill({ json: body });
-    });
-    await page.getByRole("button", { name: "Generate gaps" }).click();
-    job2Status = "succeeded";
+    jobs[`job_pw_gaps_${stamp}_2`] = { status: "succeeded", progress: real.progress, error: null };
+    const kept = Number(real.progress.count);
+    expect(kept).toBeGreaterThan(1);
+    await expect(page.getByText(`Kept ${kept} of ${real.progress.candidates} candidate gaps.`)).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/1 wasn't supported by its own evidence/)).toBeVisible();
+    await expect(page.getByText(`Read ${real.progress.profiled} papers to build a research profile first.`)).toBeVisible();
+    const list = page.getByRole("list", { name: `To review: ${kept} gaps` });
+    await expect(list.getByRole("button")).toHaveCount(kept);
+    await expect(page.getByText(new RegExp(`^${kept} gaps across \\d papers: ${kept} to review, 0 accepted, 0 rejected\\.`))).toBeVisible();
 
-    await expect(page.getByText("No compared method reports results under low-resource training data.")).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText("EVALUATION GAP")).toBeVisible();
-    await expect(page.getByText("2 supporting papers")).toBeVisible();
-    await expect(page.getByText("60% coverage")).toBeVisible();
-    await expect(page.getByText("self-support passed")).toBeVisible();
-    await expect(page.getByText("Evaluate the compared methods under a low-resource training regime.")).toBeVisible();
-
-    await page.getByText("1 evidence span").click();
-    await expect(page.getByText("we did not evaluate under low-resource conditions")).toBeVisible();
-    await page.getByText("Why this confidence").click();
-    await expect(page.getByText("2 of 2 papers support this reading")).toBeVisible();
-
-    // setGapState POSTs to a *different* path (.../gaps/{gap_id}) than the
-    // list/generate route mocked above (.../gaps) -- Playwright's glob
-    // match is exact-suffix, so it needs its own route.
-    await page.route(`**/api/v1/workspaces/${workspaceId}/gaps/gap_pw_1`, (route) =>
-      route.fulfill({ json: { ...mockedGap, user_state: "accepted" } })
+    // 4. A gap, traced to the passages it rests on.
+    const metricGap = real.gaps.find((g) => g.statement === METRIC_GAP)!;
+    expect(metricGap).toBeTruthy();
+    await list.getByRole("button", { name: /share no common metric/ }).click();
+    const detail = page.getByTestId("gap-detail");
+    await expect(detail.getByRole("heading", { level: 2, name: METRIC_GAP })).toBeVisible();
+    await expect(detail).toContainText("Evaluation gap · The papers report metrics, and no two of them share one.");
+    await expect(detail).toContainText("Medium confidence");
+    await expect(detail).toContainText("1 of 2 papers backed by full text; the rest by abstracts");
+    await expect(detail).toContainText("States it · Abstract");
+    await expect(detail.getByText("“improves factual grounding”")).toBeVisible();
+    await expect(detail.getByText("“F1”")).toBeVisible();
+    const similarId = metricGap.supporting_papers.find((p) => p !== seedId)!;
+    await expect(detail.getByRole("link", { name: SIMILAR })).toHaveAttribute("href", `/papers/${similarId}`);
+    await expect(detail.getByRole("link", { name: "Show in graph" }).last()).toHaveAttribute(
+      "href",
+      `/workspace/${workspaceId}/graph?paper=${similarId}`,
     );
-    // flip the mocked list's state *before* accepting: the page refetches the
-    // list the moment the accept lands, and a refetch that beat this line
-    // would keep returning the gap as a candidate (a real, intermittent race)
-    gapState = "accepted";
-    await page.getByRole("button", { name: "Accept", exact: true }).click();
-    // Accepting removes it from the still-active "Candidates" filter (the
-    // list re-fetches with state=candidate and no longer matches it) --
-    // switch filters to see the new state, same as curate-flow.spec.ts's
-    // accepted/rejected trail-edge filter switch.
-    await page.getByRole("button", { name: "Candidates" }).click();
-    await expect(page.getByText("No candidate gaps")).toBeVisible({ timeout: 5_000 });
-    await page.getByRole("button", { name: "Accepted" }).click();
-    await expect(page.getByText("accepted", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+    // 5. Accept it; the decision is saved (a reload keeps it, deep-linked).
+    await detail.getByRole("button", { name: "Accept gap" }).click();
+    await expect(detail.getByRole("button", { name: "Move back to review" })).toBeVisible();
+    await expect(detail.getByRole("link", { name: "Propose directions" })).toHaveAttribute("href", `/workspace/${workspaceId}/directions?gap=${metricGap.gap_id}`);
+    await expect(page).toHaveURL(new RegExp(`/workspace/${workspaceId}/gaps\\?gap=${metricGap.gap_id}$`));
+    await page.reload();
+    await expect(detail.getByRole("heading", { level: 2, name: METRIC_GAP })).toBeVisible({ timeout: 10_000 });
+    await expect(detail.getByRole("button", { name: "Move back to review" })).toBeVisible();
+
+    // 6. The next one, rejected.
+    await detail.getByRole("button", { name: "Next to review" }).click();
+    await expect(detail.getByRole("button", { name: "Reject" })).toBeVisible();
+    const rejected = await detail.getByRole("heading", { level: 2 }).textContent();
+    await detail.getByRole("button", { name: "Reject" }).click();
+    await expect(detail.getByRole("button", { name: "Move back to review" })).toBeVisible();
+
+    // 7. Filters and search (phones close the gap's sheet first).
+    if (test.info().project.name !== "chromium") {
+      await page.getByRole("button", { name: "All gaps" }).click();
+      await expect(detail).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: /^To review\s*\d+$/ })).toHaveText(new RegExp(`${kept - 2}$`));
+    await page.getByRole("button", { name: /^Rejected\s*1$/ }).click();
+    await expect(page.getByRole("list", { name: "Rejected: 1 gap" }).getByRole("button", { name: new RegExp(rejected!.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })).toBeVisible();
+    await page.getByRole("button", { name: /^All\s*\d+$/ }).click();
+    await page.getByRole("searchbox", { name: "Search the gaps" }).fill("symbolic reasoning");
+    await expect(page.getByRole("list", { name: "All gaps: 1 gap" }).getByRole("button")).toHaveCount(1);
+    await page.getByRole("searchbox", { name: "Search the gaps" }).fill("no such thing anywhere");
+    await expect(page.getByRole("heading", { name: "No gaps match" })).toBeVisible();
+    await page.getByRole("button", { name: "Clear the filters" }).click();
+    await expect(page.getByRole("list", { name: `All gaps: ${kept} gaps` })).toBeVisible();
+
+    // 8. The overview links a decision straight to its gap; the old URL still lands here.
+    await page.goto(`/workspace/${workspaceId}`);
+    await expect(page.getByRole("link", { name: new RegExp(`Accepted gap.*${METRIC_GAP.slice(0, 30)}`) })).toHaveAttribute(
+      "href",
+      `/workspace/${workspaceId}/gaps?gap=${metricGap.gap_id}`,
+    );
+    await page.goto(`/workspaces/${workspaceId}/gaps`);
+    await page.waitForURL(new RegExp(`/workspace/${workspaceId}/gaps$`));
+
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("a workspace with only its seed explains what gaps need, and a failed load offers a retry", async ({ page }) => {
+    seedId = await uploadSeed(page);
+    py([path.join(HELPERS, "seed-real-profile.py"), seedId, "Gap Empty Seed"]);
+    await page.reload();
+    await page.getByText("Skip discovery, start a workspace with just this paper").click();
+    await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
+    await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+    const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
+    const consoleErrors = collectConsoleErrors(page);
+    await page.goto(`/workspace/${workspaceId}/gaps`);
+    await expect(page.getByRole("heading", { name: "Gaps need two papers" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("link", { name: "Add papers" })).toHaveAttribute("href", `/workspace/${workspaceId}#papers`);
+    await expect(page.getByRole("link", { name: "Discover related papers" })).toHaveAttribute("href", `/discover/${seedId}`);
+
+    // The server failing is simulated for this one response; the page's handling is what's tested.
+    await page.route(`**/api/v1/workspaces/${workspaceId}/gaps`, (route) =>
+      route.fulfill({ status: 500, json: { detail: { error: { code: "internal", message: "internal error" } } } }),
+    );
+    await page.reload();
+    await expect(page.getByText("Could not load this workspace's gaps.")).toBeVisible({ timeout: 10_000 });
+    await page.unroute(`**/api/v1/workspaces/${workspaceId}/gaps`);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByRole("heading", { name: "Gaps need two papers" })).toBeVisible({ timeout: 10_000 });
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("a missing workspace says so", async ({ page }) => {
+    await page.goto("/workspace/ws_pw_gaps_missing/gaps");
+    await expect(page.getByRole("heading", { name: "Workspace not found" })).toBeVisible({ timeout: 10_000 });
   });
 });

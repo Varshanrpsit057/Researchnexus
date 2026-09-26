@@ -139,7 +139,8 @@ test.describe("Research chat", () => {
     await page.reload();
     await composer(page).fill(turn.question);
     await page.keyboard.press("Enter");
-    await expect(page.getByText(turn.question).first()).toBeVisible();
+    // the question as asked, in the thread (the conversation list may show it too)
+    await expect(page.getByTestId("chat-thread").getByText(turn.question)).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: /Starting|Searching/ })).toBeVisible();
     await expect(page.getByRole("button", { name: "Stop answering" })).toBeVisible();
 

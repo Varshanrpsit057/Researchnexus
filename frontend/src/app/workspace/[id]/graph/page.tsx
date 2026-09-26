@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import useSWR, { useSWRConfig } from "swr";
@@ -13,7 +13,7 @@ import type { EdgeUserState, GraphEdgeType } from "@/lib/api/types";
 import { MORPH } from "@/components/effects/constellation/field";
 import { CinematicHeader } from "@/components/layout/CinematicHeader";
 import { sendToBackground } from "@/lib/background-bus";
-import { boundsOf, centerOn, fitCamera, lerpCamera, toScreen, zoomAt, type Camera, type Insets } from "@/lib/graph/camera";
+import { boundsOf, centerOn, fitCamera, lerpAbout, lerpCamera, nodeZoom, prominentFit, toScreen, zoomAt, type Camera, type Insets } from "@/lib/graph/camera";
 import { truncate } from "@/lib/graph/labels";
 import { NODE_RADIUS, layoutGraph, type Layout } from "@/lib/graph/layout";
 import {
@@ -35,6 +35,7 @@ import { flattenTrail, type TrailEntry } from "@/lib/trail";
 import { C, InlineError, WorkspaceLoadError, focusRing, primaryButton, quietButton } from "../ui";
 import { GraphCanvas, type Highlight, type IntroTimeline, type Phase, type Selection } from "./GraphCanvas";
 import { EdgeSwatch, GraphPanel, NodeGlyph } from "./GraphPanel";
+import styles from "./graph.module.css";
 
 const ALL_STATES: EdgeState[] = ["accepted", "pending"];
 const STATE_LABEL: Record<EdgeState, string> = { accepted: "Accepted", pending: "To review" };
@@ -61,7 +62,9 @@ function useMediaQuery(query: string): boolean {
   );
 }
 
-const nodeZoom = (k: number) => Math.max(0.75, Math.min(1.3, k));
+/** After the knots have dissolved under the drawn graph, it grows into its
+ * prominent framing and settles (seconds on the morph clock). */
+const GROW = { at: MORPH.handoff[1], dur: 1.0 } as const;
 
 /** The entrance, timed against the background's morph: nodes emerge as the
  * converging knots arrive (seed first, then outward), edges draw after them
@@ -81,7 +84,7 @@ function introTimeline(nodes: GNode[], edges: GEdge[], layout: Layout, seedId: s
   const edge = new Map([...edges].sort((a, b) => far(a) - far(b)).map((e, i) => [e.key, edgeStart + i * edgeStagger]));
   const lastNode = nodeStart + Math.max(0, nodes.length - 1) * nodeStagger + 0.56;
   const lastEdge = edges.length ? edgeStart + (edges.length - 1) * edgeStagger + 0.95 : 0;
-  return { node, edge, chrome: nodeStart + 0.35, total: Math.max(MORPH.handoff[1], lastNode, lastEdge) + 0.1 };
+  return { node, edge, chrome: nodeStart + 0.35, total: Math.max(GROW.at + GROW.dur, lastNode, lastEdge) + 0.1 };
 }
 
 type PathResult = { from: string; to: string; nodes: string[]; edges: string[] };
@@ -174,6 +177,8 @@ export default function GraphPage() {
         if (prev && prev.w === w && prev.h === h) return prev;
         // keep whatever was centred still centred
         if (prev) setCam((c) => (c ? { ...c, x: c.x + (w - prev.w) / 2, y: c.y + (h - prev.h) / 2 } : c));
+        const settle = settleCam.current;
+        if (prev && settle) settleCam.current = { ...settle, x: settle.x + (w - prev.w) / 2, y: settle.y + (h - prev.h) / 2 };
         return { w, h };
       });
     });
@@ -189,9 +194,21 @@ export default function GraphPage() {
         : { top: 56, right: 24, bottom: withPanel ? Math.round(stageHeight * 0.58) : 84, left: 24 },
     [isDesktop, size],
   );
+  // what the stage's own overlays (legend, zoom controls, axis, panel) cover: a prominent graph may use the rest.
+  // Phones keep the fit's side margins: the year axis only labels ticks at least 22px in from each edge.
+  const roomFor = useCallback(
+    (withPanel: boolean, stageHeight = size?.h ?? 600): Insets =>
+      isDesktop
+        ? { top: 44, right: withPanel ? 440 : 40, bottom: 64, left: 68 }
+        : { top: 40, right: 24, bottom: withPanel ? Math.round(stageHeight * 0.58) : 84, left: 24 },
+    [isDesktop, size],
+  );
 
   const camRef = useRef<Camera | null>(null);
   const flight = useRef(0);
+  // the framing the entrance settles into, unless the reader moves the camera first
+  const settleCam = useRef<Camera | null>(null);
+  const cameraTouched = useRef(false);
   useEffect(() => {
     camRef.current = cam;
   }, [cam]);
@@ -199,6 +216,7 @@ export default function GraphPage() {
   const flyTo = useCallback(
     (target: Camera) => {
       cancelAnimationFrame(flight.current);
+      cameraTouched.current = true;
       const from = camRef.current;
       if (reduceMotion || !from) {
         setCam(target);
@@ -217,6 +235,7 @@ export default function GraphPage() {
 
   const onCamera = useCallback((update: (c: Camera) => Camera) => {
     cancelAnimationFrame(flight.current); // the user's own pan or zoom wins
+    cameraTouched.current = true;
     setCam((c) => (c ? update(c) : c));
   }, []);
 
@@ -227,6 +246,14 @@ export default function GraphPage() {
     const points = [...ids].map((n) => layout.pos.get(n)).filter((p): p is { x: number; y: number } => p != null);
     if (points.length === 0) return;
     flyTo(fitCamera(boundsOf(points, 20), size.w, size.h, insetsFor(withPanel), maxK));
+  }
+
+  /** The whole (visible) graph, framed as prominently as on arrival. */
+  function fitAll(ids: Iterable<string> = visible.nodes) {
+    if (!layout || !size) return;
+    const points = [...ids].map((n) => layout.pos.get(n)).filter((p): p is { x: number; y: number } => p != null);
+    if (points.length === 0) return;
+    flyTo(prominentFit(boundsOf(points), size.w, size.h, insetsFor(panelOpen), roomFor(panelOpen)));
   }
 
   const inClearArea = (nodeId: string, withPanel: boolean) => {
@@ -265,8 +292,12 @@ export default function GraphPage() {
       const w = Math.round(rect.width);
       const h = Math.round(rect.height);
       const fit = fitCamera(layout.bounds, w, h, insetsFor(false, h));
+      const settle = prominentFit(layout.bounds, w, h, insetsFor(false, h), roomFor(false, h));
+      settleCam.current = settle;
+      cameraTouched.current = false;
       setSize({ w, h });
-      setCam(fit);
+      // the field condenses onto the plain fit; the graph grows from there (below)
+      setCam(reduceMotion ? settle : fit);
       const targets = model.nodes
         .filter((n) => visible.nodes.has(n.id))
         .map((n) => {
@@ -278,7 +309,26 @@ export default function GraphPage() {
       setPhase(reduceMotion ? "settled" : "intro");
     });
     return () => cancelAnimationFrame(raf);
-  }, [phase, model, layout, stageEl, visible, reduceMotion, insetsFor]);
+  }, [phase, model, layout, stageEl, visible, reduceMotion, insetsFor, roomFor]);
+
+  // background dims -> the graph condenses out of it -> grows into focus -> settles
+  useEffect(() => {
+    if (phase !== "intro" || !layout) return;
+    const center = { x: (layout.bounds.minX + layout.bounds.maxX) / 2, y: (layout.bounds.minY + layout.bounds.maxY) / 2 };
+    const timer = setTimeout(() => {
+      const from = camRef.current;
+      const to = settleCam.current;
+      if (!from || !to || cameraTouched.current) return;
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const t = Math.min(1, (now - t0) / (GROW.dur * 1000));
+        setCam(lerpAbout(from, to, center, 1 - Math.pow(1 - t, 4)));
+        if (t < 1) flight.current = requestAnimationFrame(tick);
+      };
+      flight.current = requestAnimationFrame(tick);
+    }, GROW.at * 1000);
+    return () => clearTimeout(timer);
+  }, [phase, layout]);
 
   useEffect(() => {
     if (phase !== "intro") return;
@@ -352,7 +402,7 @@ export default function GraphPage() {
     if (!model) return;
     if (!nodeId) {
       setFocus(null);
-      fitTo(model.nodes.map((n) => n.id));
+      fitAll(model.nodes.map((n) => n.id));
       setAnnouncement("Showing the whole graph.");
       return;
     }
@@ -436,7 +486,7 @@ export default function GraphPage() {
     if (!size || !cam) return;
     if (e.key === "+" || e.key === "=") zoomBy(1.3);
     else if (e.key === "-" || e.key === "_") zoomBy(1 / 1.3);
-    else if (e.key === "0") fitTo(visible.nodes);
+    else if (e.key === "0") fitAll();
     else if (e.key === "Escape") {
       if (pathFrom) setPathFrom(null);
       else if (path) setPath(null);
@@ -515,7 +565,7 @@ export default function GraphPage() {
   const settled = phase === "settled";
 
   return (
-    <Shell>
+    <Shell focused={phase !== "hidden"}>
       <div className="mx-auto w-full max-w-[1480px] shrink-0 px-4 pt-5 sm:px-6">
         {workspace ? (
           <Link
@@ -758,7 +808,7 @@ export default function GraphPage() {
               <ZoomButton label="Zoom out" onClick={() => zoomBy(1 / 1.3)}>
                 <Minus className="size-4" weight="bold" aria-hidden />
               </ZoomButton>
-              <ZoomButton label="Fit the graph to the view" onClick={() => fitTo(visible.nodes)}>
+              <ZoomButton label="Fit the graph to the view" onClick={() => fitAll()}>
                 <FrameCorners className="size-4" weight="bold" aria-hidden />
               </ZoomButton>
             </div>
@@ -817,13 +867,22 @@ export default function GraphPage() {
 }
 
 /** The page frame: header over a full-height stage. A light vignette instead
- * of the dense scrim other pages use, so the background can become the graph. */
-function Shell({ children }: { children: ReactNode }) {
+ * of the dense scrim other pages use, so the background can become the graph;
+ * once it has (`focused`), the whole page dims to a deep navy behind it. */
+function Shell({ children, focused = false }: { children: ReactNode; focused?: boolean }) {
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden selection:bg-[rgba(93,240,168,0.28)] selection:text-white" style={{ color: C.ink }}>
       <div
         className="pointer-events-none fixed inset-0 -z-10"
         style={{ background: "radial-gradient(130% 95% at 50% 55%, rgba(4,6,15,.08) 0%, rgba(4,6,15,.42) 62%, rgba(4,6,15,.8) 100%)" }}
+      />
+      {/* timed with the field's own calm (MORPH.fade), so the page and the field quiet together */}
+      <div
+        aria-hidden
+        data-testid="graph-dim"
+        data-on={focused}
+        className={`pointer-events-none fixed inset-0 -z-10 ${styles.dim}`}
+        style={{ "--dim-delay": `${MORPH.fade[0]}s`, "--dim-dur": `${MORPH.fade[1] - MORPH.fade[0]}s` } as CSSProperties}
       />
       <CinematicHeader />
       <main id="main" className="relative flex min-h-0 flex-1 flex-col">

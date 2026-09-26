@@ -145,6 +145,38 @@ def test_gaps_run_persists_evidence_grounded_candidates(tmp_path: Path, monkeypa
     assert "GENERALIZATION_GAP" in {g["gap_type"] for g in gaps}
 
 
+def test_a_finished_run_says_what_happened_to_every_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    c = _client(tmp_path)
+    token = _token(c)
+    wid = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch, self_support=False)
+
+    job_id = c.post(f"/api/v1/workspaces/{wid}/gaps", json={}, headers=_h(token)).json()["job"]["job_id"]
+    progress = c.get(f"/api/v1/jobs/{job_id}", headers=_h(token)).json()["progress"]
+
+    # nothing survived, and the job says why rather than just "0"
+    assert progress["count"] == "0"
+    candidates = int(progress["candidates"])
+    assert candidates > 0
+    assert int(progress["dropped_self_support"]) == candidates - int(progress["dropped_insufficient_evidence"]) - int(
+        progress["dropped_unsupported"]
+    ) - int(progress["skipped_rejected"])
+    assert (progress["profiled"], progress["unprofiled"]) == ("0", "0")
+
+
+def test_gap_times_read_back_as_utc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    c = _client(tmp_path)
+    token = _token(c)
+    wid = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch)
+    c.post(f"/api/v1/workspaces/{wid}/gaps", json={}, headers=_h(token))
+
+    gaps = c.get(f"/api/v1/workspaces/{wid}/gaps", headers=_h(token)).json()["gaps"]
+    assert gaps and all(g["generated_at"].endswith(("Z", "+00:00")) for g in gaps)
+
+
 def test_gaps_bad_type_is_422(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     c = _client(tmp_path)
     token = _token(c)

@@ -36,7 +36,16 @@ export interface MeResponse {
   email: string;
   created_at: string;
   has_working_llm_key: boolean;
-  default_provider: string | null;
+  /** The provider the user chose for every LLM stage. */
+  default_provider: LlmProvider | null;
+  /** The provider in use right now: the default when its key works, else the first working key saved. */
+  active_provider: LlmProvider | null;
+}
+
+export interface HealthResponse {
+  status: "ok" | "degraded";
+  version: string;
+  checks: Record<string, string>;
 }
 
 // --- BYOK keys ------------------------------------------------------------
@@ -69,6 +78,12 @@ export interface LlmTestResult {
   latency_ms?: number;
   capabilities?: LlmCapabilities;
   message?: string;
+}
+
+/** POST .../llm-keys/{provider}/check: the stored key, probed again. */
+export interface KeyCheckResponse {
+  key: ApiKeySummary;
+  result: LlmTestResult;
 }
 
 // --- papers ---------------------------------------------------------------
@@ -453,6 +468,66 @@ export interface CitationEntry {
   formatted: Partial<Record<CitationFormat, string>>;
 }
 
+/** Where the workspace cites a paper (GET .../citations, the ledger). */
+export type CitationUseKind = "answer" | "comparison" | "gap" | "direction";
+
+export interface CitationUse {
+  kind: CitationUseKind;
+  artefact_id: string;
+  /** The workspace's own words: an answer's sentence, a cell's value, a gap's statement, a direction's proposal. */
+  text: string;
+  /** The passage of this paper it rests on. */
+  quote: string | null;
+  section: string | null;
+  page: number | null;
+  created_at: string | null;
+  session_id?: string;
+  field?: string;
+  state?: string;
+  role?: string;
+  gap_id?: string;
+}
+
+export interface LedgerConnection {
+  edge_id: string;
+  type: RelationshipType;
+  other_paper_id: string;
+  direction: "in" | "out";
+  state: string;
+}
+
+export interface LedgerPaper {
+  paper_id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  url: string | null;
+  role: "seed" | "member";
+  grounding: Grounding;
+  reference: { resolved_from: string; formatted: Partial<Record<CitationFormat, string>> };
+  reference_count: number | null;
+  seed_relation: CitationRelationship | null;
+  connections: LedgerConnection[];
+  uses: CitationUse[];
+  counts: Record<CitationUseKind, number>;
+}
+
+export interface SeedReference {
+  order: number;
+  text: string;
+  paper_id: string | null;
+  in_workspace: boolean;
+}
+
+export interface CitationLedger {
+  workspace_id: string;
+  papers: LedgerPaper[];
+  seed_references: SeedReference[];
+}
+
 export interface CitationsResponse {
   citations: CitationEntry[];
   unresolved: string[];
@@ -599,6 +674,9 @@ export interface KeypointsResponse {
 
 // --- comparison ---------------------------------------------------------
 
+/** Why a comparison cell looks the way it does (absent from older backends). */
+export type CellStatus = "found" | "not_stated" | "unsupported" | "no_text" | "not_extracted" | "unknown";
+
 export interface ComparisonCell {
   column: string;
   text: string | null;
@@ -606,6 +684,7 @@ export interface ComparisonCell {
   claim_id: string | null;
   grounding: string;
   conflicting: string[];
+  status?: CellStatus;
 }
 
 export interface ComparisonRow {

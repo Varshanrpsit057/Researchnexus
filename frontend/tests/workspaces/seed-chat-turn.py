@@ -60,12 +60,19 @@ if mode == "unanswerable":
     print(json.dumps({"session_id": session_id, "question": question, "suggestion": suggestion}))
     sys.exit(0)
 
-# two real sentences from the seed paper's own parsed text
+# two real sentences from the seed paper's own parsed text: the chunk's
+# heading line dropped, its wrapped lines joined back into prose, then a
+# whole sentence of at least eight words
 picked = []
 for chunk in repo.get_chunks_for_paper(db, ws.seed_paper_id):
-    m = re.search(r"[A-Z][^.]{40,200}\.", chunk.text)
-    if m:
-        picked.append((chunk, m.group(0).strip()))
+    lines = chunk.text.strip().splitlines()
+    if lines and chunk.section and lines[0].strip() == chunk.section.strip():
+        lines = lines[1:]
+    prose = " ".join(line.strip() for line in lines if line.strip())
+    for m in re.finditer(r"[A-Z][^.]{30,220}\.", prose):
+        if len(m.group(0).split()) >= 8:
+            picked.append((chunk, m.group(0).strip()))
+            break
     if len(picked) == 2:
         break
 assert len(picked) == 2, "the seed paper has too few parsed chunks"

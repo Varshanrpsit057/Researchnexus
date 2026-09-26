@@ -53,6 +53,7 @@ from app.domain.workspace import (
 from app.jobs.runner import new_id
 from app.retrieval.workspace_index import get_workspace_index
 from app.services.graph.builder import PaperDetails, build_graph
+from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 
 
 class WorkspaceNotFound(Exception):
@@ -84,6 +85,7 @@ def _index_dir(settings: Settings) -> Path:
 
 
 def _reindex(db: Session, ws: ResearchWorkspace, settings: Settings) -> None:
+    ensure_abstract_chunks(db, [p.paper_id for p in ws.papers])  # abstract-only papers are indexed by their abstract
     idx = get_workspace_index(db, workspace_id=ws.workspace_id, index_dir=_index_dir(settings))
     manifest = idx.rebuild([p.paper_id for p in ws.papers])
     repo.set_workspace_index_path(db, ws.workspace_id, ws.owner_id, manifest.index_path)

@@ -107,9 +107,13 @@ def _template(candidate: GapCandidate) -> Articulation:
     gt = candidate.gap_type.value
     n_sup = len(candidate.supporting_papers)
     if candidate.affected_methods and f.get("facet") == "method":
+        # the method IS used in the workspace (`used_by`); the gap is the papers sharing its problem
         value = candidate.affected_methods[0]
-        statement = f"No workspace paper applies {value} to the research problem shared by {n_sup} of the papers."
-        why = f"The {n_sup} papers addressing that shared problem do not adopt {value}."
+        n_used = len(f.get("used_by") or []) or 1
+        users = "the paper" if n_used == 1 else f"the {n_used} papers"
+        others = "another workspace paper does" if n_used == 1 else f"{n_used} other workspace papers do"
+        statement = f"None of the {n_sup} papers that share a research problem with {users} using {value} applies it."
+        why = f"The {n_sup} papers addressing that shared problem do not adopt {value}, although {others}."
         direction = f"Evaluate {value} on the shared problem setting."
     elif candidate.affected_methods and candidate.affected_datasets:
         statement = f"No workspace paper combines {candidate.affected_methods[0]} with {candidate.affected_datasets[0]}."

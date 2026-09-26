@@ -143,3 +143,11 @@ def test_no_session_yields_exactly_one_template_direction_per_gap(db, workspace,
     d = repo.get_directions(db, "ws_1")[0]
     assert d.generator_model is None
     assert d.kind == "evidence_backed_inference"
+
+
+def test_directions_for_one_gap_leave_another_gaps_directions_alone(db, workspace, settings) -> None:
+    repo.save_gaps(db, "ws_1", [_gap("gap_second")], owner_id="usr_1")
+    repo.set_gap_user_state(db, "gap_second", workspace_id="ws_1", owner_id="usr_1", state=GapUserState.ACCEPTED)
+    _run(db, workspace, settings, _session(), ["gap_accepted"])
+    _run(db, workspace, settings, _session(), ["gap_second"])
+    assert {d.gap_id for d in repo.get_directions(db, "ws_1")} == {"gap_accepted", "gap_second"}

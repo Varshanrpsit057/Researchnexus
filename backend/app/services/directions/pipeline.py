@@ -64,6 +64,7 @@ async def build_directions(
 ) -> DirectionBuildResult:
     result = DirectionBuildResult(workspace_id=workspace.workspace_id, requested=len(gap_ids))
     directions: list[ResearchDirection] = []
+    regenerated: list[str] = []  # the gaps whose candidate directions this run replaces
 
     for gap_id in gap_ids:
         gap = repo.get_gap(db, gap_id, workspace_id=workspace.workspace_id)
@@ -73,6 +74,7 @@ async def build_directions(
         if gap.user_state != GapUserState.ACCEPTED.value or not gap.self_support_passed:
             result.skipped_not_accepted += 1
             continue
+        regenerated.append(gap_id)
 
         gen = await generate_directions(session, gap, max_directions=settings.direction_max_per_gap)
         result.dropped_unsupported += gen.dropped_unsupported
@@ -106,6 +108,6 @@ async def build_directions(
                 )
             )
 
-    repo.save_directions(db, workspace.workspace_id, directions, owner_id=workspace.owner_id)
+    repo.save_directions(db, workspace.workspace_id, directions, owner_id=workspace.owner_id, gap_ids=regenerated)
     result.direction_count = len(directions)
     return result

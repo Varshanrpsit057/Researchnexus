@@ -37,3 +37,14 @@ def test_api_dict_flattens_schema_to_column_list() -> None:
     assert d["rows"][0]["cells"]["method"]["text"] == "bm25"
     assert d["rows"][0]["cells"]["dataset"]["text"] is None
     assert d["coverage"] == 0.5 and d["decontext_eval"] is None
+
+
+def test_a_cell_stored_before_statuses_reads_back_found_or_unknown() -> None:
+    from app.domain.comparison import CellStatus, ComparisonCell
+
+    found = ComparisonCell.model_validate({"column": "method", "text": "BM25", "span": {"paper_id": "p", "quote": "BM25"}})
+    empty = ComparisonCell.model_validate({"column": "method", "text": None})
+    assert found.status is CellStatus.FOUND
+    assert empty.status is CellStatus.UNKNOWN
+    # a value without evidence can never claim to be found
+    assert ComparisonCell(column="m", text="x", status=CellStatus.FOUND).status is CellStatus.UNKNOWN

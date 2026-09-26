@@ -62,6 +62,7 @@ def build_profile(
     extraction: ProfileExtraction,
     extraction_model: str,
     tokens: TokenUsage,
+    grounding: str = "full_text",
 ) -> tuple[ResearchProfile, list[str]]:
     abstract, has_explicit_abstract = reconstruct_abstract(chunks)
     warnings = [] if has_explicit_abstract else ["no_abstract_section_detected"]
@@ -92,7 +93,7 @@ def build_profile(
     profile = ResearchProfile(
         profile_id=profile_id,
         paper_id=paper_id,
-        grounding="full_text",
+        grounding=grounding,
         title=title,
         abstract=abstract,
         authors=authors,

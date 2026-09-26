@@ -57,9 +57,10 @@ export const MORPH = {
   /** freed particles fade back in, at home, over this long */
   recover: 2.2,
 } as const;
-/** Link level kept while a graph is on screen: the field stays alive behind it, quieter. */
-export const CALM_LINK = 0.3;
-const CALM_NODE_RATIO = 0.6;
+/** Link level kept while a graph is on screen: the field stays alive behind it,
+ * quiet enough that the graph is the page's focus. */
+export const CALM_LINK = 0.2;
+const CALM_NODE_RATIO = 0.7;
 const RECRUIT_RADIUS = 340;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);

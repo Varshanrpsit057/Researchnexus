@@ -107,7 +107,18 @@ def run_gaps_job(
             db,
             job_id,
             status=JobStatus.SUCCEEDED,
-            progress={"gaps": "done", "count": str(result.gap_count)},
+            # what happened to every candidate, so a small or empty result can say why
+            progress={
+                "gaps": "done",
+                "count": str(result.gap_count),
+                "candidates": str(result.candidate_count),
+                "dropped_insufficient_evidence": str(result.dropped_insufficient_evidence),
+                "dropped_unsupported": str(result.dropped_unsupported_articulation),
+                "dropped_self_support": str(result.dropped_self_support),
+                "skipped_rejected": str(result.skipped_rejected),
+                "profiled": str(result.profiled),
+                "unprofiled": str(result.unprofiled),
+            },
             result_ref=workspace_id,
         )
     finally:

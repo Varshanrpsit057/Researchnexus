@@ -79,7 +79,7 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
   const overviewPath = `/workspace/${workspaceId}`;
   // sections that moved to the cinematic /workspace/[id]/... routes
   const tabHref = (slug: string) =>
-    !slug ? overviewPath : slug === "trail" || slug === "graph" || slug === "chat" ? `/workspace/${workspaceId}/${slug}` : `${basePath}/${slug}`;
+    !slug ? overviewPath : ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(slug) ? `/workspace/${workspaceId}/${slug}` : `${basePath}/${slug}`;
 
   return (
     <div className="space-y-6">

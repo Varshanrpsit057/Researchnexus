@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db import repository as repo
 from app.deps import get_llm_client
-from app.domain.user import ApiKeyStatus, LlmProvider, User
+from app.domain.user import LlmProvider, User
 from app.llm.capability_probe import default_model_for
 from app.llm.client import LLMClient
 from app.security.key_vault import KeyVault
@@ -30,7 +30,7 @@ class LlmSession:
 
 
 def resolve_llm_session(db: Session, user: User, settings: Settings) -> LlmSession | None:
-    working = next((k for k in repo.list_api_keys(db, user.id) if k.status == ApiKeyStatus.WORKING), None)
+    working = repo.pick_working_key(db, user.id, user.default_provider)
     if working is None:
         return None
     ciphertext = repo.get_api_key_ciphertext(db, user.id, working.provider)

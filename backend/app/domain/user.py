@@ -42,6 +42,7 @@ class User(BaseModel):
     auth_provider: str = "local"
     auth_subject: str
     created_at: datetime = Field(default_factory=_utcnow)
+    default_provider: LlmProvider | None = None
 
 
 class ApiKeyRecord(BaseModel):

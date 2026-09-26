@@ -28,7 +28,9 @@ from app.domain.rag import FilteredChunk
 from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
 from app.retrieval.workspace_index import FaissWorkspaceIndex
+from app.services.citations.ledger import build_ledger
 from app.services.citations.metadata_resolver import to_citation
+from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 from app.services.orchestrator.orchestrator import ResearchOrchestrator
 from app.services.synthesis.compare import build_comparison, build_schema
 from app.services.synthesis.keypoints import extract_keypoints
@@ -171,6 +173,15 @@ def citations(
     return {"citations": built, "unresolved": unresolved}
 
 
+@router.get("/{workspace_id}/citations")
+def citation_ledger(workspace_id: str, db: DbSession, current_user: CurrentUser) -> dict:
+    # Read-only: every workspace paper with its reference, what discovery
+    # knows about it, and every place the workspace cites it. The POST above
+    # formats and stores references; nothing read them back until this.
+    workspace = _require_ws(db, current_user, workspace_id)
+    return build_ledger(db, workspace, owner_id=current_user.id)
+
+
 class CompareBody(BaseModel):
     paper_ids: list[str] = Field(default_factory=list)
     schema_: list[str] | None = Field(default=None, alias="schema")
@@ -202,6 +213,7 @@ async def compare(
         index_dir=settings.data_dir / "workspace_index",
         vector_backend=settings.rag_vector_backend,
     )
+    ensure_abstract_chunks(db, [p.paper_id for p in workspace.papers])
     index.rebuild([p.paper_id for p in workspace.papers])
 
     result = await build_comparison(

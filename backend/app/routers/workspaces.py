@@ -60,12 +60,13 @@ class CreateWorkspaceBody(BaseModel):
     title: str
     seed_paper_id: str
     import_run_id: str | None = None
-    token_budget_usd: float = 5.0
+    # the workspace's estimated-spend cap: a zero or negative one would block every model stage
+    token_budget_usd: float = Field(default=5.0, gt=0)
 
 
 class UpdateWorkspaceBody(BaseModel):
     title: str | None = None
-    token_budget_usd: float | None = None
+    token_budget_usd: float | None = Field(default=None, gt=0)
 
 
 class AddPapersBody(BaseModel):

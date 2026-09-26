@@ -203,3 +203,43 @@ def test_compare_output_is_deterministic(tmp_path: Path, monkeypatch: pytest.Mon
         return d
 
     assert _strip_ids(a) == _strip_ids(b)
+
+
+def test_an_abstract_only_paper_joins_the_comparison_through_its_abstract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression: a paper found by discovery (no PDF) was never chunked, so its
+    # comparison row was all empty cells, indistinguishable from "not stated".
+    c = _client(tmp_path)
+    token = _token(c)
+    wid, _ = _seed_ws(c, token)
+    abstract = "We propose a late-interaction reranker evaluated on MS MARCO with MRR at 10."
+    db = get_session_factory()()
+    try:
+        p3 = repo.upsert_discovered_paper(db, NormalizedCandidate(title="C", title_hash=title_hash("C"), abstract=abstract))
+    finally:
+        db.close()
+    assert c.post(f"/api/v1/workspaces/{wid}/papers", json={"paper_ids": [p3]}, headers=_h(token)).status_code == 201
+    db = get_session_factory()()
+    try:
+        assert [ch.section for ch in repo.get_chunks_for_paper(db, p3)] == ["Abstract"]  # joining indexed it
+    finally:
+        db.close()
+
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch, {
+        "pap_seed": {"cells": [{"column": "dataset", "value": "NQ", "chunk_id": "a0", "quote": "on the NQ dataset"}]},
+        p3: {"cells": [
+            {"column": "dataset", "value": "MS MARCO", "chunk_id": f"chk_{p3}_abstract", "quote": "evaluated on MS MARCO"},
+            {"column": "method", "value": "graph walk", "chunk_id": f"chk_{p3}_abstract", "quote": "a graph walk"},
+        ]},
+    })
+    r = c.post(f"/api/v1/workspaces/{wid}/compare", json={"paper_ids": ["pap_seed", p3], "schema": ["method", "dataset"]}, headers=_h(token))
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json()["rows"] if x["paper_id"] == p3)
+    assert row["cells"]["dataset"]["status"] == "found"
+    assert row["cells"]["dataset"]["span"]["section"] == "Abstract" and row["cells"]["dataset"]["grounding"] == "abstract"
+    assert row["cells"]["method"]["status"] == "unsupported" and row["cells"]["method"]["text"] is None
+    seed_row = next(x for x in r.json()["rows"] if x["paper_id"] == "pap_seed")
+    assert seed_row["cells"]["method"]["status"] == "not_stated"
+    # statuses persist
+    latest = c.get(f"/api/v1/workspaces/{wid}/compare", headers=_h(token)).json()
+    assert next(x for x in latest["rows"] if x["paper_id"] == p3)["cells"]["method"]["status"] == "unsupported"

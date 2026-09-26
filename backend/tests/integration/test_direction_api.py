@@ -168,6 +168,8 @@ def test_directions_generated_only_from_accepted_gap_and_persisted(tmp_path: Pat
 
     listed = c.get(f"/api/v1/workspaces/{wid}/directions", headers=_h(token)).json()["directions"]
     assert len(listed) == 1 and listed[0]["direction_id"] == d["direction_id"]
+    # SQLite drops a timestamp's zone; without it a browser reads the time as local
+    assert listed[0]["generated_at"].endswith(("Z", "+00:00")), listed[0]["generated_at"]
 
 
 def test_directions_skipped_for_a_non_accepted_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

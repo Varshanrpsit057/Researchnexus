@@ -44,6 +44,13 @@ def test_evidence_coverage_is_the_fraction_of_full_text_grounded_papers() -> Non
     assert out.evidence_coverage == round(2 / 3, 6)
 
 
+def test_a_span_read_from_an_abstract_only_profile_is_not_full_text_coverage() -> None:
+    # an abstract chunk has a section and offsets too; the paper's grounding decides
+    out = assemble(_cand([_ev("p1"), _ev("p2"), _ev("p3")]), min_papers=2, abstract_only={"p2"})
+    assert out is not None
+    assert out.evidence_coverage == round(2 / 3, 6)
+
+
 def test_contradiction_needs_conflicting_spans_from_two_papers() -> None:
     supporting = [_ev("p1", role=EvidenceRole.SHARED_CONTEXT.value), _ev("p2", role=EvidenceRole.SHARED_CONTEXT.value)]
     one_sided = [_ev("p1", role=EvidenceRole.CONFLICTS_WITH_GAP.value)]

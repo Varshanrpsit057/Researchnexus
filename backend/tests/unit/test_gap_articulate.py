@@ -81,6 +81,15 @@ def test_no_session_falls_back_to_a_deterministic_template() -> None:
     assert (art.statement, art.why_unaddressed, art.proposed_direction) == (art2.statement, art2.why_unaddressed, art2.proposed_direction)
 
 
+def test_the_method_gap_template_says_only_what_the_rule_found() -> None:
+    # p3 uses the method, so "no workspace paper applies it" would be false;
+    # the gap is that the papers sharing p3's problem don't
+    art = asyncio.run(articulate(None, _candidate()))
+    assert art is not None
+    assert art.statement == "None of the 2 papers that share a research problem with the paper using contrastive pretraining applies it."
+    assert art.why_unaddressed == "The 2 papers addressing that shared problem do not adopt contrastive pretraining, although another workspace paper does."
+
+
 def test_llm_failure_falls_back_to_the_template_not_an_error() -> None:
     art = asyncio.run(articulate(_session("not json"), _candidate()))
     assert art is not None and art.generator_model is None

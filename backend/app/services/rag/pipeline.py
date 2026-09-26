@@ -33,6 +33,7 @@ from app.retrieval.embeddings import get_embedding_provider
 from app.retrieval.reranker import CrossEncoderReranker, get_reranker
 from app.retrieval.workspace_index import FaissWorkspaceIndex, WorkspaceChunkIndex
 from app.services.citations.validate import link_claims
+from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 from app.services.rag.answerability import assess
 from app.services.rag.context_filter import filter_chunks
 from app.services.rag.faithfulness import passes, score_faithfulness
@@ -79,6 +80,7 @@ def _build_index(db: Session, workspace: ResearchWorkspace, settings: Settings) 
         embedder=get_embedding_provider(settings.rag_embedder),
         vector_backend=settings.rag_vector_backend,
     )
+    ensure_abstract_chunks(db, [p.paper_id for p in workspace.papers])
     idx.rebuild([p.paper_id for p in workspace.papers])
     return idx
 
