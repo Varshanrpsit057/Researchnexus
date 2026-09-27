@@ -198,9 +198,10 @@ def test_unsupported_sentence_is_dropped_and_counted(db: Session, workspace: Res
 def test_answerability_gate_skips_generation_when_evidence_is_thin(db: Session, workspace: ResearchWorkspace, settings: Settings) -> None:
     ws = workspace
     c1 = _chunk_ids(db, ws.papers[0].paper_id)[0]
-    # filter keeps only ONE chunk -> below rag_min_answerable_chunks (2)
+    # filter keeps only ONE chunk -> below a workspace bar of 2 relevant chunks
     session = _session({"copy VERBATIM": {"chunks": [{"chunk_id": c1, "relevant_text": "Dense retrieval improves recall on open domain question answering."}]}})
-    ans = _run(db, ws, settings, session, "What optimiser learning rate was used for pretraining?")
+    two = settings.model_copy(update={"rag_min_answerable_chunks": 2})
+    ans = _run(db, ws, two, session, "What optimiser learning rate was used for pretraining?")
 
     assert ans.answerable is False
     assert ans.suggestion and ans.suggestion.startswith("Not enough in this workspace")
@@ -290,3 +291,102 @@ def test_pipeline_is_deterministic(db: Session, workspace: ResearchWorkspace, se
     a = _run(db, ws, settings, _session(payloads), "How is retrieval quality improved?")
     b = _run(db, ws, settings, _session(payloads), "How is retrieval quality improved?")
     assert a.model_dump() == b.model_dump()
+
+
+# --- remediation Phase 2: what a turn that can't be answered really says ----
+
+
+def _scripted(handler) -> LlmSession:  # noqa: ANN001
+    return LlmSession(
+        client=OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))),
+        api_key="sk-x", model="m", provider=LlmProvider.GROQ,
+    )
+
+
+def _reply(payload: object) -> httpx.Response:
+    content = payload if isinstance(payload, str) else json.dumps(payload)
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}})
+
+
+def test_one_relevant_passage_is_enough_to_answer(db: Session, workspace: ResearchWorkspace, settings: Settings) -> None:
+    ws = workspace
+    c1 = _chunk_ids(db, ws.papers[0].paper_id)[0]
+    session = _session(
+        {
+            "copy VERBATIM": {"chunks": [{"chunk_id": c1, "relevant_text": "Dense retrieval improves recall on open domain question answering."}]},
+            "ONLY the numbered CONTEXT": {"sentences": [{"text": "Dense retrieval improves recall.", "chunk_ids": [c1]}]},
+            "fully supports the statement": {"results": [{"index": 0, "supported": True}]},
+        }
+    )
+    ans = _run(db, ws, settings, session, "What does dense retrieval improve?")
+    assert ans.answerable is True and [s.text for s in ans.sentences] == ["Dense retrieval improves recall."]
+
+
+def test_the_model_finding_nothing_that_answers_is_not_answerable_not_an_empty_answer(
+    db: Session, workspace: ResearchWorkspace, settings: Settings
+) -> None:
+    ws = workspace
+    session = _session({**_payloads(db, ws, supported=[0, 1]), "ONLY the numbered CONTEXT": {"sentences": []}})
+    ans = _run(db, ws, settings, session, "What learning rate did pretraining use?")
+    assert ans.answerable is False and ans.suggestion and ans.suggestion.startswith("Not enough in this workspace")
+    assert ans.warnings == ["not_answerable"]
+
+
+def test_a_provider_failure_is_raised_with_its_kind_not_reported_as_a_bad_answer(
+    db: Session, workspace: ResearchWorkspace, settings: Settings
+) -> None:
+    from app.llm.client import LlmErrorKind, LlmProviderError
+
+    session = _scripted(lambda r: httpx.Response(401, json={"error": {"message": "Authentication Fails"}}))
+    with pytest.raises(LlmProviderError) as info:
+        _run(db, workspace, settings, session, "How is retrieval quality improved?")
+    assert info.value.kind is LlmErrorKind.AUTH
+
+
+def test_a_verifier_reply_that_cannot_be_used_is_not_a_verdict(db: Session, workspace: ResearchWorkspace, settings: Settings) -> None:
+    session = _session({**_payloads(db, workspace, supported=[0, 1]), "fully supports the statement": "I think they are all fine"})
+    ans = _run(db, workspace, settings, session, "How is retrieval quality improved?")
+    assert ans.sentences == [] and "verification_failed" in ans.warnings
+
+
+def test_a_reply_that_is_not_the_json_asked_for_gets_one_repair(db: Session, workspace: ResearchWorkspace, settings: Settings) -> None:
+    payloads = _payloads(db, workspace, supported=[0, 1])
+    generations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        text = request.content.decode()
+        if "ONLY the numbered CONTEXT" in text:
+            generations.append(text)
+            # first: prose around a broken object; the repair: the object
+            return _reply("Here you go: {sentences: oops" if len(generations) == 1 else payloads["ONLY the numbered CONTEXT"])
+        for needle, payload in payloads.items():
+            if needle in text:
+                return _reply(payload)
+        return _reply({})
+
+    ans = _run(db, workspace, settings, _scripted(handler), "How is retrieval quality improved?")
+    assert len(generations) == 2 and "That reply could not be used" in generations[1]
+    assert len(ans.sentences) == 2 and ans.warnings == []
+
+
+def test_a_rewrite_that_hits_a_provider_error_keeps_the_first_answer(db: Session, workspace: ResearchWorkspace, settings: Settings) -> None:
+    c1 = _chunk_ids(db, workspace.papers[0].paper_id)[0]
+    payloads = _payloads(db, workspace, supported=[0])
+    generations = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        text = request.content.decode()
+        if "ONLY the numbered CONTEXT" in text:
+            generations["n"] += 1
+            if generations["n"] == 1:  # supported, but far from its source: the gate asks for a rewrite
+                return _reply({"sentences": [{"text": "Quantum entanglement teleports gradient tensors across galaxies.", "chunk_ids": [c1]}]})
+            return httpx.Response(503, json={"error": {"message": "Server overloaded"}})
+        if "fully supports the statement" in text:
+            return _reply({"results": [{"index": 0, "supported": True}]})
+        return _reply(payloads["copy VERBATIM"])
+
+    ans = _run(db, workspace, settings, _scripted(handler), "How is retrieval quality improved?")
+    assert [s.text for s in ans.sentences] == ["Quantum entanglement teleports gradient tensors across galaxies."]
+    assert ans.regenerated is False and "faithfulness_below_threshold" in ans.warnings

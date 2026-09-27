@@ -4,7 +4,7 @@ Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
 `research_profiles`, `search_runs`, `search_candidates`, `ranked_papers`,
 `paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
 `chat_messages`, `citations`, `claims`, `comparisons`,
-`research_gaps`, `research_directions` and `stage_runs` tables in
+`research_gaps`, `research_directions`, `stage_runs` and `llm_calls` tables in
 docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that
 spec belong to later phases and are added when those phases need them, not
 speculatively here.
@@ -494,3 +494,35 @@ class StageRunORM(Base):
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class LlmCallORM(Base):
+    """One call to a model provider, with the provider's own token usage
+    (Phase 2 of the remediation plan). Written for every call -- answered,
+    failed, or part of a chat turn that was never saved -- because the
+    provider bills them all; the budget reads real usage from here, never
+    from an estimate. No prompts, replies or keys: counts, the model, and
+    the kind of failure only. `workspace_id` has no foreign key on purpose:
+    usage outlives a deleted workspace."""
+
+    __tablename__ = "llm_calls"
+    __table_args__ = (
+        Index("ix_llm_calls_owner_created", "owner_id", "created_at"),
+        Index("ix_llm_calls_workspace", "workspace_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"))
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

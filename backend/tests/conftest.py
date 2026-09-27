@@ -23,6 +23,18 @@ from tests.fixtures.make_fixtures import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_provider_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider adapter backs off for real seconds between retries; tests
+    of a failing provider don't wait them out (tests of the backoff itself
+    inject their own `sleep`)."""
+
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.llm.providers.openai_compat.backoff_sleep", instant)
+
+
 @pytest.fixture(scope="session")
 def normal_paper_pdf_bytes() -> bytes:
     return make_normal_paper_pdf()

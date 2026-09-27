@@ -9,8 +9,12 @@ interface ChatStreamCallbacks {
   onCitation?: (citation: SseCitationEvent) => void;
   onUsage?: (usage: SseUsageEvent) => void;
   onDone?: (done: SseDoneEvent) => void;
-  onError?: (message: string, code?: string) => void;
+  /** `kind` says which provider failure it was (auth, insufficient_balance, ...). */
+  onError?: (message: string, code?: string, kind?: string) => void;
 }
+
+/** The stream closed before the answer was done or a failure was reported. */
+export const INTERRUPTED = "The answer stopped before it finished. Try again.";
 
 interface ChatStreamBody {
   message: string;
@@ -24,6 +28,12 @@ interface ChatStreamBody {
  * The backend's chat SSE stream is plain fetch + ReadableStream, not
  * EventSource -- EventSource cannot send a POST body or a custom
  * Authorization header, both of which this endpoint requires.
+ *
+ * Events are separated by a blank line (LF or CRLF); `: keep-alive`
+ * comments are skipped. A stream that ends without `done` or `error` --
+ * the connection dropped, the server stopped -- is reported through
+ * `onError` with the code `stream_interrupted`, so a caller is never left
+ * waiting for an answer that will not come.
  */
 export async function streamChat(
   workspaceId: string,
@@ -61,36 +71,49 @@ export async function streamChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let finished = false;
+  const dispatch = (raw: string) => {
+    const name = dispatchEvent(raw, callbacks);
+    if (name === "done" || name === "error") finished = true;
+  };
 
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
+    // a CRLF pair split across two reads is joined before it is normalised
+    const normalised = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
+    const held = buffer.endsWith("\r") ? "\r" : "";
+    buffer = normalised.replace(/\r\n?/g, "\n");
 
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
+      dispatch(buffer.slice(0, boundary));
       buffer = buffer.slice(boundary + 2);
-      dispatchEvent(rawEvent, callbacks);
       boundary = buffer.indexOf("\n\n");
     }
+    buffer += held;
   }
+  if (buffer.trim()) dispatch(buffer.replace(/\r\n?/g, "\n"));
+  if (!finished) callbacks.onError?.(INTERRUPTED, "stream_interrupted");
 }
 
-function dispatchEvent(raw: string, callbacks: ChatStreamCallbacks): void {
+/** Hands one event to its callback; returns the event's name, or null for a comment. */
+function dispatchEvent(raw: string, callbacks: ChatStreamCallbacks): string | null {
   let eventName = "message";
   let dataLine = "";
   for (const line of raw.split("\n")) {
+    if (line.startsWith(":")) continue; // a keep-alive comment
     if (line.startsWith("event:")) eventName = line.slice(6).trim();
     else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
   }
-  if (!dataLine) return;
+  if (!dataLine) return null;
 
   let data: unknown;
   try {
     data = JSON.parse(dataLine);
   } catch {
-    return;
+    return null;
   }
 
   switch (eventName) {
@@ -111,8 +134,9 @@ function dispatchEvent(raw: string, callbacks: ChatStreamCallbacks): void {
       break;
     case "error": {
       const err = data as SseErrorEvent;
-      callbacks.onError?.(err.message, err.code);
+      callbacks.onError?.(err.message, err.code, err.kind);
       break;
     }
   }
+  return eventName;
 }

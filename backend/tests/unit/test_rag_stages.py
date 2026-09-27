@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from app.domain.citation import Claim
 from app.domain.rag import FilteredChunk, RetrievedChunk
@@ -181,3 +182,32 @@ def test_link_claims_drops_claims_citing_unretrieved_chunks_and_fills_papers() -
     assert linked[0].claim_id == "k1"
     assert linked[0].supporting_chunk_ids == ["c1"]  # ghost dropped
     assert linked[0].supporting_paper_ids == ["p1"]
+
+
+# --- strict mode (chat): a check that couldn't run is not a verdict ---------
+
+
+def test_strict_stages_raise_a_provider_failure_instead_of_degrading() -> None:
+    from app.llm.client import LlmProviderError
+
+    chunks = [_rc("c1", "p1", "text one")]
+    with pytest.raises(LlmProviderError):
+        asyncio.run(filter_chunks(_session("x", status=401), "q", chunks, raise_provider_errors=True))
+    with pytest.raises(LlmProviderError):
+        asyncio.run(generate_answer(_session("x", status=402), "q", [_fc("c1", "p1", "text")], raise_provider_errors=True))
+    with pytest.raises(LlmProviderError):
+        asyncio.run(verify_sentences(_session("x", status=500), [DraftSentence(text="A.", chunk_ids=["c1"])], {"c1": "e"}, strict=True))
+
+
+def test_a_strict_verifier_whose_reply_is_unusable_says_so() -> None:
+    from app.services.rag.verify import VerificationUnavailable
+
+    with pytest.raises(VerificationUnavailable) as info:
+        asyncio.run(verify_sentences(_session("all good!"), [DraftSentence(text="A.", chunk_ids=["c1"])], {"c1": "e"}, strict=True))
+    assert (info.value.prompt_tokens, info.value.completion_tokens) == (20, 10)  # the reply and its repair were billed
+
+
+def test_generate_accepts_a_single_chunk_id_given_as_a_string() -> None:
+    chunks = [_fc("c1", "p1", "Dense retrieval improves recall.")]
+    draft = asyncio.run(generate_answer(_session({"sentences": [{"text": "Dense retrieval improves recall.", "chunk_ids": "c1"}]}), "q", chunks))
+    assert draft.ok and draft.sentences[0].chunk_ids == ["c1"]

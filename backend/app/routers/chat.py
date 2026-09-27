@@ -13,6 +13,18 @@ in two parts:
   (so a citation arrives exactly where it belongs in the text), then
   `usage` and `done`. A failure mid-way is an `error` event.
 
+While a stage runs, a `: keep-alive` comment every 15 s keeps the
+connection from being dropped as idle.
+
+Failures say what actually happened: a provider failure is `provider_error`
+with its `kind` (auth, insufficient_balance, rate_limited, timeout,
+unavailable, bad_request, bad_response) and a message naming the provider;
+an answer the model couldn't write is `generation_failed`; one that
+couldn't be checked against its sources is `verification_failed`; one with
+no sentence its sources support is `unsupported_answer`. None of them is
+saved. Every provider call a turn makes -- a failed turn's too -- is
+recorded with its token usage (app/llm/usage.py).
+
 A turn is persisted only once it has an answer: the question, the answer,
 its claims, and the answer's outcome (suggestion when not answerable,
 sentences dropped for lacking support, warnings) are written together, so a
@@ -51,8 +63,9 @@ from app.domain.rag import RagAnswer
 from app.domain.user import User
 from app.domain.workspace import ResearchWorkspace
 from app.jobs.runner import new_id
-from app.llm.client import LlmProviderError
+from app.llm.client import LlmProviderError, describe_provider_error
 from app.llm.session import LlmSession, resolve_llm_session
+from app.llm.usage import usage_scope
 from app.services.rag.pipeline import (
     RagRequest,
     RagStage,
@@ -70,15 +83,30 @@ DbSession = Annotated[Session, Depends(get_db)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 
 QUOTE_MAX = 700
-PROVIDER_ERROR = "The language model provider didn't answer. Try again in a moment."
+KEEP_ALIVE_S = 15.0
 GENERATION_ERROR = "The language model didn't return a usable answer. Try again in a moment."
+VERIFICATION_ERROR = "The answer couldn't be checked against its sources, so it isn't shown. Try again."
+UNSUPPORTED_ERROR = (
+    "No sentence of the answer could be matched to a passage in this workspace, so none is shown. "
+    "Try asking again, or rephrase the question."
+)
+INTERNAL_ERROR = "Something went wrong while answering. Try again."
 
 
 class _GenerationFailed(Exception):
-    """No answer could be generated at all (the RAG stages absorb provider
-    errors and bad replies into `generation_failed`). A chat turn with no
-    answer is a failed turn, not an empty one: nothing is persisted."""
-INTERNAL_ERROR = "Something went wrong while answering. Try again."
+    """The turn produced no answer to show: the model's reply couldn't be
+    used, couldn't be checked, or no sentence of it was supported. A chat
+    turn with no answer is a failed turn, not an empty one: nothing is
+    persisted."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _provider_error(e: LlmProviderError) -> dict[str, str]:
+    return {"code": "provider_error", "kind": e.kind.value, "message": describe_provider_error(e)}
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -156,16 +184,21 @@ def _prepare(db: Session, workspace_id: str, body: ChatBody, owner: User, settin
 
 
 async def _answer(db: Session, turn: _Turn, settings: Settings, on_stage: StageHook | None = None) -> RagAnswer:
-    answer = await answer_question(
-        db,
-        workspace=turn.workspace,
-        request=RagRequest(query=turn.question, scope_paper_ids=turn.scope_ids),
-        session=turn.llm,
-        settings=settings,
-        on_stage=on_stage,
-    )
-    if answer.answerable and not answer.sentences and "generation_failed" in answer.warnings:
-        raise _GenerationFailed
+    with usage_scope("chat", workspace_id=turn.workspace.workspace_id):
+        answer = await answer_question(
+            db,
+            workspace=turn.workspace,
+            request=RagRequest(query=turn.question, scope_paper_ids=turn.scope_ids),
+            session=turn.llm,
+            settings=settings,
+            on_stage=on_stage,
+        )
+    if answer.answerable and not answer.sentences:
+        if "generation_failed" in answer.warnings:
+            raise _GenerationFailed("generation_failed", GENERATION_ERROR)
+        if "verification_failed" in answer.warnings:
+            raise _GenerationFailed("verification_failed", VERIFICATION_ERROR)
+        raise _GenerationFailed("unsupported_answer", UNSUPPORTED_ERROR)
     answer.warnings.extend(turn.warnings)
     return answer
 
@@ -284,9 +317,9 @@ async def chat(
     try:
         answer = await _answer(db, turn, settings)
     except LlmProviderError as e:
-        raise _err(502, "provider_error", PROVIDER_ERROR) from e
+        raise HTTPException(status_code=502, detail={"error": _provider_error(e)}) from e
     except _GenerationFailed as e:
-        raise _err(502, "generation_failed", GENERATION_ERROR) from e
+        raise _err(502, e.code, e.message) from e
     message_id, session_id, claims = _persist(db, turn, answer)
     return {
         **_outcome(answer, message_id, session_id, turn),
@@ -308,20 +341,23 @@ async def _stream(turn: _Turn, settings: Settings) -> AsyncIterator[str]:
         # 1. progress, as the pipeline reaches each stage
         while not task.done():
             next_stage = asyncio.ensure_future(stages.get())
-            done, _ = await asyncio.wait({task, next_stage}, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait({task, next_stage}, timeout=KEEP_ALIVE_S, return_when=asyncio.FIRST_COMPLETED)
             if next_stage in done:
                 yield _event("status", {"stage": next_stage.result()})
-            else:
-                next_stage.cancel()
+                continue
+            next_stage.cancel()
+            if not done:
+                yield ": keep-alive\n\n"
         while not stages.empty():
             yield _event("status", {"stage": stages.get_nowait()})
         try:
             answer = task.result()
-        except LlmProviderError:
-            yield _event("error", {"code": "provider_error", "message": PROVIDER_ERROR})
+        except LlmProviderError as e:
+            _log.warning("chat_provider_error", provider=e.provider, kind=e.kind.value, status=e.status)
+            yield _event("error", _provider_error(e))
             return
-        except _GenerationFailed:
-            yield _event("error", {"code": "generation_failed", "message": GENERATION_ERROR})
+        except _GenerationFailed as e:
+            yield _event("error", {"code": e.code, "message": e.message})
             return
         except Exception:  # noqa: BLE001 - reported to the client, logged here
             _log.exception("chat_stream_failed", workspace_id=turn.workspace.workspace_id)

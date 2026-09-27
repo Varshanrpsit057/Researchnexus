@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamChat } from "./chat-stream";
+import { INTERRUPTED, streamChat } from "./chat-stream";
 import { ApiError } from "./client";
 
 function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -74,7 +74,7 @@ data: {"code":"generation_failed","message":"No usable answer."}
     const onError = vi.fn();
     await streamChat("ws_1", { message: "q", regenerate: true, session_id: "cs_1" }, { onStatus, onError });
     expect(onStatus.mock.calls.map(([s]) => s.stage)).toEqual(["searching", "reading"]);
-    expect(onError).toHaveBeenCalledWith("No usable answer.", "generation_failed");
+    expect(onError).toHaveBeenCalledWith("No usable answer.", "generation_failed", undefined);
     const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
     expect(body).toMatchObject({ regenerate: true, session_id: "cs_1" });
   });
@@ -87,6 +87,50 @@ data: {"code":"generation_failed","message":"No usable answer."}
     const onToken = vi.fn();
     await streamChat("ws_1", { message: "hi" }, { onToken });
     expect(onToken).toHaveBeenCalledWith("hi");
+  });
+
+  it("passes on which provider failure it was", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        streamResponse([
+          `event: error\ndata: {"code":"provider_error","kind":"auth","message":"DeepSeek rejected the saved API key."}\n\n`,
+        ])
+      )
+    );
+    const onError = vi.fn();
+    await streamChat("ws_1", { message: "q" }, { onError });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith("DeepSeek rejected the saved API key.", "provider_error", "auth");
+  });
+
+  it("reads CRLF-separated events, even a CRLF split across reads, and skips keep-alive comments", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        streamResponse([
+          `: keep-alive\r\n\r\nevent: status\r\ndata: {"stage":"writing"}\r`,
+          `\n\r\n: keep-alive\r\n\r\nevent: done\r\ndata: {"message_id":"m","session_id":"s","answerable":true}\r\n\r\n`,
+        ])
+      )
+    );
+    const onStatus = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    await streamChat("ws_1", { message: "q" }, { onStatus, onDone, onError });
+    expect(onStatus.mock.calls.map(([s]) => s.stage)).toEqual(["writing"]);
+    expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ session_id: "s" }));
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("says so when the stream ends before the answer is done", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(streamResponse([`event: status\ndata: {"stage":"searching"}\n\n`, `event: token\ndata: {"text":"Dense "}\n\n`]))
+    );
+    const onError = vi.fn();
+    await streamChat("ws_1", { message: "q" }, { onError });
+    expect(onError).toHaveBeenCalledWith(INTERRUPTED, "stream_interrupted");
   });
 
   it("rejects with an ApiError built from the real {detail: {error}} envelope on a non-2xx response", async () => {

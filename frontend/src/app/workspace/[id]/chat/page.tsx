@@ -23,7 +23,7 @@ interface Live {
   stage: RagStage | null;
   seen: RagStage[];
   segments: Segment[];
-  error: { code?: string; message: string } | null;
+  error: { code?: string; kind?: string; message: string } | null;
 }
 
 interface Inspecting {
@@ -113,7 +113,8 @@ export default function ChatPage() {
     setAnnouncement(regenerate ? "Answering the question again." : "Question sent.");
     const controller = new AbortController();
     abortRef.current = controller;
-    const fail = (message: string, code?: string) => setLive((l) => l && { ...l, error: { code, message: errorCopy(code, message) } });
+    const fail = (message: string, code?: string, kind?: string) =>
+      setLive((l) => l && { ...l, error: { code, kind, message: errorCopy(code, message) } });
     try {
       await streamChat(
         id,
@@ -312,9 +313,9 @@ export default function ChatPage() {
                       <div className="rounded-2xl px-5 py-4" style={{ background: "rgba(255,155,155,.06)", border: "1px solid rgba(255,155,155,.25)" }}>
                         <InlineError message={live.error.message} />
                         <div className="mt-3 flex flex-wrap items-center gap-2">
-                          {live.error.code === "llm_key_required" ? (
+                          {live.error.code === "llm_key_required" || live.error.kind === "auth" ? (
                             <Link href="/settings" className={`rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`} style={primaryButton}>
-                              Add a key in Settings
+                              {live.error.kind === "auth" ? "Check the key in Settings" : "Add a key in Settings"}
                             </Link>
                           ) : (
                             <button type="button" onClick={() => ask(live.question, live.regenerate)} className={`rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`} style={primaryButton}>

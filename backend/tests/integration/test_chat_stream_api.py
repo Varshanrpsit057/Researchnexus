@@ -141,13 +141,15 @@ def test_a_provider_failure_leaves_nothing_behind_so_a_retry_cannot_duplicate_th
     client, token, wid = _ready(tmp_path, monkeypatch, down)
     events = _ask(client, token, wid)
     name, data = events[-1]
-    # every RAG stage absorbs provider errors, so an outage surfaces as "no usable answer"
-    assert name == "error" and data["code"] == "generation_failed"
+    # an outage is said as one, naming the provider -- never "no usable answer"
+    assert name == "error" and data["code"] == "provider_error" and data["kind"] == "unavailable"
+    assert data["message"] == "Groq is unavailable right now. Try again in a moment."
     assert "sk-secret" not in data["message"]  # the provider's raw reply is never echoed
     assert client.get(f"/api/v1/workspaces/{wid}/chat/sessions", headers=_h(token)).json()["sessions"] == []
 
     plain = client.post(f"/api/v1/workspaces/{wid}/chat", json={"message": QUESTION}, headers=_h(token))
-    assert plain.status_code == 502 and plain.json()["detail"]["error"]["code"] == "generation_failed"
+    error = plain.json()["detail"]["error"]
+    assert plain.status_code == 502 and error["code"] == "provider_error" and error["kind"] == "unavailable"
 
     # the provider recovers: one question, one answer
     _mock_llm(monkeypatch, _rag_router(generate=TWO_SENTENCES, verify=BOTH_SUPPORTED))
@@ -264,3 +266,110 @@ def test_stage_events_cross_a_real_socket_while_the_model_is_still_working(tmp_p
         gate.set()
         server.should_exit = True
         thread.join(timeout=10)
+
+
+# --- remediation Phase 2: provider reliability and real usage ---------------
+
+
+def _owner(email: str = "r@example.com") -> str:
+    db = get_session_factory()()
+    try:
+        user = repo.get_user_by_email(db, email)
+        assert user is not None
+        return user.id
+    finally:
+        db.close()
+
+
+def _calls(owner_id: str, workspace_id: str | None = None) -> list:
+    db = get_session_factory()()
+    try:
+        return repo.list_llm_calls(db, owner_id, workspace_id=workspace_id)
+    finally:
+        db.close()
+
+
+def _nothing_saved(client: TestClient, token: str, wid: str) -> bool:
+    return client.get(f"/api/v1/workspaces/{wid}/chat/sessions", headers=_h(token)).json()["sessions"] == []
+
+
+def test_every_call_a_turn_makes_is_recorded_with_its_usage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, token, wid = _ready(tmp_path, monkeypatch)
+    events = _ask(client, token, wid)
+    usage = next(d for n, d in events if n == "usage")
+
+    calls = _calls(_owner(), wid)
+    # the contextual filter, the answer, the check
+    assert [c.feature for c in calls] == ["chat", "chat", "chat"] and all(c.ok for c in calls)
+    assert sum(c.prompt_tokens for c in calls) == usage["prompt"] == 90
+    assert sum(c.completion_tokens for c in calls) == usage["completion"] == 36
+    hist = client.get(f"/api/v1/workspaces/{wid}/chat/sessions/{events[-1][1]['session_id']}", headers=_h(token)).json()
+    assert hist["messages"][1]["tokens_prompt"] == 90
+
+
+def test_an_account_out_of_credit_is_said_plainly_saves_nothing_and_is_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broke(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"message": "Insufficient Balance", "type": "unknown_error"}})
+
+    client, token, wid = _ready(tmp_path, monkeypatch, broke)
+    name, data = _ask(client, token, wid)[-1]
+    assert (name, data["code"], data["kind"]) == ("error", "provider_error", "insufficient_balance")
+    assert data["message"] == "Your Groq account is out of credit. Top it up, then try again."
+    assert _nothing_saved(client, token, wid)
+    assert [(c.ok, c.error_kind) for c in _calls(_owner(), wid)] == [(False, "insufficient_balance")]
+
+
+def test_a_rejected_key_is_named_and_stops_being_the_working_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def rejected(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "Authentication Fails, Your api key: ****sk-x is invalid"}})
+
+    client, token, wid = _ready(tmp_path, monkeypatch, rejected)
+    name, data = _ask(client, token, wid)[-1]
+    assert (data["code"], data["kind"]) == ("provider_error", "auth")
+    assert data["message"] == "Groq rejected the saved API key. Check it in Settings, or save a new one."
+    keys = client.get("/api/v1/settings/llm-keys", headers=_h(token)).json()
+    assert [k["status"] for k in (keys["keys"] if isinstance(keys, dict) else keys)] == ["failed"]
+    # the next question doesn't fail the same way again: no key works, and it says so
+    again = client.post(f"/api/v1/workspaces/{wid}/chat", json={"message": QUESTION}, headers=_h(token))
+    assert again.status_code == 409 and again.json()["detail"]["error"]["code"] == "llm_key_required"
+
+
+@pytest.mark.parametrize(
+    ("verify", "generate", "code"),
+    [
+        ("they all look fine to me", TWO_SENTENCES, "verification_failed"),
+        ({"results": [{"index": 0, "supported": False}, {"index": 1, "supported": False}]}, TWO_SENTENCES, "unsupported_answer"),
+        (BOTH_SUPPORTED, "no json here", "generation_failed"),
+    ],
+)
+def test_a_turn_with_no_answer_to_show_is_a_named_failure_and_saves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verify: object, generate: object, code: str
+) -> None:
+    client, token, wid = _ready(tmp_path, monkeypatch, _rag_router(generate=generate, verify=verify))  # type: ignore[arg-type]
+    name, data = _ask(client, token, wid)[-1]
+    assert (name, data["code"]) == ("error", code) and data["message"]
+    assert _nothing_saved(client, token, wid)
+    assert _calls(_owner(), wid)  # what it cost is still counted
+
+
+def test_a_long_stage_keeps_the_stream_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import app.routers.chat as chat_router
+
+    answer = _rag_router(generate=TWO_SENTENCES, verify=BOTH_SUPPORTED)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)  # longer than the keep-alive interval below
+        return answer(request)
+
+    monkeypatch.setattr(chat_router, "KEEP_ALIVE_S", 0.05)
+    client, token, wid = _ready(tmp_path, monkeypatch, slow)
+    r = client.post(
+        f"/api/v1/workspaces/{wid}/chat", json={"message": QUESTION}, headers={**_h(token), "Accept": "text/event-stream"}
+    )
+    assert ": keep-alive\n\n" in r.text
+    blocks = [b for b in r.text.strip().split("\n\n") if not b.startswith(":")]
+    assert _events("\n\n".join(blocks))[-1][0] == "done"

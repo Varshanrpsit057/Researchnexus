@@ -643,6 +643,8 @@ export interface SseDoneEvent {
 export interface SseErrorEvent {
   code: string;
   message: string;
+  /** With `provider_error`: auth, insufficient_balance, rate_limited, timeout, unavailable, bad_request, bad_response. */
+  kind?: string;
 }
 
 // --- summary / keypoints ------------------------------------------------

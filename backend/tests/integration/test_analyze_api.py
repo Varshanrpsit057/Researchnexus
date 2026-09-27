@@ -240,3 +240,38 @@ def test_patch_profile_marks_touched_fields_user_edited(
     assert profile["datasets"]["items"][0]["status"] == "user_edited"
     # untouched field keeps its original value
     assert profile["research_problem"]["value"] == "grounding LLM answers in evidence"
+
+
+def test_a_provider_failure_while_analysing_is_named_and_its_call_counted(
+    tmp_path: Path, normal_paper_pdf_bytes: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.services.profile.pipeline as pipeline_module
+    from app.db import repository as repo
+    from app.db.session import get_session_factory
+    from app.domain.user import LlmProvider
+    from app.llm.providers.openai_compat import OpenAiCompatClient
+
+    client, token = _authed_client(tmp_path)
+    paper_id = _upload_and_wait(client, token, normal_paper_pdf_bytes)
+    _save_working_key(client, token, monkeypatch)
+
+    def broke(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"message": "Insufficient Balance"}})
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "get_llm_client",
+        lambda provider: OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(broke))),
+    )
+    resp = client.post(f"/api/v1/papers/{paper_id}/analyze", headers=_auth_headers(token))
+    error = resp.json()["detail"]["error"]
+    assert resp.status_code == 502 and (error["code"], error["kind"]) == ("provider_error", "insufficient_balance")
+    assert error["message"] == "Your Groq account is out of credit. Top it up, then try again."
+
+    db = get_session_factory()()
+    try:
+        user = repo.get_user_by_email(db, "researcher@example.com")
+        assert user is not None
+        assert [(c.feature, c.error_kind) for c in repo.list_llm_calls(db, user.id)] == [("profile", "insufficient_balance")]
+    finally:
+        db.close()

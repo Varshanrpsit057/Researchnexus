@@ -43,14 +43,17 @@ class Answerability:
     kept_chunks: int = 0
 
 
-def assess(query: str, filtered: list[FilteredChunk], *, min_chunks: int) -> Answerability:
-    kept = [c for c in filtered if c.kept]
-    if len(kept) >= min_chunks:
-        return Answerability(answerable=True, kept_chunks=len(kept))
+def suggestion_for(query: str) -> str:
     kws = _keywords(query)
-    suggestion = (
+    return (
         f"Not enough in this workspace. Add papers about: {', '.join(kws[:4])}."
         if kws
         else "Not enough in this workspace. Add more papers relevant to this question."
     )
-    return Answerability(answerable=False, suggestion=suggestion, kept_chunks=len(kept))
+
+
+def assess(query: str, filtered: list[FilteredChunk], *, min_chunks: int) -> Answerability:
+    kept = [c for c in filtered if c.kept]
+    if len(kept) >= min_chunks:
+        return Answerability(answerable=True, kept_chunks=len(kept))
+    return Answerability(answerable=False, suggestion=suggestion_for(query), kept_chunks=len(kept))

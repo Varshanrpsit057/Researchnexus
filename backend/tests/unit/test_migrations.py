@@ -212,3 +212,37 @@ def test_0016_stores_a_users_default_provider(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert "default_provider" not in cols
+
+
+def test_0017_records_each_provider_call_and_its_usage(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_llm_calls.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("INSERT INTO users (id, email, auth_provider, auth_subject, created_at) VALUES ('u1', 'a@b.c', 'local', 'a@b.c', '2026-01-01')")
+        conn.execute(
+            "INSERT INTO llm_calls (id, owner_id, workspace_id, feature, provider, model, created_at) "
+            "VALUES ('llm_1', 'u1', 'ws_gone', 'chat', 'deepseek', 'deepseek-flash', '2026-09-27')"
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens, ok, error_kind FROM llm_calls"
+        ).fetchone()
+        indexes = {r[1] for r in conn.execute("PRAGMA index_list(llm_calls)")}
+    finally:
+        conn.close()
+    # counts default to zero; a workspace id needs no workspace row (usage outlives a deleted workspace)
+    assert row == (0, 0, 0, 0, 1, None)
+    assert {"ix_llm_calls_owner_created", "ix_llm_calls_workspace"} <= indexes
+
+    command.downgrade(cfg, "0016")
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    assert "llm_calls" not in tables

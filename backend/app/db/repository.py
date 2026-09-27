@@ -24,6 +24,7 @@ from app.db.models import (
     ClaimORM,
     ComparisonORM,
     JobORM,
+    LlmCallORM,
     PaperChunkORM,
     PaperORM,
     PaperRelationshipORM,
@@ -58,6 +59,7 @@ from app.domain.paper import ParsedDocument
 from app.domain.profile import Confidence, ResearchProfile, TokenUsage
 from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
+from app.domain.usage import LlmCall
 from app.domain.user import ApiKeyRecord, ApiKeyStatus, LlmProvider, User
 from app.domain.workspace import (
     AddedBy,
@@ -182,6 +184,20 @@ def has_working_api_key(db: Session, owner_id: str) -> bool:
         select(ApiKeyORM).where(ApiKeyORM.owner_id == owner_id, ApiKeyORM.status == ApiKeyStatus.WORKING.value)
     ).first()
     return row is not None
+
+
+def mark_api_key_failed(db: Session, owner_id: str, provider: LlmProvider) -> None:
+    """The provider rejected the stored key on a real call: it is no longer
+    a working key, so the next call picks another (or says none works)
+    instead of failing the same way again. A later check can restore it."""
+    row = db.execute(
+        select(ApiKeyORM).where(ApiKeyORM.owner_id == owner_id, ApiKeyORM.provider == provider.value)
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    row.status = ApiKeyStatus.FAILED.value
+    row.checked_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 def delete_api_key(db: Session, owner_id: str, provider: LlmProvider) -> bool:
@@ -1809,3 +1825,29 @@ def list_stage_runs(
     stmt = stmt.order_by(StageRunORM.ts.desc(), StageRunORM.id.desc()).limit(limit)
     rows = db.execute(stmt).scalars().all()
     return [_stage_run_from_orm(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Model-provider usage (remediation Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def record_llm_call(db: Session, call: LlmCall) -> None:
+    db.add(LlmCallORM(**call.model_dump()))
+    db.commit()
+
+
+def list_llm_calls(db: Session, owner_id: str, *, workspace_id: str | None = None) -> list[LlmCall]:
+    stmt = select(LlmCallORM).where(LlmCallORM.owner_id == owner_id)
+    if workspace_id is not None:
+        stmt = stmt.where(LlmCallORM.workspace_id == workspace_id)
+    rows = db.execute(stmt.order_by(LlmCallORM.created_at, LlmCallORM.id)).scalars().all()
+    return [
+        LlmCall(
+            id=r.id, owner_id=r.owner_id, workspace_id=r.workspace_id, job_id=r.job_id, feature=r.feature,
+            provider=r.provider, model=r.model, prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
+            cached_prompt_tokens=r.cached_prompt_tokens, reasoning_tokens=r.reasoning_tokens, latency_ms=r.latency_ms,
+            ok=r.ok, error_kind=r.error_kind, created_at=_utc(r.created_at),
+        )
+        for r in rows
+    ]

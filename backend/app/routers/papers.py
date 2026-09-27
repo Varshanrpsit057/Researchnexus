@@ -33,7 +33,7 @@ from app.db.session import get_db, get_session_factory
 from app.deps import CurrentUser
 from app.domain.jobs import Job, JobKind
 from app.jobs.runner import new_id, run_discover_related_job, run_ingest_job
-from app.llm.client import LlmProviderError
+from app.llm.client import LlmProviderError, describe_provider_error
 from app.security.pdf_sanitizer import PdfValidationError, validate_upload
 from app.services.profile.pipeline import NoWorkingLlmKey, run_profile_extraction
 from app.services.profile.validator import ProfilePatchRequest, apply_patch
@@ -155,7 +155,10 @@ async def analyze_paper(paper_id: str, db: DbSession, settings: AppSettings, cur
             detail={"error": {"code": "llm_key_required", "message": "no working LLM provider key saved"}},
         ) from e
     except LlmProviderError as e:
-        raise HTTPException(status_code=502, detail={"error": {"code": "provider_error", "message": str(e)}}) from e
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "provider_error", "kind": e.kind.value, "message": describe_provider_error(e)}},
+        ) from e
 
     return {
         "profile": result.profile.model_dump(mode="json"),

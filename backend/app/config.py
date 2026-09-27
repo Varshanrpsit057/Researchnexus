@@ -94,13 +94,21 @@ class Settings(BaseSettings):
     # the deterministic, dependency-free stand-ins so tests stay hermetic.
     rag_retrieve_k: int = 8
     rag_rerank_top_n: int = 5
-    rag_min_answerable_chunks: int = 2
+    # One relevant passage is enough to answer from: the contextual filter
+    # has already dropped every chunk it judged irrelevant, and each answer
+    # sentence is still checked against the passage it cites. At 2, questions
+    # the workspace answers in a single passage were refused.
+    rag_min_answerable_chunks: int = 1
     rag_faithfulness_min: float = 0.6
     rag_drop_unsupported: bool = True
     rag_index_cache_size: int = 8
     rag_embedder: str = "fake"
     rag_vector_backend: str = "numpy"
     rag_reranker: str = "fake"
+
+    # Model per provider, overriding the adapter's default, e.g.
+    # RESEARCHNEXUS_LLM_MODELS='{"deepseek": "deepseek-v4-pro"}'.
+    llm_models: dict[str, str] = {}
 
     # Comparison (Roadmap Phase 10 / Architecture §3 S13). `compare_retrieve_k`
     # is the per-paper evidence budget; larger paper sets return a job

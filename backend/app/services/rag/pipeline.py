@@ -13,7 +13,12 @@ Guarantees carried out of this module:
   a grounded claim with no chunk;
 - the answerability gate returns "not enough in this workspace" + a
   suggestion with **no generation tokens billed**;
-- reference strings are never generated (stripped in `generate`).
+- reference strings are never generated (stripped in `generate`);
+- a provider failure (rejected key, no credit, timeout, ...) is raised as
+  `LlmProviderError`, never reported as a bad answer; a verifier whose reply
+  couldn't be used is the warning `verification_failed`, never "every
+  sentence unsupported"; the model finding nothing in the context that
+  answers the question is "not answerable", never an empty answer.
 """
 
 from __future__ import annotations
@@ -28,19 +33,20 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.domain.rag import AnswerSentence, RagAnswer
 from app.domain.workspace import ResearchWorkspace
+from app.llm.client import LlmProviderError
 from app.llm.session import LlmSession
 from app.retrieval.embeddings import get_embedding_provider
 from app.retrieval.reranker import CrossEncoderReranker, get_reranker
 from app.retrieval.workspace_index import FaissWorkspaceIndex, WorkspaceChunkIndex
 from app.services.citations.validate import link_claims
 from app.services.ingest.abstract_chunks import ensure_abstract_chunks
-from app.services.rag.answerability import assess
+from app.services.rag.answerability import assess, suggestion_for
 from app.services.rag.context_filter import filter_chunks
 from app.services.rag.faithfulness import passes, score_faithfulness
 from app.services.rag.generate import DraftAnswer, generate_answer
 from app.services.rag.rerank import rerank
 from app.services.rag.retriever import retrieve
-from app.services.rag.verify import verify_sentences
+from app.services.rag.verify import VerificationUnavailable, verify_sentences
 
 # What the pipeline is doing right now, for a caller streaming progress:
 # searching (retrieve + rerank), reading (the contextual filter), writing
@@ -107,7 +113,7 @@ async def answer_question(
     )
     reranked = rerank(request.query, retrieved, reranker, settings.rag_rerank_top_n)
     stage("reading")
-    filtered, pt, ct = await filter_chunks(session, request.query, reranked)
+    filtered, pt, ct = await filter_chunks(session, request.query, reranked, raise_provider_errors=True)
     budget.add(pt, ct)
 
     verdict = assess(request.query, filtered, min_chunks=settings.rag_min_answerable_chunks)
@@ -126,6 +132,15 @@ async def answer_question(
     sentences, faith, regenerated = await _generate_verify_gate(
         session, request.query, kept, chunk_text, settings, budget, stage
     )
+    if not sentences and "no_answer_in_context" in budget.warnings:
+        # the model read the passages and found nothing that answers the question
+        return RagAnswer(
+            answerable=False,
+            suggestion=suggestion_for(request.query),
+            prompt_tokens=budget.prompt,
+            completion_tokens=budget.completion,
+            warnings=["not_answerable"],
+        )
 
     rendered, dropped = _apply_support_policy(sentences, settings.rag_drop_unsupported)
     answer = RagAnswer(
@@ -158,12 +173,20 @@ async def _generate_verify_gate(
     stage: StageHook = _noop,
 ) -> tuple[list[AnswerSentence], float, bool]:
     async def one_pass(q: str) -> tuple[DraftAnswer, list[AnswerSentence], float]:
-        draft = await generate_answer(session, q, kept)
+        draft = await generate_answer(session, q, kept, raise_provider_errors=True)
         budget.add(draft.prompt_tokens, draft.completion_tokens)
         if not draft.ok:
             return draft, [], 0.0
+        if not draft.sentences:
+            _warn(budget, "no_answer_in_context")
+            return draft, [], 0.0
         stage("checking")
-        verified, pt, ct = await verify_sentences(session, draft.sentences, chunk_text)
+        try:
+            verified, pt, ct = await verify_sentences(session, draft.sentences, chunk_text, strict=True)
+        except VerificationUnavailable as e:
+            budget.add(e.prompt_tokens, e.completion_tokens)
+            _warn(budget, "verification_failed")
+            return draft, [], 0.0
         budget.add(pt, ct)
         supported_text = [s.text for s in verified if s.is_supported]
         score = score_faithfulness(" ".join(supported_text), [chunk_text[c] for c in chunk_text])
@@ -174,6 +197,8 @@ async def _generate_verify_gate(
     if not draft.ok:
         budget.warnings.append("generation_failed")
         return [], 0.0, False
+    if not draft.sentences:
+        return [], 0.0, False  # no_answer_in_context
 
     if not passes(faith, settings.rag_faithfulness_min):
         retry_q = (
@@ -181,10 +206,25 @@ async def _generate_verify_gate(
             "Ground every sentence strictly in the context and cite the exact chunk.)"
         )
         stage("rewriting")
-        draft2, sentences2, faith2 = await one_pass(retry_q)
-        if draft2.ok:
+        before = list(budget.warnings)
+        try:
+            draft2, sentences2, faith2 = await one_pass(retry_q)
+        except LlmProviderError:
+            if sentences:
+                return sentences, faith, False  # the rewrite is optional: keep the first answer
+            raise
+        if draft2.ok and sentences2:
+            # the rewrite was generated and checked: only its own outcome stands
+            budget.warnings[:] = [w for w in budget.warnings if w not in ("verification_failed", "no_answer_in_context")]
             return sentences2, faith2, True
+        if sentences:
+            budget.warnings[:] = before  # a rewrite that went nowhere changes nothing
     return sentences, faith, False
+
+
+def _warn(budget: _Budget, warning: str) -> None:
+    if warning not in budget.warnings:
+        budget.warnings.append(warning)
 
 
 def _apply_support_policy(

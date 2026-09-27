@@ -1,18 +1,21 @@
 """Shared helpers for the RAG LLM stages (Roadmap Phase 9).
 
-`chat_json` is the one place a RAG stage talks to the provider: it runs a
-single BYOK chat call and returns the parsed object, or `None` on any
-failure (no session / provider error / non-JSON / schema mismatch). Every
-stage degrades on `None` -- the pipeline never raises because the LLM
-misbehaved.
+`chat_json` is the one place a RAG stage talks to the provider: it asks for
+a JSON object (the provider's JSON mode where it has one) and returns the
+parsed object, or `None` when no usable reply came. A reply that isn't the
+requested JSON gets one repair request before giving up.
+
+A provider failure (a rejected key, no credit, a timeout, ...) also returns
+`None` by default -- every stage degrades on `None` -- unless the caller
+passes `raise_provider_errors=True`: chat does, because an answer that
+can't be generated at all should say why rather than "no usable answer".
 """
 
 from __future__ import annotations
 
-import json
 import re
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from app.llm.client import ChatMessage, LlmProviderError
 from app.llm.session import LlmSession
@@ -22,6 +25,7 @@ _BRACKET_REF = re.compile(r"\s?\[\d+(?:\s?[-,]\s?\d+)*\]")
 # A parenthetical that contains a 4-digit year and opens with a capital
 # letter -- an author-year citation the LLM should not have written.
 _PAREN_CITE = re.compile(r"\s?\((?=[^)]*\d{4}[a-z]?)[A-Z][^)]{0,60}?\)")
+_REPAIR_ECHO_CHARS = 4000
 
 
 def norm(text: str) -> str:
@@ -55,17 +59,36 @@ async def chat_json(
     system: str,
     user: str,
     schema: type[BaseModel],
+    *,
+    raise_provider_errors: bool = False,
 ) -> tuple[BaseModel | None, int, int]:
-    """Returns (parsed | None, prompt_tokens, completion_tokens)."""
+    """Returns (parsed | None, prompt_tokens, completion_tokens) -- the
+    tokens of every attempt, the repair included."""
     if session is None:
         return None, 0, 0
     messages = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
-    try:
-        result = await session.client.chat(api_key=session.api_key, model=session.model, messages=messages)
-    except LlmProviderError:
-        return None, 0, 0
-    try:
-        parsed = schema.model_validate_json(extract_json(result.content))
-    except (json.JSONDecodeError, ValidationError, ValueError):
-        return None, result.prompt_tokens, result.completion_tokens
-    return parsed, result.prompt_tokens, result.completion_tokens
+    pt = ct = 0
+    for _attempt in range(2):
+        try:
+            result = await session.client.chat(
+                api_key=session.api_key, model=session.model, messages=messages, json_mode=True
+            )
+        except LlmProviderError:
+            if raise_provider_errors:
+                raise
+            return None, pt, ct
+        pt += result.prompt_tokens
+        ct += result.completion_tokens
+        try:
+            return schema.model_validate_json(extract_json(result.content)), pt, ct
+        except ValueError as e:  # not JSON, or not the requested shape (pydantic's ValidationError is a ValueError)
+            messages = [
+                *messages,
+                ChatMessage(role="assistant", content=result.content[:_REPAIR_ECHO_CHARS]),
+                ChatMessage(
+                    role="user",
+                    content=f"That reply could not be used ({str(e)[:300]}). Reply again with only the JSON object, "
+                    "in exactly the shape the instructions ask for.",
+                ),
+            ]
+    return None, pt, ct

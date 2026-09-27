@@ -38,8 +38,23 @@ when a later phase needs them.
 
 ## Run the dev server
 
+From the repo root, one command checks and installs what's missing (this
+virtualenv and its packages, `.env`'s local secrets, migrations, the
+frontend's `node_modules`), then runs the backend on http://localhost:8000
+and the frontend on http://localhost:3000 -- only those ports, never a
+fallback:
+
 ```bash
-uvicorn app.main:app --reload
+python start.py            # both; Ctrl+C stops both
+python start.py backend    # only this API
+python start.py stop       # stop a server left over from an earlier run
+python start.py status
+```
+
+Or run just the API by hand from `backend/`:
+
+```bash
+uvicorn app.main:app --port 8000
 ```
 
 ## Apply migrations

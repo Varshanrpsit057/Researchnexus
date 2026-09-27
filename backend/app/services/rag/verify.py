@@ -8,6 +8,11 @@ support it. Safe defaults:
   §4 EvidenceVerifier: "timeout -> treat as unsupported").
 The caller decides whether unsupported sentences are dropped from the prose
 or kept with a flag.
+
+With `strict=True` (chat), a check that couldn't run is not a verdict: a
+provider failure is raised, and a reply that isn't usable raises
+`VerificationUnavailable` -- otherwise every sentence of a good answer would
+be dropped as "unsupported" and an empty answer saved.
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ _SYSTEM = (
 )
 
 
+class VerificationUnavailable(Exception):
+    """The verifier's reply couldn't be used, so nothing was checked."""
+
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        super().__init__("the verification reply could not be used")
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
 class _VerifyItem(BaseModel):
     index: int
     supported: bool = False
@@ -39,6 +53,8 @@ async def verify_sentences(
     session: LlmSession | None,
     drafted: list[DraftSentence],
     chunk_text_by_id: dict[str, str],
+    *,
+    strict: bool = False,
 ) -> tuple[list[AnswerSentence], int, int]:
     checkable = [(i, s) for i, s in enumerate(drafted) if s.chunk_ids]
     supported: set[int] = set()
@@ -49,7 +65,9 @@ async def verify_sentences(
         for i, s in checkable:
             evidence = "\n".join(f"- {chunk_text_by_id.get(cid, '')}" for cid in s.chunk_ids)
             blocks.append(f"[{i}] STATEMENT: {s.text}\nEVIDENCE:\n{evidence}")
-        parsed, pt, ct = await chat_json(session, _SYSTEM, "\n\n".join(blocks), _VerifyResult)
+        parsed, pt, ct = await chat_json(session, _SYSTEM, "\n\n".join(blocks), _VerifyResult, raise_provider_errors=strict)
+        if parsed is None and strict:
+            raise VerificationUnavailable(pt, ct)
         if parsed is not None:
             assert isinstance(parsed, _VerifyResult)
             supported = {r.index for r in parsed.results if r.supported}

@@ -19,9 +19,9 @@ from app.domain.paper import Section
 from app.domain.profile import ResearchProfile
 from app.domain.user import User
 from app.jobs.runner import new_id
-from app.llm.capability_probe import default_model_for
 from app.llm.client import LlmProviderError
-from app.llm.session import LlmSession
+from app.llm.session import LlmSession, metered, model_for
+from app.llm.usage import usage_scope_default
 from app.security.key_vault import KeyVault
 from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 from app.services.profile.extractor import ProfileExtractionFailed, extract_profile
@@ -53,18 +53,19 @@ async def run_profile_extraction(
     assert ciphertext is not None  # invariant: a listed key row always has ciphertext
     api_key = KeyVault(settings.key_vault_secret).decrypt(ciphertext)
 
-    llm_client = get_llm_client(working_key.provider)
-    model = default_model_for(working_key.provider)
+    llm_client = metered(get_llm_client(working_key.provider), db, current_user, working_key.provider)
+    model = model_for(working_key.provider, settings)
     authors = list(paper.authors or [])
 
     try:
-        extraction, tokens = await extract_profile(
-            llm_client,
-            api_key=api_key,
-            model=model,
-            chunks=chunks,
-            max_context_chars=settings.profile_max_context_chars,
-        )
+        with usage_scope_default("profile"):
+            extraction, tokens = await extract_profile(
+                llm_client,
+                api_key=api_key,
+                model=model,
+                chunks=chunks,
+                max_context_chars=settings.profile_max_context_chars,
+            )
     except ProfileExtractionFailed:
         profile = build_fallback_profile(
             profile_id=new_id("prof"),

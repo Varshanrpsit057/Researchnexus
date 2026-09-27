@@ -4,7 +4,9 @@ filter ... keep only relevant sentences"; Roadmap Phase 9).
 The LLM may only *narrow* a chunk to sentences it copied verbatim, or drop
 it. A returned `relevant_text` that is not a literal span of its source
 chunk is ignored (the whole chunk is kept instead) -- the filter can never
-introduce text. No session / any failure -> every chunk kept whole.
+introduce text. No session / any failure -> every chunk kept whole, except
+that with `raise_provider_errors` a provider failure is raised (chat: the
+same provider writes the answer next, so the question fails with the reason).
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ def _keep_whole(chunks: list[RetrievedChunk]) -> list[FilteredChunk]:
 
 
 async def filter_chunks(
-    session: LlmSession | None, query: str, chunks: list[RetrievedChunk]
+    session: LlmSession | None, query: str, chunks: list[RetrievedChunk], *, raise_provider_errors: bool = False
 ) -> tuple[list[FilteredChunk], int, int]:
     if session is None or not chunks:
         return _keep_whole(chunks), 0, 0
@@ -53,7 +55,7 @@ async def filter_chunks(
     user = f"QUESTION: {query}\n\nCONTEXT:\n" + "\n\n".join(
         f"[{c.chunk_id}] {c.text}" for c in chunks
     )
-    parsed, pt, ct = await chat_json(session, _SYSTEM, user, _FilterResult)
+    parsed, pt, ct = await chat_json(session, _SYSTEM, user, _FilterResult, raise_provider_errors=raise_provider_errors)
     if parsed is None:
         return _keep_whole(chunks), pt, ct
     assert isinstance(parsed, _FilterResult)
