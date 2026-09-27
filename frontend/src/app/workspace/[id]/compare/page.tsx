@@ -22,6 +22,7 @@ import {
 } from "@/lib/compare";
 import { truncate } from "@/lib/graph/labels";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { NodeGlyph } from "../graph/GraphPanel";
 import { C, InlineError, WorkspaceLoadError, focusRing, panel, primaryButton, quietButton } from "../ui";
 import { CellContent, CellEvidence, PaperHeading, StatusGlyph, WorkingTrail, usePaper, type PaperKind } from "./parts";
@@ -354,6 +355,11 @@ export default function ComparePage() {
                 <h2 id="compare-table" className="sr-only">
                   The comparison
                 </h2>
+                {comparison.created_at && (
+                  <p className="mb-3 text-[13px]" style={{ color: C.muted }} data-testid="compared-at">
+                    Compared <Timestamp at={comparison.created_at} />
+                  </p>
+                )}
                 {gone.length > 0 && (
                   <p className="mb-3 text-[13px]" style={{ color: C.muted }}>
                     {gone.length} compared paper{gone.length === 1 ? " is" : "s are"} no longer in the workspace and still shown here.

@@ -9,6 +9,7 @@ import type { StageName } from "@/lib/api/types";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody } from "@/components/ui/Card";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/States";
+import { Timestamp } from "@/components/ui/Timestamp";
 
 const STAGES: StageName[] = [
   "ingest", "profile", "discovery", "ranking", "trail", "workspace", "rag", "comparison", "gaps", "directions", "citations",
@@ -77,7 +78,7 @@ export default function WorkspaceActivityPage() {
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-ink-muted">${run.cost_usd.toFixed(4)}</td>
                     <td className="px-4 py-2 font-mono text-xs text-ink-muted">{run.latency_ms}ms</td>
-                    <td className="px-4 py-2 text-xs text-ink-subtle">{new Date(run.ts).toLocaleString()}</td>
+                    <td className="px-4 py-2 text-xs text-ink-subtle"><Timestamp at={run.ts} style="datetime" /></td>
                   </tr>
                 ))}
               </tbody>

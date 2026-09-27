@@ -15,6 +15,7 @@ import { activeSummary, describeTest, providerName, providerRows } from "@/lib/s
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { C, focusRing, panel, quietButton } from "../workspace/[id]/ui";
 import { KeyForm, LoadFailure, ProviderLine, Section, SmallButton, WorkspaceBudget } from "./parts";
+import { Timestamp } from "@/components/ui/Timestamp";
 
 const SECTIONS = [
   { id: "account", label: "Account" },
@@ -172,7 +173,7 @@ export default function SettingsPage() {
                       <span className="text-[16px] font-semibold [overflow-wrap:anywhere]">{me.email}</span>
                     </Field>
                     <Field term="Member since">
-                      {new Date(me.created_at).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}
+                      <Timestamp at={me.created_at} style="long" />
                     </Field>
                     <Field term="Account ID">
                       <span className="inline-flex items-center gap-2">

@@ -25,13 +25,13 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import { latestComparisonOrNull } from "@/lib/compare";
 import { Reveal } from "@/components/effects/Reveal";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { AddPapersPanel } from "./AddPapersPanel";
 import { C, InlineError, WorkspaceLoadError, focusRing, panel, primaryButton, quietButton } from "./ui";
 import {
   buildStations,
   nextStation,
-  timeAgo,
   type Loadable,
   type Station,
 } from "@/lib/workspace-overview";
@@ -216,7 +216,6 @@ export default function WorkspacePage() {
 function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: string }) {
   const { data: seed } = useSWR(["paper", workspace.seed_paper_id], () => papersApi.get(workspace.seed_paper_id));
   const budgetUsed = workspace.token_budget_usd > 0 ? Math.min(1, workspace.cost_used_usd / workspace.token_budget_usd) : 0;
-  const created = new Date(workspace.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <Reveal>
@@ -233,7 +232,9 @@ function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: stri
               {seed?.title ?? "the seed paper"}
             </Link>
             <span aria-hidden> · </span>
-            <span className="whitespace-nowrap">created {created}</span>
+            <span className="whitespace-nowrap">
+              created <Timestamp at={workspace.created_at} style="date" />
+            </span>
           </p>
         </div>
 
@@ -782,7 +783,7 @@ function RecentActivity({
                   {STAGE_LABEL[run.stage] ?? run.stage}
                 </p>
                 <p className="text-[13px] tabular-nums" style={{ color: C.muted }}>
-                  {timeAgo(run.ts)}
+                  <Timestamp at={run.ts} />
                   {run.cost_usd > 0 && ` · ${formatUsd(run.cost_usd)}`}
                   {!run.ok && run.error && ` · ${run.error}`}
                 </p>

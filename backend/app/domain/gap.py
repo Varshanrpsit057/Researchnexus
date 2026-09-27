@@ -84,6 +84,12 @@ class ResearchGap(BaseModel):
     user_state: str = GapUserState.CANDIDATE.value
     generated_at: datetime = Field(default_factory=_utcnow)
     generator_model: str | None = None
+    # What the gap says, without which papers say it: (type, rule, the rule's
+    # key facts). `gap_id` also hashes the paper set, which changes as more
+    # papers are profiled; a decision is remembered by this key so an accepted
+    # gap isn't re-proposed, and a rejected one isn't brought back, when a
+    # later run finds it with one more paper. None on rows from before 0018.
+    match_key: str | None = None
 
     @field_validator("supporting_papers")
     @classmethod

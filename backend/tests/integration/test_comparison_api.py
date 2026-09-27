@@ -197,6 +197,7 @@ def test_compare_output_is_deterministic(tmp_path: Path, monkeypatch: pytest.Mon
 
     def _strip_ids(d: dict) -> dict:
         d.pop("comparison_id", None)
+        d.pop("created_at", None)  # when each run happened, not what it found
         for row in d["rows"]:
             for cell in row["cells"].values():
                 cell.pop("claim_id", None)  # identity, derived from the (fresh) comparison_id

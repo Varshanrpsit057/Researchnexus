@@ -2,7 +2,9 @@
 
 `chat_json` is the one place a RAG stage talks to the provider: it asks for
 a JSON object (the provider's JSON mode where it has one) and returns the
-parsed object, or `None` when no usable reply came. A reply that isn't the
+parsed object, or `None` when no usable reply came. `temperature=0` is for
+a judgement that must come out the same on every run (a DeepSeek verdict at
+its default temperature of 1 flipped between runs of the same gap check). A reply that isn't the
 requested JSON gets one repair request before giving up.
 
 A provider failure (a rejected key, no credit, a timeout, ...) also returns
@@ -61,6 +63,7 @@ async def chat_json(
     schema: type[BaseModel],
     *,
     raise_provider_errors: bool = False,
+    temperature: float | None = None,
 ) -> tuple[BaseModel | None, int, int]:
     """Returns (parsed | None, prompt_tokens, completion_tokens) -- the
     tokens of every attempt, the repair included."""
@@ -71,7 +74,7 @@ async def chat_json(
     for _attempt in range(2):
         try:
             result = await session.client.chat(
-                api_key=session.api_key, model=session.model, messages=messages, json_mode=True
+                api_key=session.api_key, model=session.model, messages=messages, json_mode=True, temperature=temperature
             )
         except LlmProviderError:
             if raise_provider_errors:

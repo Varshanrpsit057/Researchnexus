@@ -65,7 +65,7 @@ async def verify_sentences(
         for i, s in checkable:
             evidence = "\n".join(f"- {chunk_text_by_id.get(cid, '')}" for cid in s.chunk_ids)
             blocks.append(f"[{i}] STATEMENT: {s.text}\nEVIDENCE:\n{evidence}")
-        parsed, pt, ct = await chat_json(session, _SYSTEM, "\n\n".join(blocks), _VerifyResult, raise_provider_errors=strict)
+        parsed, pt, ct = await chat_json(session, _SYSTEM, "\n\n".join(blocks), _VerifyResult, raise_provider_errors=strict, temperature=0.0)
         if parsed is None and strict:
             raise VerificationUnavailable(pt, ct)
         if parsed is not None:

@@ -211,3 +211,26 @@ def test_generate_accepts_a_single_chunk_id_given_as_a_string() -> None:
     chunks = [_fc("c1", "p1", "Dense retrieval improves recall.")]
     draft = asyncio.run(generate_answer(_session({"sentences": [{"text": "Dense retrieval improves recall.", "chunk_ids": "c1"}]}), "q", chunks))
     assert draft.ok and draft.sentences[0].chunk_ids == ["c1"]
+
+
+def test_judgements_are_asked_for_at_temperature_zero_and_answers_are_not() -> None:
+    """A verdict at DeepSeek's default temperature (1) flipped between two runs
+    of the same gap check; an answer may still vary when regenerated."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        text = body["messages"][0]["content"]
+        payload = {"results": [{"index": 0, "supported": True}]} if "fully supports" in text else {"sentences": [{"text": "A.", "chunk_ids": ["c1"]}]}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload)}}]})
+
+    session = LlmSession(
+        client=OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))),
+        api_key="sk-x", model="m", provider=LlmProvider.GROQ,
+    )
+    asyncio.run(verify_sentences(session, [DraftSentence(text="A.", chunk_ids=["c1"])], {"c1": "A."}))
+    asyncio.run(generate_answer(session, "q", [_fc("c1", "p1", "A.")]))
+    verify_body, answer_body = bodies
+    assert verify_body["temperature"] == 0.0
+    assert "temperature" not in answer_body

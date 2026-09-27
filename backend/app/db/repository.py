@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import Select, func, select
@@ -81,7 +82,7 @@ def _user_domain_from_orm(row: UserORM) -> User:
         email=row.email,
         auth_provider=row.auth_provider,
         auth_subject=row.auth_subject,
-        created_at=_utc(row.created_at),
+        created_at=row.created_at,
         default_provider=LlmProvider(row.default_provider) if row.default_provider else None,
     )
 
@@ -126,8 +127,8 @@ def _api_key_record_from_orm(row: ApiKeyORM) -> ApiKeyRecord:
         provider=LlmProvider(row.provider),
         key_last4=row.key_last4,
         status=ApiKeyStatus(row.status),
-        checked_at=_utc(row.checked_at) if row.checked_at else None,
-        created_at=_utc(row.created_at),
+        checked_at=row.checked_at,
+        created_at=row.created_at,
     )
 
 
@@ -897,8 +898,8 @@ def _workspace_domain_from_orm(row: WorkspaceORM, papers: list[WorkspacePaperORM
         tokens_used=TokenUsage(prompt=row.tokens_prompt, completion=row.tokens_completion),
         cost_used_usd=row.cost_usd,
         source_run_id=row.source_run_id,
-        created_at=_utc(row.created_at),
-        updated_at=_utc(row.updated_at),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -1239,18 +1240,13 @@ def accept_reject_workspace_edge(
 # ---------------------------------------------------------------------------
 
 
-def _utc(value: datetime) -> datetime:
-    """SQLite drops the zone of a stored timestamp; every one is written in UTC."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
 def _chat_session_from_orm(row: ChatSessionORM) -> ChatSession:
     return ChatSession(
         session_id=row.id,
         workspace_id=row.workspace_id,
         owner_id=row.owner_id,
         title=row.title,
-        created_at=_utc(row.created_at),
+        created_at=row.created_at,
     )
 
 
@@ -1268,7 +1264,7 @@ def _chat_message_from_orm(row: ChatMessageORM) -> ChatMessage:
         suggestion=row.suggestion,
         unsupported_dropped=row.unsupported_dropped or 0,
         warnings=list(row.warnings or []),
-        created_at=_utc(row.created_at),
+        created_at=row.created_at,
     )
 
 
@@ -1454,7 +1450,7 @@ def _comparison_from_orm(row: ComparisonORM) -> Comparison:
         rows=[ComparisonRow.model_validate(r) for r in (row.rows_json or [])],
         coverage=row.coverage,
         decontext_eval=row.decontext_eval,
-        created_at=_utc(row.created_at),
+        created_at=row.created_at,
     )
 
 
@@ -1535,8 +1531,9 @@ def _gap_from_orm(row: ResearchGapORM) -> ResearchGap:
         detection_rule=row.detection_rule,
         self_support_passed=row.self_support_passed,
         user_state=row.user_state,
-        generated_at=_utc(row.generated_at),
+        generated_at=row.generated_at,
         generator_model=row.generator_model,
+        match_key=row.match_key,
     )
 
 
@@ -1577,6 +1574,7 @@ def save_gaps(db: Session, workspace_id: str, gaps: list[ResearchGap], *, owner_
             detection_rule=gap.detection_rule,
             self_support_passed=gap.self_support_passed,
             generator_model=gap.generator_model,
+            match_key=gap.match_key,
         )
         if existing is None:
             db.add(ResearchGapORM(id=gap.gap_id, user_state=gap.user_state, generated_at=gap.generated_at, **payload))
@@ -1599,6 +1597,41 @@ def get_gap(db: Session, gap_id: str, *, workspace_id: str) -> ResearchGap | Non
     if row is None or row.workspace_id != workspace_id:
         return None
     return _gap_from_orm(row)
+
+
+@dataclass(frozen=True)
+class DecidedGaps:
+    """The gaps a person has decided on, by id and by what they say."""
+
+    accepted_ids: frozenset[str]
+    accepted_keys: frozenset[str]
+    rejected_ids: frozenset[str]
+    rejected_keys: frozenset[str]
+
+    def rejected(self, gap_id: str, match_key: str) -> bool:
+        return gap_id in self.rejected_ids or match_key in self.rejected_keys
+
+    def accepted(self, gap_id: str, match_key: str) -> bool:
+        return gap_id in self.accepted_ids or match_key in self.accepted_keys
+
+
+def get_decided_gaps(db: Session, workspace_id: str) -> DecidedGaps:
+    rows = db.execute(
+        select(ResearchGapORM.id, ResearchGapORM.match_key, ResearchGapORM.user_state).where(
+            ResearchGapORM.workspace_id == workspace_id,
+            ResearchGapORM.user_state != GapUserState.CANDIDATE.value,
+        )
+    ).all()
+
+    def pick(state: GapUserState, col: int) -> frozenset[str]:
+        return frozenset(r[col] for r in rows if r[2] == state.value and r[col])
+
+    return DecidedGaps(
+        accepted_ids=pick(GapUserState.ACCEPTED, 0),
+        accepted_keys=pick(GapUserState.ACCEPTED, 1),
+        rejected_ids=pick(GapUserState.REJECTED, 0),
+        rejected_keys=pick(GapUserState.REJECTED, 1),
+    )
 
 
 def get_rejected_gap_ids(db: Session, workspace_id: str) -> set[str]:
@@ -1647,7 +1680,7 @@ def _direction_from_orm(row: ResearchDirectionORM) -> ResearchDirection:
         confidence_basis=dict(row.confidence_basis or {}),
         flags=list(row.flags or []),
         user_state=row.user_state,
-        generated_at=_utc(row.generated_at),
+        generated_at=row.generated_at,
         generator_model=row.generator_model,
     )
 
@@ -1847,7 +1880,7 @@ def list_llm_calls(db: Session, owner_id: str, *, workspace_id: str | None = Non
             id=r.id, owner_id=r.owner_id, workspace_id=r.workspace_id, job_id=r.job_id, feature=r.feature,
             provider=r.provider, model=r.model, prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
             cached_prompt_tokens=r.cached_prompt_tokens, reasoning_tokens=r.reasoning_tokens, latency_ms=r.latency_ms,
-            ok=r.ok, error_kind=r.error_kind, created_at=_utc(r.created_at),
+            ok=r.ok, error_kind=r.error_kind, created_at=r.created_at,
         )
         for r in rows
     ]

@@ -152,7 +152,7 @@ export const DirectionDetail = forwardRef<
     gap: ResearchGap | null;
     workspaceId: string;
     kindOf: (id: string) => PaperKind;
-    proposed: string;
+    proposed: ReactNode;
     actions: ReactNode;
   }
 >(function DirectionDetail({ direction, gap, workspaceId, kindOf: paperKind, proposed, actions }, headingRef) {

@@ -23,6 +23,8 @@ import {
 import { useAuth } from "@/lib/auth/auth-context";
 import { workspaces as workspacesApi } from "@/lib/api/endpoints";
 import { useRecentPapers } from "@/lib/local-history";
+import { parseTimestamp } from "@/lib/time";
+import { Timestamp } from "@/components/ui/Timestamp";
 import type { ComponentType } from "react";
 
 // Same dark/mint world as landing and sign-in, carried one step into the
@@ -78,7 +80,7 @@ export default function HomePage() {
 
   const list = wsData?.workspaces ?? [];
   const latestWorkspace = [...list].sort(
-    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    (a, b) => parseTimestamp(b.updated_at).getTime() - parseTimestamp(a.updated_at).getTime()
   )[0];
 
   const { data: activityData, isLoading: activityLoading } = useSWR(
@@ -310,7 +312,7 @@ export default function HomePage() {
                             />
                             <span className="min-w-0 flex-1 truncate text-sm capitalize">{run.stage}</span>
                             <span className="shrink-0 font-mono text-xs" style={{ color: MUTED_2 }}>
-                              {run.ok ? "ok" : "failed"} · {new Date(run.ts).toLocaleString()}
+                              {run.ok ? "ok" : "failed"} · <Timestamp at={run.ts} style="datetime" />
                             </span>
                           </div>
                         </li>

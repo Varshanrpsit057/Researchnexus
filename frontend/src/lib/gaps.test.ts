@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResearchGap } from "@/lib/api/types";
-import { confidenceReasons, countByState, evidenceByPaper, filterGaps, gapMatches, NO_FILTERS, ruleCopy, runOutcome } from "./gaps";
+import { confidenceReasons, countByState, evidenceByPaper, filterGaps, gapMatches, NO_FILTERS, ruleCopy, runFailure, runOutcome, runProgress } from "./gaps";
 
 function gap(over: Partial<ResearchGap> = {}): ResearchGap {
   const span = (paper_id: string, quote: string, section: string | null = "Abstract") => ({
@@ -102,34 +102,100 @@ describe("gapMatches / filterGaps", () => {
 });
 
 describe("runOutcome", () => {
-  it("reads what happened to every candidate from the job's progress", () => {
+  it("reads what happened to every candidate and paper from the job's progress", () => {
     const out = runOutcome({
+      stage: "done",
       gaps: "done",
-      count: "4",
-      candidates: "6",
+      count: "9",
+      candidates: "118",
       dropped_insufficient_evidence: "0",
-      dropped_unsupported: "0",
-      dropped_self_support: "1",
+      dropped_self_support: "31",
+      unchecked: "1",
+      not_checked: "78",
       skipped_rejected: "1",
-      profiled: "3",
-      unprofiled: "1",
+      kept_accepted: "2",
+      rephrased: "9",
+      profiled: "22",
+      unprofiled: "4",
+      profile_failed: "1",
     });
     expect(out).toEqual({
-      kept: 4,
-      candidates: 6,
+      kept: 9,
+      candidates: 118,
       dropped: [
-        { count: 1, reason: "wasn't supported by its own evidence" },
+        { count: 31, reason: "weren't supported by their own evidence" },
+        { count: 2, reason: "were accepted before, so kept as they were" },
+        { count: 1, reason: "couldn't be checked this time (the model's reply was unusable or too slow), so it isn't shown" },
         { count: 1, reason: "was rejected before, so left out" },
       ],
-      profiled: 3,
-      unprofiled: 1,
+      notChecked: 78,
+      rephrased: 9,
+      profiled: 22,
+      unprofiled: 4,
+      profileFailed: 1,
     });
   });
 
-  it("copes with a job that only reports a count, and with no progress", () => {
-    expect(runOutcome({ gaps: "done", count: "2" })).toEqual({ kept: 2, candidates: null, dropped: [], profiled: 0, unprofiled: 0 });
+  it("still reads a run recorded before these counts existed, and copes with no progress", () => {
+    expect(runOutcome({ gaps: "done", count: "2", dropped_unsupported: "1" })).toEqual({
+      kept: 2,
+      candidates: null,
+      dropped: [{ count: 1, reason: "was phrased with something the evidence doesn't contain" }],
+      notChecked: 0,
+      rephrased: 0,
+      profiled: 0,
+      unprofiled: 0,
+      profileFailed: 0,
+    });
     expect(runOutcome({ gaps: "running" })).toBeNull();
     expect(runOutcome(undefined)).toBeNull();
+  });
+});
+
+describe("runProgress", () => {
+  it("names the step a run is on and how far through it", () => {
+    expect(runProgress({ stage: "profiling", done: "5", total: "22" })).toEqual({
+      stage: "profiling",
+      label: "Reading the papers that have no research profile yet",
+      done: 5,
+      total: 22,
+    });
+    expect(runProgress({ stage: "checking", done: "0", total: "40" })).toMatchObject({ stage: "checking", done: 0, total: 40 });
+    // a step with nothing to count shows no count
+    expect(runProgress({ stage: "detecting", done: "0", total: "0" })).toMatchObject({ done: null, total: null });
+    expect(runProgress({ stage: "checking", done: "0", total: "0" })).toMatchObject({ done: null, total: null });
+  });
+
+  it("reads a run that has only just started, or reports its stage the old way", () => {
+    expect(runProgress(undefined)).toEqual({ stage: "starting", label: "Starting the run", done: null, total: null });
+    expect(runProgress({ gaps: "running" }).stage).toBe("starting");
+  });
+});
+
+describe("runFailure", () => {
+  it("sends a rejected key to Settings, with the provider's reason", () => {
+    const msg = "DeepSeek rejected the saved API key. Check it in Settings, or save a new one.";
+    expect(runFailure(msg, { stage: "failed", error_code: "provider_error", error_kind: "auth" })).toEqual({
+      message: msg,
+      action: "settings",
+      technical: null,
+    });
+  });
+
+  it("offers another run for a busy provider or a run that ran too long", () => {
+    expect(runFailure("DeepSeek is unavailable right now.", { error_code: "provider_error", error_kind: "unavailable" }).action).toBe("retry");
+    expect(runFailure("The run took longer than 15 minutes and was stopped.", { error_code: "timeout" })).toEqual({
+      message: "The run took longer than 15 minutes and was stopped.",
+      action: "retry",
+      technical: null,
+    });
+  });
+
+  it("keeps an unexpected error's text as a technical detail, not the headline", () => {
+    const out = runFailure("synthesis_internal_ref_77", { stage: "failed", error_code: "internal" });
+    expect(out.message).toBe("The run failed before it finished. Papers read so far are kept; run it again to continue.");
+    expect(out.technical).toBe("synthesis_internal_ref_77");
+    expect(runFailure("", { gaps: "running" }).technical).toBeNull();
   });
 });
 

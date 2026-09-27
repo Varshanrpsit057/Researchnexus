@@ -17,7 +17,6 @@ import datetime as dt
 from sqlalchemy import (
     JSON,
     Boolean,
-    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -31,6 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.db.types import UTCDateTime
 
 
 def _utcnow() -> dt.datetime:
@@ -45,7 +45,7 @@ class UserORM(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     auth_provider: Mapped[str] = mapped_column(String(32), default="local")
     auth_subject: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     # the provider every LLM stage uses when its key works (API spec §2 `default_provider`)
     default_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
@@ -60,8 +60,8 @@ class ApiKeyORM(Base):
     key_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     key_last4: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(16), default="unverified")
-    checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    checked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class PaperORM(Base):
@@ -88,7 +88,7 @@ class PaperORM(Base):
     tables: Mapped[list[dict]] = mapped_column(JSON, default=list)
     references: Mapped[list[dict]] = mapped_column(JSON, default=list)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class PaperChunkORM(Base):
@@ -119,8 +119,8 @@ class JobORM(Base):
     progress: Mapped[dict] = mapped_column(JSON, default=dict)
     result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow, onupdate=_utcnow)
 
 
 class ResearchProfileORM(Base):
@@ -135,8 +135,8 @@ class ResearchProfileORM(Base):
     profile_json: Mapped[dict] = mapped_column(JSON)
     extraction_confidence: Mapped[str] = mapped_column(String(16), default="low")
     extraction_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow, onupdate=_utcnow)
 
 
 class SearchRunORM(Base):
@@ -154,8 +154,8 @@ class SearchRunORM(Base):
     counts: Mapped[dict] = mapped_column(JSON, default=dict)
     tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
     tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class SearchCandidateORM(Base):
@@ -242,7 +242,7 @@ class PaperRelationshipORM(Base):
     confidence: Mapped[str] = mapped_column(String(16))
     confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
     user_state: Mapped[str] = mapped_column(String(16), default="pending")
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class WorkspaceORM(Base):
@@ -267,8 +267,8 @@ class WorkspaceORM(Base):
     tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
     tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow, onupdate=_utcnow)
     # ADD COLUMN in migrations 0009 / 0012 appends -> keep these last to match the migrated schema order
     comparison_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     graph_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -297,7 +297,7 @@ class WorkspacePaperORM(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     ranking_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    added_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    added_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ChatSessionORM(Base):
@@ -310,7 +310,7 @@ class ChatSessionORM(Base):
     workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     owner_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ChatMessageORM(Base):
@@ -334,7 +334,7 @@ class ChatMessageORM(Base):
     suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     unsupported_dropped: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     warnings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class CitationORM(Base):
@@ -370,7 +370,7 @@ class ClaimORM(Base):
     is_supported: Mapped[bool] = mapped_column(Boolean, default=False)
     citation_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
     citation_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ComparisonORM(Base):
@@ -392,7 +392,7 @@ class ComparisonORM(Base):
     rows_json: Mapped[list] = mapped_column(JSON, default=list)
     coverage: Mapped[float] = mapped_column(Float, default=0.0)
     decontext_eval: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ResearchGapORM(Base):
@@ -404,7 +404,10 @@ class ResearchGapORM(Base):
     string, never a percentage."""
 
     __tablename__ = "research_gaps"
-    __table_args__ = (Index("ix_research_gaps_workspace", "workspace_id"),)
+    __table_args__ = (
+        Index("ix_research_gaps_workspace", "workspace_id"),
+        Index("ix_research_gaps_workspace_match", "workspace_id", "match_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
@@ -426,7 +429,9 @@ class ResearchGapORM(Base):
     self_support_passed: Mapped[bool] = mapped_column(Boolean, default=False)
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
     generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    generated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    # the gap without its paper set (domain ResearchGap.match_key)
+    match_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ResearchDirectionORM(Base):
@@ -461,7 +466,7 @@ class ResearchDirectionORM(Base):
     flags: Mapped[list] = mapped_column(JSON, default=list)
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
     generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    generated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class StageRunORM(Base):
@@ -493,7 +498,7 @@ class StageRunORM(Base):
     latency_ms: Mapped[int] = mapped_column(Integer)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ts: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class LlmCallORM(Base):
@@ -525,4 +530,4 @@ class LlmCallORM(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)

@@ -141,12 +141,14 @@ class MeteredClient:
         messages: list[ChatMessage],
         json_mode: bool = False,
         on_delta: DeltaHook | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         scope = current_scope()
         started = time.monotonic()
         try:
             result = await self._inner.chat(
-                api_key=api_key, model=model, messages=messages, json_mode=json_mode, on_delta=on_delta
+                api_key=api_key, model=model, messages=messages, json_mode=json_mode, on_delta=on_delta,
+                temperature=temperature,
             )
         except LlmProviderError as e:
             self._record(self._call(scope, model, started, ok=False, error_kind=e.kind.value))

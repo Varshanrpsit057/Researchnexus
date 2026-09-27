@@ -148,4 +148,8 @@ The order follows dependencies, not the issue numbers.
 |---|---|
 | 1 | done: `start.py` (deps, migrations, secrets, GPU, fixed ports, stop/restart/status); `launch.json` runs it |
 | 2 | done: typed provider errors + retries, DeepSeek URL/model/thinking-off, JSON mode, streaming adapter, strict chat failures (nothing saved), `llm_calls` usage ledger (migration 0017) |
-| 3–16 | not started |
+| 3 | done: concurrent first-use profiling + candidate checks with per-item limits and live job progress; typed run failures (provider kind / timeout / internal) with retry; grounding check no longer flags plain English (template fallback, never a dropped gap); rule facts given to the self-support check; temperature 0 for judgements; decisions kept by `match_key` (migration 0018) |
+| 4 | done: `UTCDateTime` column type (aware UTC on read, naive refused on write) replaces the hand-patched `_utc` reads; comparison responses carry `created_at`; one frontend `lib/time.ts` (+ `<Timestamp>` with a shared 30 s clock) replaces `relativeTime`, `timeAgo` and every raw `toLocale*` |
+| 5–16 | not started |
+
+Found along the way, not yet scheduled: sign-in treats email case as a different account ("Varshan@gmail.com" and "varshan@gmail.com" are two users, each with its own workspaces and key) -- belongs with the time/data-contract work (Phase 4) or its own small fix, and needs a decision on merging the existing duplicate accounts.

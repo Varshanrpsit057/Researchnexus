@@ -246,3 +246,44 @@ def test_0017_records_each_provider_call_and_its_usage(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert "llm_calls" not in tables
+
+
+def test_0018_remembers_a_gap_by_what_it_says(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_gap_match.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "0017")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("INSERT INTO users (id, email, auth_provider, auth_subject, created_at) VALUES ('u1', 'a@b.c', 'local', 'a@b.c', '2026-01-01')")
+        conn.execute("INSERT INTO papers (id, title, title_hash, has_full_text, source, created_at) VALUES ('p1', 'P', 'h', 0, 'upload', '2026-01-01')")
+        conn.execute("INSERT INTO workspaces (id, owner_id, title, seed_paper_id, seed_profile_id, created_at, updated_at) VALUES ('w1', 'u1', 'W', 'p1', 'prof', '2026-01-01', '2026-01-01')")
+        conn.execute(
+            "INSERT INTO research_gaps (id, workspace_id, statement, gap_type, user_state, generated_at) "
+            "VALUES ('gap_old', 'w1', 'an accepted gap', 'METHOD_GAP', 'accepted', '2026-01-01')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(research_gaps)")}
+        kept = conn.execute("SELECT user_state, match_key FROM research_gaps WHERE id = 'gap_old'").fetchone()
+        indexes = {r[1] for r in conn.execute("PRAGMA index_list(research_gaps)")}
+    finally:
+        conn.close()
+    assert "match_key" in cols and "ix_research_gaps_workspace_match" in indexes
+    assert kept == ("accepted", None)  # an older decision keeps matching by its id
+
+    command.downgrade(cfg, "0017")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(research_gaps)")}
+        still = conn.execute("SELECT user_state FROM research_gaps WHERE id = 'gap_old'").fetchone()
+    finally:
+        conn.close()
+    assert "match_key" not in cols and still == ("accepted",)

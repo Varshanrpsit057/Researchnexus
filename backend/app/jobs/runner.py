@@ -24,6 +24,9 @@ from app.config import Settings
 from app.db import repository as repo
 from app.domain.jobs import JobStatus
 from app.services.ingest.pipeline import run_ingestion
+from app.telemetry.logging import get_logger
+
+_log = get_logger(__name__)
 
 
 def new_id(prefix: str) -> str:
@@ -72,55 +75,67 @@ def run_gaps_job(
     """`POST /workspaces/{id}/gaps` -- runs the deterministic-first gap
     pipeline and persists `research_gaps` rows (Roadmap Phase 11). Routed
     through `ResearchOrchestrator.run_gaps_stage` (Roadmap Phase 14) so the
-    run also writes a `stage_runs` row; same inputs, same result, same
-    error handling."""
+    run also writes a `stage_runs` row.
+
+    The job's `progress` follows the run as it happens: `stage` is
+    profiling / detecting / checking / saving with `done` of `total`, then
+    `done` with what happened to every candidate and paper
+    (`GapBuildResult.summary`). A failed job always says why: a provider
+    failure records its `error_code`/`error_kind` and a message naming the
+    provider; a run past its time limit says so and that papers read so far
+    are kept (each profile is saved as it finishes)."""
     from app.domain.gap import GapType
+    from app.llm.client import LlmProviderError, describe_provider_error
     from app.llm.session import resolve_llm_session
+    from app.llm.usage import usage_scope
     from app.services.gaps.pipeline import GapBuildOptions
     from app.services.orchestrator.orchestrator import ResearchOrchestrator
 
     db = session_factory()
+
+    def fail(message: str, **progress: str) -> None:
+        repo.update_job(db, job_id, status=JobStatus.FAILED, error=message, progress={"stage": "failed", **progress})
+
+    def progress(step: dict[str, str]) -> None:
+        repo.update_job(db, job_id, status=JobStatus.RUNNING, progress=step)
+
     try:
-        repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"gaps": "running"})
+        repo.update_job(db, job_id, status=JobStatus.RUNNING, progress={"stage": "starting", "gaps": "running"})
         try:
             user = repo.get_user(db, owner_id)
             workspace = repo.get_workspace(db, workspace_id, owner_id)
             if user is None or workspace is None:
-                repo.update_job(db, job_id, status=JobStatus.FAILED, error="workspace or user not found")
+                fail("The workspace or its owner no longer exists.")
                 return
             gap_types = {GapType(v) for v in gap_type_values} if gap_type_values else None
             session = resolve_llm_session(db, user, settings)
             orchestrator = ResearchOrchestrator(db=db, settings=settings)
-            result = asyncio.run(
-                orchestrator.run_gaps_stage(
-                    workspace=workspace,
-                    options=GapBuildOptions(gap_types=gap_types, min_supporting_papers=min_supporting_papers),
-                    session=session,
-                    owner_id=owner_id,
-                    job_id=job_id,
+            with usage_scope("gaps", workspace_id=workspace_id, job_id=job_id):
+                result = asyncio.run(
+                    orchestrator.run_gaps_stage(
+                        workspace=workspace,
+                        options=GapBuildOptions(gap_types=gap_types, min_supporting_papers=min_supporting_papers),
+                        session=session,
+                        owner_id=owner_id,
+                        job_id=job_id,
+                        on_progress=progress,
+                    )
                 )
-            )
-        except Exception as e:  # noqa: BLE001 - record on the job, never crash the worker
-            repo.update_job(db, job_id, status=JobStatus.FAILED, error=str(e))
+        except LlmProviderError as e:
+            fail(describe_provider_error(e), error_code="provider_error", error_kind=e.kind.value)
             return
-        repo.update_job(
-            db,
-            job_id,
-            status=JobStatus.SUCCEEDED,
-            # what happened to every candidate, so a small or empty result can say why
-            progress={
-                "gaps": "done",
-                "count": str(result.gap_count),
-                "candidates": str(result.candidate_count),
-                "dropped_insufficient_evidence": str(result.dropped_insufficient_evidence),
-                "dropped_unsupported": str(result.dropped_unsupported_articulation),
-                "dropped_self_support": str(result.dropped_self_support),
-                "skipped_rejected": str(result.skipped_rejected),
-                "profiled": str(result.profiled),
-                "unprofiled": str(result.unprofiled),
-            },
-            result_ref=workspace_id,
-        )
+        except asyncio.TimeoutError:
+            minutes = round(settings.gap_run_timeout_s / 60)
+            fail(
+                f"The run took longer than {minutes} minutes and was stopped. Papers read so far are kept; run it again to continue.",
+                error_code="timeout",
+            )
+            return
+        except Exception as e:  # noqa: BLE001 - record on the job, never crash the worker
+            _log.exception("gaps_job_failed", job_id=job_id, workspace_id=workspace_id)
+            fail(str(e) or type(e).__name__, error_code="internal")
+            return
+        repo.update_job(db, job_id, status=JobStatus.SUCCEEDED, progress=result.summary(), result_ref=workspace_id)
     finally:
         db.close()
 

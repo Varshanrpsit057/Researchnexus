@@ -11,7 +11,8 @@ import { streamChat } from "@/lib/api/chat-stream";
 import type { ChatMessage, ChatSession, RagStage } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
-import { citationFromEvent, citationsIn, errorCopy, relativeTime, segmentAnswer, type Citation, type Segment } from "@/lib/chat";
+import { citationFromEvent, citationsIn, errorCopy, segmentAnswer, type Citation, type Segment } from "@/lib/chat";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { CinematicHeader } from "@/components/layout/CinematicHeader";
 import { C, InlineError, WorkspaceLoadError, focusRing, primaryButton, quietButton } from "../ui";
 import { AnswerText, EvidencePanel, OutcomeNotes, SourceRow, StageTrail, type PaperKind } from "./parts";
@@ -532,7 +533,7 @@ function ConversationList({
               <span className="line-clamp-2 text-sm font-medium leading-snug">{s.title ?? "Untitled conversation"}</span>
               <span className="mt-0.5 block text-[12px] tabular-nums" style={{ color: C.muted }}>
                 {s.questions != null && `${s.questions} question${s.questions === 1 ? "" : "s"} · `}
-                {relativeTime(s.last_active_at ?? s.created_at)}
+                <Timestamp at={s.last_active_at ?? s.created_at} />
               </span>
             </button>
           </li>

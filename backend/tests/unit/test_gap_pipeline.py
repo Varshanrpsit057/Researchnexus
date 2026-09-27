@@ -145,11 +145,13 @@ def test_pipeline_surfaces_evidence_grounded_gaps(db, workspace, settings) -> No
     assert GapType.GENERALIZATION_GAP in {g.gap_type for g in gaps}
 
 
-def test_articulation_that_invents_a_claim_is_dropped(db, workspace, settings) -> None:
+def test_articulation_that_invents_a_claim_is_replaced_by_the_rules_own_words(db, workspace, settings) -> None:
     res = _run(db, workspace, settings, _session(articulate_ok=False))
-    assert res.gap_count == 0
-    assert res.dropped_unsupported_articulation >= 1
-    assert repo.get_gaps(db, "ws_1") == []
+    # the rule's gaps survive; the invented wording never reaches them
+    assert res.gap_count >= 1 and res.rephrased >= 1
+    gaps = repo.get_gaps(db, "ws_1")
+    assert gaps and all("quantum" not in f"{g.statement} {g.why_unaddressed} {g.proposed_direction}".lower() for g in gaps)
+    assert all(g.generator_model is None for g in gaps)
 
 
 def test_self_support_failure_drops_the_candidate(db, workspace, settings) -> None:
@@ -233,6 +235,167 @@ def test_a_paper_that_cannot_be_profiled_is_counted_and_nothing_is_stored(db, wo
 
     res = _run(db, ws, settings, _session(profile_ok=False))
 
-    assert (res.profiled, res.unprofiled) == (0, 2)
+    # p5 has nothing to read; p4's reading failed this time and is tried again next run
+    assert (res.profiled, res.unprofiled, res.profile_failed) == (0, 1, 1)
     assert repo.get_profile(db, "p4") is None and repo.get_profile(db, "p5") is None
     assert res.gap_count >= 1  # the profiled papers' gaps still come through
+
+
+# --- remediation Phase 3: a run that finishes, says why, and keeps decisions ---
+
+
+def _members(db: Session, ws: ResearchWorkspace, n: int) -> ResearchWorkspace:
+    for i in range(n):
+        ws = _abstract_only_member(db, ws, f"a{i}", f"We study dense retrieval for English only corpora, variant {i}.")
+    return ws
+
+
+def test_papers_are_read_several_at_a_time_and_each_step_is_reported(db, workspace, settings) -> None:
+    ws = _members(db, workspace, 5)
+    inner = _session()
+    in_flight = {"now": 0, "most": 0}
+
+    class Slow:
+        async def chat(self, **kw):  # noqa: ANN003, ANN201
+            in_flight["now"] += 1
+            in_flight["most"] = max(in_flight["most"], in_flight["now"])
+            try:
+                await asyncio.sleep(0.02)
+                return await inner.client.chat(**kw)
+            finally:
+                in_flight["now"] -= 1
+
+    session = LlmSession(client=Slow(), api_key="k", model="m", provider=LlmProvider.GROQ)  # type: ignore[arg-type]
+    steps: list[dict[str, str]] = []
+    res = asyncio.run(
+        build_gaps(db, workspace=ws, options=GapBuildOptions(), session=session,
+                   settings=settings.model_copy(update={"gap_llm_concurrency": 3}), on_progress=steps.append)
+    )
+
+    assert res.profiled == 5
+    assert 1 < in_flight["most"] <= 3  # concurrent, and bounded
+    stages = [s["stage"] for s in steps]
+    assert stages[0] == "profiling" and stages.index("detecting") < stages.index("checking") < stages.index("saving")
+    reading = [s for s in steps if s["stage"] == "profiling"]
+    assert reading[-1] == {"stage": "profiling", "done": "5", "total": "5"}
+    checking = [s for s in steps if s["stage"] == "checking"]
+    assert checking[-1]["done"] == checking[-1]["total"]
+
+
+def test_a_paper_that_is_too_slow_is_counted_and_the_run_goes_on(db, workspace, settings) -> None:
+    ws = _members(db, workspace, 2)
+    inner = _session()
+
+    class OneSlow:
+        async def chat(self, **kw):  # noqa: ANN003, ANN201
+            if "variant 0" in kw["messages"][-1].content:
+                await asyncio.sleep(5)
+            return await inner.client.chat(**kw)
+
+    session = LlmSession(client=OneSlow(), api_key="k", model="m", provider=LlmProvider.GROQ)  # type: ignore[arg-type]
+    res = _run(db, ws, settings.model_copy(update={"gap_profile_timeout_s": 0.3}), session)
+    assert (res.profiled, res.profile_failed) == (1, 1)
+    assert repo.get_profile(db, "a0") is None and repo.get_profile(db, "a1") is not None
+    assert res.gap_count >= 1
+
+
+def _failing(status: int, message: str = "nope") -> LlmSession:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": {"message": message}})
+
+    return LlmSession(
+        client=OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))),
+        api_key="sk-x", model="m", provider=LlmProvider.GROQ,
+    )
+
+
+def test_a_rejected_key_stops_the_run_with_that_reason_and_saves_nothing(db, workspace, settings) -> None:
+    from app.llm.client import LlmErrorKind, LlmProviderError
+
+    ws = _members(db, workspace, 2)
+    with pytest.raises(LlmProviderError) as info:
+        _run(db, ws, settings, _failing(401, "Authentication Fails"))
+    assert info.value.kind is LlmErrorKind.AUTH
+    assert repo.get_gaps(db, "ws_1") == []
+
+
+def test_a_provider_that_fails_every_call_is_the_result_not_no_gaps(db, workspace, settings) -> None:
+    from app.llm.client import LlmErrorKind, LlmProviderError
+
+    with pytest.raises(LlmProviderError) as info:
+        _run(db, workspace, settings, _failing(503, "Server overloaded"))
+    assert info.value.kind is LlmErrorKind.UNAVAILABLE
+
+
+def test_one_candidate_whose_check_fails_is_counted_and_the_others_are_kept(db, workspace, settings) -> None:
+    inner = _session()
+
+    class FlakyOnce:
+        async def chat(self, **kw):  # noqa: ANN003, ANN201
+            from app.llm.client import LlmProviderError
+
+            if "contrastive pretraining" in kw["messages"][-1].content and "phrase a research gap" in kw["messages"][0].content:
+                raise LlmProviderError("groq answered 503", provider="groq")
+            return await inner.client.chat(**kw)
+
+    session = LlmSession(client=FlakyOnce(), api_key="k", model="m", provider=LlmProvider.GROQ)  # type: ignore[arg-type]
+    res = _run(db, workspace, settings, session)
+    assert res.unchecked >= 1 and res.gap_count >= 1
+
+
+def test_decisions_hold_when_a_later_run_finds_the_gap_with_more_papers(db, workspace, settings) -> None:
+    """A gap's id changes when one more paper supports it (later runs profile
+    more papers): the decision is recognised by what the gap says."""
+    _run(db, workspace, settings, _session())
+    by_type = {g.gap_type: g for g in repo.get_gaps(db, "ws_1")}
+    shared = by_type[GapType.GENERALIZATION_GAP]
+    method = by_type[GapType.METHOD_GAP]
+    repo.set_gap_user_state(db, shared.gap_id, workspace_id="ws_1", owner_id="usr_1", state=GapUserState.ACCEPTED)
+    repo.set_gap_user_state(db, method.gap_id, workspace_id="ws_1", owner_id="usr_1", state=GapUserState.REJECTED)
+
+    # a new paper shares the problem and the limitation: both gaps now have one more paper
+    ws = _members(db, workspace, 1)
+    calls: list[str] = []
+    inner = _session()
+
+    class Recording:
+        async def chat(self, **kw):  # noqa: ANN003, ANN201
+            calls.append(kw["messages"][-1].content)
+            return await inner.client.chat(**kw)
+
+    session = LlmSession(client=Recording(), api_key="k", model="m", provider=LlmProvider.GROQ)  # type: ignore[arg-type]
+    res = _run(db, ws, settings, session)
+
+    assert res.kept_accepted >= 1 and res.skipped_rejected >= 1
+    gaps = repo.get_gaps(db, "ws_1")
+    limitation = [g for g in gaps if g.gap_type is GapType.GENERALIZATION_GAP]
+    assert [(g.gap_id, g.user_state) for g in limitation] == [(shared.gap_id, "accepted")]  # no duplicate
+    assert [g.user_state for g in gaps if g.affected_methods == method.affected_methods] == ["rejected"]
+    # decided gaps cost no model call: nothing phrased or checked the English-only limitation again
+    assert not any("English only" in c and "FACTS" in c for c in calls)
+
+
+def test_the_strongest_rules_are_checked_first_when_a_run_is_capped(db, workspace, settings) -> None:
+    res = _run(db, workspace, settings.model_copy(update={"gap_max_candidates_per_run": 1}), _session())
+    assert res.not_checked >= 1
+    assert [g.detection_rule for g in repo.get_gaps(db, "ws_1")] == ["shared_limitation"]
+
+
+def test_the_checker_reads_the_rules_own_facts_for_a_gap_that_is_an_absence(db, workspace, settings) -> None:
+    """A quote can't show that papers *don't* use a method; the rule's
+    comparison of the profiles can."""
+    inner = _session()
+    checked: list[str] = []
+
+    class Verifier:
+        async def chat(self, **kw):  # noqa: ANN003, ANN201
+            body = kw["messages"][-1].content
+            if "fully supports the statement" in kw["messages"][0].content:
+                checked.append(body)
+            return await inner.client.chat(**kw)
+
+    session = LlmSession(client=Verifier(), api_key="k", model="m", provider=LlmProvider.GROQ)  # type: ignore[arg-type]
+    _run(db, workspace, settings, session)
+    method_check = next(c for c in checked if "contrastive pretraining" in c)
+    assert "is not listed as a method of any of these papers" in method_check
+    assert '"P1"' in method_check and '"P2"' in method_check  # named by title

@@ -176,31 +176,101 @@ export interface RunOutcome {
   candidates: number | null;
   /** Why candidates did not become gaps, largest first, zeros left out. */
   dropped: { count: number; reason: string }[];
+  /** Weaker candidates past this run's cap; the strongest rules go first. */
+  notChecked: number;
+  /** Phrased from the rule's own words: the model's wording added something the passages don't contain. */
+  rephrased: number;
   profiled: number;
   unprofiled: number;
+  /** Papers whose reading failed this time; the next run tries them again. */
+  profileFailed: number;
 }
 
 const DROP_REASONS: [key: string, reason: (n: number) => string][] = [
   ["dropped_insufficient_evidence", () => "lacked passages from two different papers"],
+  // runs before remediation Phase 3 dropped a gap whose wording the model got wrong
   ["dropped_unsupported", (n) => `${n === 1 ? "was" : "were"} phrased with something the evidence doesn't contain`],
   ["dropped_self_support", (n) => `${n === 1 ? "wasn't" : "weren't"} supported by ${n === 1 ? "its" : "their"} own evidence`],
+  ["unchecked", (n) => `couldn't be checked this time (the model's reply was unusable or too slow), so ${n === 1 ? "it isn't" : "they aren't"} shown`],
   ["skipped_rejected", (n) => `${n === 1 ? "was" : "were"} rejected before, so left out`],
+  ["kept_accepted", (n) => `${n === 1 ? "was" : "were"} accepted before, so kept as ${n === 1 ? "it was" : "they were"}`],
 ];
 
-/** A finished gap job's progress (app/jobs/runner.py::run_gaps_job), as counts. */
+const count = (progress: Record<string, string>, key: string): number => {
+  const v = Number.parseInt(progress[key] ?? "", 10);
+  return Number.isFinite(v) ? v : 0;
+};
+
+/** A finished gap job's progress (app/services/gaps/pipeline.py::GapBuildResult.summary), as counts. */
 export function runOutcome(progress: Record<string, string> | undefined): RunOutcome | null {
   if (!progress || progress.count == null) return null;
-  const n = (k: string) => {
-    const v = Number.parseInt(progress[k] ?? "", 10);
-    return Number.isFinite(v) ? v : 0;
-  };
+  const n = (k: string) => count(progress, k);
   return {
     kept: n("count"),
     candidates: progress.candidates != null ? n("candidates") : null,
     dropped: DROP_REASONS.map(([key, reason]) => ({ count: n(key), reason: reason(n(key)) }))
       .filter((d) => d.count > 0)
       .sort((a, b) => b.count - a.count),
+    notChecked: n("not_checked"),
+    rephrased: n("rephrased"),
     profiled: n("profiled"),
     unprofiled: n("unprofiled"),
+    profileFailed: n("profile_failed"),
   };
+}
+
+export type RunStage = "starting" | "profiling" | "detecting" | "checking" | "saving";
+
+export const RUN_STEPS: { stage: Exclude<RunStage, "starting">; label: string }[] = [
+  { stage: "profiling", label: "Read papers" },
+  { stage: "detecting", label: "Apply the rules" },
+  { stage: "checking", label: "Check each gap" },
+  { stage: "saving", label: "Save" },
+];
+
+export interface RunProgress {
+  stage: RunStage;
+  /** What is happening now, in words; the same while its count moves. */
+  label: string;
+  done: number | null;
+  total: number | null;
+}
+
+/** A running gap job's progress: which step, and how far through it. */
+export function runProgress(progress: Record<string, string> | undefined): RunProgress {
+  const stage = (progress?.stage ?? "starting") as RunStage;
+  const done = progress?.done != null ? count(progress, "done") : null;
+  const total = progress?.total != null ? count(progress, "total") : null;
+  const counted = total != null && total > 0 ? { done, total } : { done: null, total: null };
+  switch (stage) {
+    case "profiling":
+      return { stage, label: "Reading the papers that have no research profile yet", ...counted };
+    case "detecting":
+      return { stage, label: "Applying the gap rules to every paper's profile", done: null, total: null };
+    case "checking":
+      return { stage, label: "Phrasing each candidate gap and checking it against its passages", ...counted };
+    case "saving":
+      return { stage, label: "Saving the gaps", done: null, total: null };
+    default:
+      return { stage: "starting", label: "Starting the run", done: null, total: null };
+  }
+}
+
+export interface RunFailure {
+  message: string;
+  /** What the reader can do about it. */
+  action: "settings" | "retry";
+  /** Worth showing only for an unexpected failure. */
+  technical: string | null;
+}
+
+/** Why a gap job failed, from what app/jobs/runner.py::run_gaps_job records. */
+export function runFailure(error: string | null, progress: Record<string, string> | undefined): RunFailure {
+  const code = progress?.error_code;
+  if (code === "provider_error") {
+    const settings = progress?.error_kind === "auth";
+    return { message: error || "The language model provider didn't answer.", action: settings ? "settings" : "retry", technical: null };
+  }
+  if (code === "timeout") return { message: error || "The run took too long and was stopped.", action: "retry", technical: null };
+  return { message: "The run failed before it finished. Papers read so far are kept; run it again to continue.", action: "retry", technical: error || null };
 }

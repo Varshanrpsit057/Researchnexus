@@ -19,7 +19,6 @@ from app.domain.paper import Section
 from app.domain.profile import ResearchProfile
 from app.domain.user import User
 from app.jobs.runner import new_id
-from app.llm.client import LlmProviderError
 from app.llm.session import LlmSession, metered, model_for
 from app.llm.usage import usage_scope_default
 from app.security.key_vault import KeyVault
@@ -109,7 +108,11 @@ async def profile_with_session(
     down-weighted (Seed_Paper_Research_Trail: "related-paper profiles are
     grounded in abstracts"). Nothing is stored when the paper has no text or
     the extraction fails -- an empty fallback profile would stand in for a
-    real one and block a later attempt."""
+    real one and block a later attempt.
+
+    A provider failure (`LlmProviderError`) is raised, not treated as "no
+    profile": the caller must tell a rejected key or an empty account --
+    which fail every paper -- from a paper whose reply was unusable."""
     grounding = "full_text" if paper.has_full_text else "abstract"
     ensure_abstract_chunks(db, [paper.id])
     chunks = repo.get_chunks_for_paper(db, paper.id)
@@ -123,7 +126,7 @@ async def profile_with_session(
             chunks=chunks,
             max_context_chars=settings.profile_max_context_chars,
         )
-    except (ProfileExtractionFailed, LlmProviderError):
+    except ProfileExtractionFailed:
         return None
     profile, _warnings = build_profile(
         profile_id=new_id("prof"),

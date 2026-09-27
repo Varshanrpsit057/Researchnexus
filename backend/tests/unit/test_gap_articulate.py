@@ -61,7 +61,42 @@ def test_adversarial_llm_that_adds_an_unsupported_method_is_caught() -> None:
         "proposed_direction": "Use quantum annealing.",
     }
     art = asyncio.run(articulate(_session(payload), _candidate()))
-    assert art is None  # 'quantum annealing' is not in the facts or evidence -> dropped
+    # 'quantum annealing' is not in the facts or evidence: that wording is
+    # discarded, and the rule's own template says what the rule found
+    assert art.fallback == "ungrounded" and art.generator_model is None
+    assert "quantum" not in f"{art.statement} {art.why_unaddressed} {art.proposed_direction}".lower()
+    assert "contrastive pretraining" in art.statement
+
+
+def test_plain_english_is_not_mistaken_for_an_invented_term() -> None:
+    """Every word a real DeepSeek run was dropped for: ordinary English."""
+    cand = _candidate()
+    for sentence in (
+        "The papers study dense retrieval without adopting contrastive pretraining.",
+        "The papers describe dense retrieval but none is addressing contrastive pretraining.",
+        "Checking and analyzing contrastive pretraining is missing from these experiences.",
+        # a real run's metric and dataset gaps
+        "The papers do not share any common metric for evaluating outcomes.",
+        "No evidence shows any shared dense retrieval setting, so results are not comparable.",
+        "The papers do not share dense retrieval data, as each uses a distinct source.",
+    ):
+        assert is_grounded(sentence, "", cand) is True, sentence
+    # a named thing must still appear as written
+    assert is_grounded("Papers should try ResNet-50 instead.", "", cand) is False
+    assert is_grounded("Papers should use SimCLRv2 pretraining.", "", cand) is False
+    # and a plain-looking technical term is still caught by its stem
+    assert is_grounded("Papers should try reinforcement learning.", "", cand) is False
+    assert is_grounded("Nobody applies annealing here.", "", cand) is False
+
+
+def test_a_provider_failure_is_raised_when_strict_and_hidden_otherwise() -> None:
+    import pytest
+
+    from app.llm.client import LlmProviderError
+
+    with pytest.raises(LlmProviderError):
+        asyncio.run(articulate(_session("x", status=401), _candidate(), strict=True))
+    assert asyncio.run(articulate(_session("x", status=401), _candidate())).fallback == "no_reply"
 
 
 def test_is_grounded_helper_accepts_only_terms_present_in_facts_or_quotes() -> None:
@@ -85,7 +120,6 @@ def test_the_method_gap_template_says_only_what_the_rule_found() -> None:
     # p3 uses the method, so "no workspace paper applies it" would be false;
     # the gap is that the papers sharing p3's problem don't
     art = asyncio.run(articulate(None, _candidate()))
-    assert art is not None
     assert art.statement == "None of the 2 papers that share a research problem with the paper using contrastive pretraining applies it."
     assert art.why_unaddressed == "The 2 papers addressing that shared problem do not adopt contrastive pretraining, although another workspace paper does."
 

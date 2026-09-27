@@ -6,7 +6,7 @@ import { ArrowSquareOut, Check, Eye, EyeSlash, Star, Warning } from "@phosphor-i
 import { ApiError } from "@/lib/api/client";
 import { llmKeys, workspaces as workspacesApi } from "@/lib/api/endpoints";
 import type { LlmProvider, Workspace } from "@/lib/api/types";
-import { relativeTime } from "@/lib/chat";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { PROVIDERS, STATUS_COPY, budgetOf, describeTest, maskedKey, parseCap, usd, type ProviderRow } from "@/lib/settings";
 import { C, InlineError, focusRing, primaryButton, quietButton } from "../workspace/[id]/ui";
 
@@ -122,7 +122,7 @@ export function ProviderLine({
                 </span>
                 {row.key.checked_at && (
                   <span className="text-[12.5px]" style={{ color: C.muted }}>
-                    checked {relativeTime(row.key.checked_at)}
+                    checked <Timestamp at={row.key.checked_at} />
                   </span>
                 )}
               </>

@@ -420,18 +420,23 @@ class ResearchOrchestrator:
         job_id: str | None = None,
         options: GapBuildOptions | None = None,
         build_fn: Callable[..., Awaitable[GapBuildResult]] = build_gaps,
+        on_progress: Callable[[dict[str, str]], None] | None = None,
     ) -> GapBuildResult:
         resolved_options = options or GapBuildOptions()
 
         async def _call() -> GapBuildResult:
+            kwargs = {"on_progress": on_progress} if on_progress is not None else {}
             return await build_fn(
-                db=self.db, workspace=workspace, options=resolved_options, session=session, settings=self.settings
+                db=self.db, workspace=workspace, options=resolved_options, session=session, settings=self.settings, **kwargs
             )
 
+        # the run bounds its own work per paper and per candidate
+        # (settings.gap_*_timeout_s); this limit is only a backstop
         return await self.run_stage(
             StageName.GAPS, "build_gaps", _call,
             owner_id=owner_id, workspace_id=workspace.workspace_id, job_id=job_id,
             input_for_hash={"workspace_id": workspace.workspace_id},
+            timeout_s=self.settings.gap_run_timeout_s,
         )
 
     async def run_directions_stage(

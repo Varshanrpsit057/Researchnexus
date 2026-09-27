@@ -123,7 +123,9 @@ class LLMClient(Protocol):
 
     `json_mode` asks the provider for a JSON object when it supports that;
     `on_delta` streams the reply, calling it with each piece of text as it
-    arrives -- either way the full `ChatResult` (with usage) is returned."""
+    arrives -- either way the full `ChatResult` (with usage) is returned.
+    `temperature` overrides the provider's default sampling (0 for a
+    judgement that should come out the same every time)."""
 
     async def chat(
         self,
@@ -133,6 +135,7 @@ class LLMClient(Protocol):
         messages: list[ChatMessage],
         json_mode: bool = False,
         on_delta: DeltaHook | None = None,
+        temperature: float | None = None,
     ) -> ChatResult: ...
 
     async def structured(self, *, api_key: str, model: str, messages: list[ChatMessage], schema: type[T]) -> T: ...

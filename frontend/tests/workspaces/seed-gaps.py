@@ -111,15 +111,5 @@ session = LlmSession(
 seed = repo.get_paper(db, workspace.seed_paper_id)
 assert seed is not None and asyncio.run(profile_with_session(db, seed, session, settings)) is not None
 result = asyncio.run(build_gaps(db, workspace=workspace, options=GapBuildOptions(), session=session, settings=settings))
-progress = {
-    "gaps": "done",
-    "count": str(result.gap_count),
-    "candidates": str(result.candidate_count),
-    "dropped_insufficient_evidence": str(result.dropped_insufficient_evidence),
-    "dropped_unsupported": str(result.dropped_unsupported_articulation),
-    "dropped_self_support": str(result.dropped_self_support),
-    "skipped_rejected": str(result.skipped_rejected),
-    "profiled": str(result.profiled),
-    "unprofiled": str(result.unprofiled),
-}
-print(json.dumps({"progress": progress, "gaps": [g.model_dump(mode="json") for g in repo.get_gaps(db, workspace_id)]}))
+# exactly what the real job records when it finishes (GapBuildResult.summary)
+print(json.dumps({"progress": result.summary(), "gaps": [g.model_dump(mode="json") for g in repo.get_gaps(db, workspace_id)]}))

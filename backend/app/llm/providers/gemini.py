@@ -98,11 +98,16 @@ class GeminiClient:
             if self._client is None:
                 await client.aclose()
 
-    async def _once(self, api_key: str, model: str, contents: list[dict[str, object]], json_mode: bool) -> ChatResult:
+    async def _once(
+        self, api_key: str, model: str, contents: list[dict[str, object]], json_mode: bool, temperature: float | None = None
+    ) -> ChatResult:
         started = time.monotonic()
-        resp = await self._generate(
-            api_key, model, contents, {"responseMimeType": "application/json"} if json_mode else None
-        )
+        config: dict[str, object] = {}
+        if json_mode:
+            config["responseMimeType"] = "application/json"
+        if temperature is not None:
+            config["temperature"] = temperature
+        resp = await self._generate(api_key, model, contents, config or None)
         if resp.status_code >= 400:
             raise _error_from_response(resp)
         try:
@@ -133,6 +138,7 @@ class GeminiClient:
         messages: list[ChatMessage],
         json_mode: bool = False,
         on_delta: DeltaHook | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         contents: list[dict[str, object]] = [
             {"role": _to_gemini_role(m.role), "parts": [{"text": m.content}]} for m in messages
@@ -140,7 +146,7 @@ class GeminiClient:
         attempt = 0
         while True:
             try:
-                result = await self._once(api_key, model or DEFAULT_MODEL, contents, json_mode)
+                result = await self._once(api_key, model or DEFAULT_MODEL, contents, json_mode, temperature)
                 break
             except LlmProviderError as e:
                 if not e.retryable or attempt >= self._max_retries:

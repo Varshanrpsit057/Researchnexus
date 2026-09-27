@@ -102,4 +102,6 @@ class Comparison(BaseModel):
             ],
             "coverage": self.coverage,
             "decontext_eval": self.decontext_eval,
+            # when it was made (UTC), so a reader can tell an old comparison from a fresh one
+            "created_at": self.created_at.isoformat(),
         }

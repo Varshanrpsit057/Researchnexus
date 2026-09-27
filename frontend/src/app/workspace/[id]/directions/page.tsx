@@ -22,7 +22,7 @@ import { papers as papersApi, workspaces } from "@/lib/api/endpoints";
 import type { DirectionKind, DirectionUserState, ResearchDirection } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
-import { relativeTime } from "@/lib/chat";
+import { Timestamp } from "@/components/ui/Timestamp";
 import {
   KIND_COPY,
   NO_FILTERS,
@@ -294,7 +294,7 @@ export default function DirectionsPage() {
       gap={gaps.find((g) => g.gap_id === d.gap_id) ?? null}
       workspaceId={id}
       kindOf={kindOfPaper}
-      proposed={relativeTime(d.generated_at)}
+      proposed={<Timestamp at={d.generated_at} />}
       actions={detailActions(d)}
     />
   );

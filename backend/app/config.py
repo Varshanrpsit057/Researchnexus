@@ -121,6 +121,17 @@ class Settings(BaseSettings):
     # fixed rule thresholds (calibration is Phase 16).
     gap_min_supporting_papers: int = 2
     gap_temporal_years: int = 4
+    # How a gap run spends its model calls (remediation Phase 3). Papers
+    # without a profile are read, and candidates phrased and checked, this
+    # many at a time; each paper and each candidate has its own time limit,
+    # so one slow reply can't stall the run. Candidates beyond the per-run
+    # cap wait, strongest rules first (see pipeline._priority). The run
+    # limit is only a backstop: the work is bounded per item.
+    gap_llm_concurrency: int = 6
+    gap_profile_timeout_s: float = 120.0
+    gap_candidate_timeout_s: float = 90.0
+    gap_max_candidates_per_run: int = 40
+    gap_run_timeout_s: float = 900.0
 
     # Research directions (Roadmap Phase 12 / Architecture §4
     # DirectionGenerator). Directions are only ever generated from

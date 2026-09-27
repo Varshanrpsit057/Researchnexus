@@ -159,10 +159,13 @@ def test_a_finished_run_says_what_happened_to_every_candidate(tmp_path: Path, mo
     assert progress["count"] == "0"
     candidates = int(progress["candidates"])
     assert candidates > 0
-    assert int(progress["dropped_self_support"]) == candidates - int(progress["dropped_insufficient_evidence"]) - int(
-        progress["dropped_unsupported"]
-    ) - int(progress["skipped_rejected"])
-    assert (progress["profiled"], progress["unprofiled"]) == ("0", "0")
+    accounted = sum(
+        int(progress[k])
+        for k in ("dropped_insufficient_evidence", "skipped_rejected", "kept_accepted", "unchecked", "not_checked")
+    )
+    assert int(progress["dropped_self_support"]) == candidates - accounted
+    assert (progress["profiled"], progress["unprofiled"], progress["profile_failed"]) == ("0", "0", "0")
+    assert progress["stage"] == "done"
 
 
 def test_gap_times_read_back_as_utc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,3 +233,79 @@ def test_rerun_is_deterministic_and_keeps_rejections(tmp_path: Path, monkeypatch
     first_candidates = sorted((_strip(g) for g in first if g["gap_id"] != victim), key=lambda g: g["gap_id"])
     second_candidates = sorted((_strip(g) for g in second if g["gap_id"] != victim), key=lambda g: g["gap_id"])
     assert first_candidates == second_candidates
+
+
+# --- remediation Phase 3: a failed run always says why ---------------------
+
+
+def test_a_rejected_key_fails_the_job_with_a_named_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.llm.session as sm
+    from app.llm.providers.openai_compat import OpenAiCompatClient
+
+    c = _client(tmp_path)
+    token = _token(c)
+    wid = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+
+    def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "Authentication Fails"}})
+
+    monkeypatch.setattr(sm, "get_llm_client", lambda provider: OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(rejected))))
+    job_id = c.post(f"/api/v1/workspaces/{wid}/gaps", json={}, headers=_h(token)).json()["job"]["job_id"]
+    job = c.get(f"/api/v1/jobs/{job_id}", headers=_h(token)).json()
+
+    assert job["status"] == "failed"
+    assert job["error"] == "Groq rejected the saved API key. Check it in Settings, or save a new one."
+    assert (job["progress"]["stage"], job["progress"]["error_code"], job["progress"]["error_kind"]) == ("failed", "provider_error", "auth")
+    assert c.get(f"/api/v1/workspaces/{wid}/gaps", headers=_h(token)).json()["gaps"] == []
+
+
+def test_a_run_past_its_limit_fails_with_what_to_do_next(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import app.llm.session as sm
+    from app.llm.providers.openai_compat import OpenAiCompatClient
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        jwt_secret="test-jwt-secret",
+        key_vault_secret=Fernet.generate_key().decode(),
+        gap_run_timeout_s=0.3,
+    )
+    app = create_app(settings=settings)
+    app.dependency_overrides[get_settings] = lambda: settings
+    c = TestClient(app)
+    token = _token(c)
+    wid = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(2)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr(sm, "get_llm_client", lambda provider: OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(slow))))
+    job_id = c.post(f"/api/v1/workspaces/{wid}/gaps", json={}, headers=_h(token)).json()["job"]["job_id"]
+    job = c.get(f"/api/v1/jobs/{job_id}", headers=_h(token)).json()
+    assert job["status"] == "failed" and job["progress"]["error_code"] == "timeout"
+    assert "was stopped. Papers read so far are kept; run it again to continue." in job["error"]
+
+
+def test_a_runs_model_calls_are_counted_as_gap_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    c = _client(tmp_path)
+    token = _token(c)
+    wid = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch)
+
+    job_id = c.post(f"/api/v1/workspaces/{wid}/gaps", json={}, headers=_h(token)).json()["job"]["job_id"]
+    db = get_session_factory()()
+    try:
+        user = repo.get_user_by_email(db, "r@example.com")
+        assert user is not None
+        calls = repo.list_llm_calls(db, user.id, workspace_id=wid)
+    finally:
+        db.close()
+    assert calls and {(k.feature, k.job_id) for k in calls} == {("gaps", job_id)}
+    assert sum(k.prompt_tokens for k in calls) == 4 * len(calls)

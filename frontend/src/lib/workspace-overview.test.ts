@@ -8,7 +8,7 @@ import type {
   TrailGroupEntry,
   WorkspacePaper,
 } from "@/lib/api/types";
-import { addableFromRun, buildStations, nextStation, timeAgo, type Loadable } from "./workspace-overview";
+import { addableFromRun, buildStations, nextStation, type Loadable } from "./workspace-overview";
 
 function paper(id: string, role: "seed" | "related"): WorkspacePaper {
   return {
@@ -125,15 +125,5 @@ describe("addableFromRun", () => {
     const result = (id: string) => ({ paper: { id } }) as RelatedResult;
     const addable = addableFromRun([result("pap_seed"), result("pap_2"), result("pap_3")], [paper("pap_seed", "seed"), paper("pap_2", "related")]);
     expect(addable.map((r) => r.paper.id)).toEqual(["pap_3"]);
-  });
-});
-
-describe("timeAgo", () => {
-  const now = Date.parse("2026-09-23T12:00:00Z");
-  it("reads recent times in plain relative terms", () => {
-    expect(timeAgo("2026-09-23T11:59:40Z", now)).toBe("just now");
-    expect(timeAgo("2026-09-23T11:55:00Z", now)).toBe("5 min ago");
-    expect(timeAgo("2026-09-23T09:00:00Z", now)).toBe("3 h ago");
-    expect(timeAgo("2026-09-21T12:00:00Z", now)).toBe("2 d ago");
   });
 });

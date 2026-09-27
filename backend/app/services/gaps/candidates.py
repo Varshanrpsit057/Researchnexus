@@ -90,6 +90,14 @@ def _method_coverage(matrix: GapMatrix) -> list[GapCandidate]:
         if _distinct(ev) < _MIN:
             continue
         raw = next((e.raw for u in users for e in matrix.entries(u, "method") if e.value == value), value)
+        # the using paper's own words: what shows the method exists at all
+        use = next((e for u in users for e in matrix.entries(u, "method") if e.value == value and e.span), None)
+        facts = {
+            "facet": "method", "value": raw, "used_by": users,
+            "missing_from": [e.paper_id for e in ev], "shared_context": sorted(user_context)[:5],
+        }
+        if use is not None and use.span is not None:
+            facts["method_quote"] = use.span.quote
         out.append(
             GapCandidate(
                 gap_type=GapType.METHOD_GAP,
@@ -97,10 +105,7 @@ def _method_coverage(matrix: GapMatrix) -> list[GapCandidate]:
                 supporting_papers=[e.paper_id for e in ev],
                 supporting_evidence=ev,
                 affected_methods=[raw],
-                facts={
-                    "facet": "method", "value": raw, "used_by": users,
-                    "missing_from": [e.paper_id for e in ev], "shared_context": sorted(user_context)[:5],
-                },
+                facts=facts,
             )
         )
     return out
@@ -254,6 +259,46 @@ def contradiction_candidates(trail_edges: list[TrailEdge]) -> list[GapCandidate]
             )
         )
     return out
+
+
+def rule_facts(candidate: GapCandidate, titles: dict[str, str]) -> list[str]:
+    """What the rule itself established by comparing the papers' profiles,
+    stated plainly. A gap is often an absence ("no paper that shares this
+    problem uses X"): no quote can state what a paper doesn't do, so the
+    self-support check reads these facts next to the quotes. They say only
+    what the rule computed -- never that a limitation is unresolved or that a
+    method would help."""
+    f = candidate.facts
+
+    def names(ids: Iterable[str]) -> str:
+        return "; ".join(f'"{titles.get(pid, pid)}"' for pid in ids)
+
+    rule = candidate.detection_rule
+    if rule == "method_coverage":
+        lines = [
+            f"The research profiles list {f['value']} as a method of {names(f.get('used_by', []))}. "
+            f"It is not listed as a method of any of these papers, which share its research setting: "
+            f"{names(f.get('missing_from', []))}."
+        ]
+        if f.get("method_quote"):
+            lines.append(f"The paper using it says: {f['method_quote']}")
+        return lines
+    if rule in ("dataset_divergence", "metric_divergence"):
+        per = "; ".join(f'"{titles.get(pid, pid)}": {", ".join(vals)}' for pid, vals in f.get("per_paper", {}).items())
+        return [f"The research profiles list these {f['facet']}s, and no {f['facet']} is listed by two papers: {per}."]
+    if rule == "shared_limitation":
+        return [f"The research profiles of {names(f.get('papers', []))} each list the limitation: {f['value']}."]
+    if rule == "method_dataset_combination":
+        return [
+            f"The research profiles list the method {f['method']} for {names(f.get('method_papers', []))} and the dataset "
+            f"{f['dataset']} for {names(f.get('dataset_papers', []))}; no paper's profile lists both."
+        ]
+    if rule == "temporal_staleness":
+        return [
+            f"The newest workspace paper on {f['topic']} is from {f['newest_with_topic']}; the newest workspace paper "
+            f"overall is from {f['workspace_newest']}, {f['gap_years']} years later."
+        ]
+    return []
 
 
 def generate_candidates(matrix: GapMatrix, *, gap_types: set[GapType] | None) -> list[GapCandidate]:

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatClaim, ChatSource } from "@/lib/api/types";
-import { citationFromEvent, citationsIn, errorCopy, location, outcomeNotes, relativeTime, segmentAnswer, sourcesByPaper } from "./chat";
+import { citationFromEvent, citationsIn, errorCopy, location, outcomeNotes, segmentAnswer, sourcesByPaper } from "./chat";
 
 function source(paper: string, extra: Partial<ChatSource> = {}): ChatSource {
   return { chunk_id: `chk_${paper}`, paper_id: paper, paper_title: `Title ${paper}`, section: "Results", page: 3, quote: "q", truncated: false, ...extra };
@@ -77,18 +77,10 @@ describe("chat helpers", () => {
     expect(outcomeNotes({ answerable: false, hasText: false, warnings: ["not_answerable"] })).toEqual([]);
   });
 
-  it("formats locations, errors and times", () => {
+  it("formats locations and errors", () => {
     expect(location({ section: "Results", page: 3 })).toBe("Results, page 3");
     expect(location({ section: null, page: null })).toBeNull();
     expect(errorCopy("llm_key_required", "x")).toMatch(/Settings/);
     expect(errorCopy("generation_failed", "The model failed.")).toBe("The model failed.");
-    const now = Date.parse("2026-09-26T12:00:00Z");
-    expect(relativeTime("2026-09-26T11:59:40Z", now)).toBe("just now");
-    expect(relativeTime("2026-09-26T11:15:00Z", now)).toBe("45 min ago");
-    expect(relativeTime("2026-09-26T07:00:00Z", now)).toBe("5 h ago");
-    expect(relativeTime("2026-09-25T06:00:00Z", now)).toBe("yesterday");
-    // a zone-less stamp is UTC, whatever the browser's timezone
-    expect(relativeTime("2026-09-26T11:59:40", now)).toBe("just now");
-    expect(relativeTime("2026-09-26T17:29:40+05:30", now)).toBe("just now");
   });
 });

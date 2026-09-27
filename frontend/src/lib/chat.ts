@@ -128,21 +128,3 @@ export function errorCopy(code: string | undefined, message: string | undefined)
       return message || "Something went wrong while answering. Try again.";
   }
 }
-
-/** A backend timestamp. They are all UTC; one stored without its zone
- * (SQLite drops it) must not be read as the browser's local time. */
-export function parseUtc(iso: string): Date {
-  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
-}
-
-/** "just now", "5 min ago", "3 h ago", "yesterday", or a date. */
-export function relativeTime(iso: string, now: number = Date.now()): string {
-  const then = parseUtc(iso).getTime();
-  const minutes = Math.round((now - then) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  if (hours < 48) return "yesterday";
-  return parseUtc(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}

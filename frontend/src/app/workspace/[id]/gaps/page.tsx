@@ -23,23 +23,47 @@ import { useJobPolling } from "@/lib/api/hooks";
 import type { Confidence, GapType, GapUserState, ResearchGap } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
-import { relativeTime } from "@/lib/chat";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { useIsWide } from "@/lib/use-is-wide";
 import {
   CONFIDENCE_LABEL,
   GAP_TYPE_LABEL,
   NO_FILTERS,
+  RUN_STEPS,
   STATE_LABEL,
   countByState,
   filterGaps,
+  runFailure,
   runOutcome,
+  runProgress,
   sortGaps,
   type GapFilters,
+  type RunProgress,
 } from "@/lib/gaps";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
-import { WorkingTrail, type PaperKind } from "../compare/parts";
+import { type PaperKind } from "../compare/parts";
 import { C, InlineError, WorkspaceLoadError, focusRing, panel, primaryButton, quietButton } from "../ui";
 import { DecisionButton, GapDetail, GapRow, StateMark } from "./parts";
+
+// a run keeps going when the reader leaves the page; coming back picks it up again
+const runKey = (workspaceId: string) => `researchnexus.gapsRun.${workspaceId}`;
+
+function savedRun(workspaceId: string): string | null {
+  try {
+    return window.sessionStorage.getItem(runKey(workspaceId));
+  } catch {
+    return null;
+  }
+}
+
+function saveRun(workspaceId: string, jobId: string | null): void {
+  try {
+    if (jobId) window.sessionStorage.setItem(runKey(workspaceId), jobId);
+    else window.sessionStorage.removeItem(runKey(workspaceId));
+  } catch {
+    // storage blocked: the run still finishes, this tab just won't resume it
+  }
+}
 
 async function profileGrounding(paperId: string): Promise<string | null> {
   try {
@@ -84,7 +108,7 @@ export default function GapsPage() {
   );
 
   const [filters, setFilters] = useState<GapFilters>(NO_FILTERS);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(() => (typeof window === "undefined" ? null : savedRun(id)));
   const [runError, setRunError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const polling = useJobPolling(jobId);
@@ -100,15 +124,20 @@ export default function GapsPage() {
   const running = starting || (jobId != null && !polling.isDone);
   const noKey = me != null && !me.has_working_llm_key;
   const outcome = polling.job?.status === "succeeded" ? runOutcome(polling.job.progress) : null;
+  const failure = polling.job?.status === "failed" ? runFailure(polling.job.error, polling.job.progress) : null;
+  const progress = runProgress(polling.job?.progress);
+  const mutateProfiles = profilesQ.mutate;
 
-  // a finished run changes the list (and the overview's counts), once per run
+  // a finished run changes the list, the papers' profiles and the overview's counts, once per run
   useEffect(() => {
     if (polling.isDone && jobId && settledJob.current !== jobId) {
       settledJob.current = jobId;
+      saveRun(id, null);
       void mutateGaps();
+      void mutateProfiles();
       void mutateGlobal(["workspace", id]);
     }
-  }, [polling.isDone, jobId, mutateGaps, mutateGlobal, id]);
+  }, [polling.isDone, jobId, mutateGaps, mutateProfiles, mutateGlobal, id]);
 
   const counts = countByState(gaps);
   const titles = titlesQ.data ?? {};
@@ -169,6 +198,7 @@ export default function GapsPage() {
     setAnnouncement("Looking for gaps.");
     try {
       const res = await workspaces.generateGaps(id, {});
+      saveRun(id, res.job.job_id);
       setJobId(res.job.job_id);
     } catch (e) {
       const err = e instanceof ApiError ? e : null;
@@ -288,7 +318,7 @@ export default function GapsPage() {
       gap={gap}
       workspaceId={id}
       kindOf={kindOf}
-      generated={relativeTime(gap.generated_at)}
+      generated={<Timestamp at={gap.generated_at} />}
       actions={detailActions(gap)}
     />
   );
@@ -413,42 +443,65 @@ export default function GapsPage() {
                   </span>
                 </p>
               )}
-              {running && (
-                <div role="status" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-4" style={{ borderColor: C.line }}>
-                  <WorkingTrail count={members.length} />
-                  <p className="text-[13px]" style={{ color: C.muted }}>
-                    Profiling papers where needed, applying the gap rules, and checking every gap against its passages. This can take a minute.
-                  </p>
-                </div>
-              )}
+              {running && <RunSteps progress={progress} />}
               {outcome && (
                 <div role="status" className="mt-4 border-t pt-4 text-[13.5px] leading-relaxed" style={{ borderColor: C.line }}>
                   <p>
                     {outcome.candidates === 0
                       ? "No rule found a gap in these papers. Rules need papers that share a problem, dataset, metric or limitation, with passages from two of them."
-                      : outcome.candidates != null
-                        ? `Kept ${outcome.kept} of ${outcome.candidates} candidate gap${outcome.candidates === 1 ? "" : "s"}.`
-                        : `Found ${outcome.kept} gap${outcome.kept === 1 ? "" : "s"}.`}
+                      : outcome.candidates != null && outcome.kept === 0
+                        ? `No new gaps among ${outcome.candidates} candidate${outcome.candidates === 1 ? "" : "s"}.`
+                        : outcome.candidates != null
+                          ? `Kept ${outcome.kept} of ${outcome.candidates} candidate gap${outcome.candidates === 1 ? "" : "s"}.`
+                          : `Found ${outcome.kept} gap${outcome.kept === 1 ? "" : "s"}.`}
                     {outcome.dropped.length > 0 && (
                       <span style={{ color: C.muted }}> {outcome.dropped.map((d) => `${d.count} ${d.reason}`).join("; ")}.</span>
                     )}
                   </p>
-                  {(outcome.profiled > 0 || outcome.unprofiled > 0) && (
+                  {(outcome.notChecked > 0 || outcome.rephrased > 0) && (
+                    <p className="mt-1" style={{ color: C.muted }}>
+                      {outcome.notChecked > 0 &&
+                        `${outcome.notChecked} weaker candidate${outcome.notChecked === 1 ? " wasn't" : "s weren't"} checked this run: the strongest rules go first. `}
+                      {outcome.rephrased > 0 &&
+                        `${outcome.rephrased} ${outcome.rephrased === 1 ? "was" : "were"} phrased in the rule's own words, because the model's wording added something the passages don't contain.`}
+                    </p>
+                  )}
+                  {(outcome.profiled > 0 || outcome.unprofiled > 0 || outcome.profileFailed > 0) && (
                     <p className="mt-1" style={{ color: C.muted }}>
                       {outcome.profiled > 0 && `Read ${outcome.profiled} paper${outcome.profiled === 1 ? "" : "s"} to build a research profile first. `}
+                      {outcome.profileFailed > 0 &&
+                        `Reading ${outcome.profileFailed} paper${outcome.profileFailed === 1 ? "" : "s"} failed this time; the next run tries again. `}
                       {outcome.unprofiled > 0 &&
                         `${outcome.unprofiled} paper${outcome.unprofiled === 1 ? " has" : "s have"} no profile and no text to read, so no rule could see ${outcome.unprofiled === 1 ? "it" : "them"}.`}
                     </p>
                   )}
                 </div>
               )}
-              {polling.job?.status === "failed" && (
+              {failure && (
                 <div className="mt-4 border-t pt-4" style={{ borderColor: C.line }}>
-                  <InlineError message="The run failed before it finished. Try again." />
-                  {polling.job.error && (
-                    <details className="mt-2 text-[12.5px]" style={{ color: C.muted }}>
+                  <InlineError message={failure.message} />
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {failure.action === "settings" ? (
+                      <Link href="/settings" className={`inline-flex min-h-10 items-center rounded-full px-4 text-sm font-semibold ${focusRing}`} style={primaryButton}>
+                        Check the key in Settings
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={run}
+                        disabled={noKey}
+                        className={`inline-flex min-h-10 items-center gap-1.5 rounded-full px-4 text-sm font-semibold transition-transform active:scale-[0.97] disabled:opacity-45 ${focusRing}`}
+                        style={primaryButton}
+                      >
+                        <ArrowCounterClockwise className="size-4" weight="bold" aria-hidden />
+                        Run again
+                      </button>
+                    )}
+                  </div>
+                  {failure.technical && (
+                    <details className="mt-3 text-[12.5px]" style={{ color: C.muted }}>
                       <summary className={`w-fit cursor-pointer rounded-sm hover:text-white ${focusRing}`}>Technical details</summary>
-                      <p className="mt-1 font-mono text-[12px] [overflow-wrap:anywhere]">{polling.job.error}</p>
+                      <p className="mt-1 font-mono text-[12px] [overflow-wrap:anywhere]">{failure.technical}</p>
                     </details>
                   )}
                 </div>
@@ -582,6 +635,65 @@ function listLabel(state: GapFilters["state"]): string {
 }
 
 /** Which papers the rules can see, and what a run will read first. */
+/** The run's four steps, the current one lit, with how far through it the run is. */
+function RunSteps({ progress }: { progress: RunProgress }) {
+  const current = RUN_STEPS.findIndex((s) => s.stage === progress.stage);
+  const fraction = progress.done != null && progress.total ? progress.done / progress.total : null;
+  return (
+    <div className="mt-4 border-t pt-4" style={{ borderColor: C.line }}>
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12.5px]" aria-label="Steps of the run">
+        {RUN_STEPS.map((step, i) => {
+          const state = current < 0 || i > current ? "todo" : i < current ? "done" : "now";
+          return (
+            <li key={step.stage} className="flex items-center gap-2" aria-current={state === "now" ? "step" : undefined}>
+              {i > 0 && <span className="h-px w-5" style={{ background: state === "todo" ? C.line : "rgba(93,240,168,.45)" }} aria-hidden />}
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold"
+                style={
+                  state === "now"
+                    ? { color: C.mint, background: "rgba(93,240,168,.1)", border: "1px solid rgba(93,240,168,.35)" }
+                    : { color: state === "done" ? C.muted : C.muted2, border: `1px solid ${C.line}` }
+                }
+              >
+                {state === "done" && <Check className="size-3" weight="bold" aria-hidden />}
+                {step.label}
+                <span className="sr-only">{state === "done" ? " (done)" : state === "now" ? " (in progress)" : ""}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <p role="status" className="mt-3 text-[13px]" style={{ color: C.muted }}>
+        {progress.label}…
+      </p>
+      {fraction != null && (
+        <div className="mt-2 flex items-center gap-3">
+          <div
+            role="progressbar"
+            aria-label={progress.label}
+            aria-valuemin={0}
+            aria-valuemax={progress.total ?? 0}
+            aria-valuenow={progress.done ?? 0}
+            className="h-1 flex-1 overflow-hidden rounded-full"
+            style={{ background: "rgba(150,175,230,.12)" }}
+          >
+            <div
+              className="h-full rounded-full transition-[width] duration-500 ease-out"
+              style={{ width: `${Math.round(fraction * 100)}%`, background: `linear-gradient(90deg, ${C.mint2}, ${C.mint})` }}
+            />
+          </div>
+          <span className="shrink-0 font-mono text-[12px] tabular-nums" style={{ color: C.muted }} aria-hidden>
+            {progress.done} of {progress.total}
+          </span>
+        </div>
+      )}
+      <p className="mt-2 text-[12.5px]" style={{ color: C.muted2 }}>
+        You can leave this page; the run keeps going, and each paper it reads is kept even if the run stops.
+      </p>
+    </div>
+  );
+}
+
 function readiness(grounding: Record<string, string | null>, noKey: boolean): string {
   const all = Object.values(grounding);
   const missing = all.filter((g) => g == null).length;

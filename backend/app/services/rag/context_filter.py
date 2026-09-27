@@ -55,7 +55,7 @@ async def filter_chunks(
     user = f"QUESTION: {query}\n\nCONTEXT:\n" + "\n\n".join(
         f"[{c.chunk_id}] {c.text}" for c in chunks
     )
-    parsed, pt, ct = await chat_json(session, _SYSTEM, user, _FilterResult, raise_provider_errors=raise_provider_errors)
+    parsed, pt, ct = await chat_json(session, _SYSTEM, user, _FilterResult, raise_provider_errors=raise_provider_errors, temperature=0.0)
     if parsed is None:
         return _keep_whole(chunks), pt, ct
     assert isinstance(parsed, _FilterResult)

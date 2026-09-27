@@ -146,7 +146,7 @@ export const GapDetail = forwardRef<
     gap: ResearchGap;
     workspaceId: string;
     kindOf: (id: string) => PaperKind;
-    generated: string;
+    generated: ReactNode;
     actions: ReactNode;
   }
 >(function GapDetail({ gap, workspaceId, kindOf, generated, actions }, headingRef) {

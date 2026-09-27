@@ -215,8 +215,12 @@ class OpenAiCompatClient:
 
     # ------------------------------------------------------------------ one completion
 
-    def _body(self, model: str, messages: list[ChatMessage], *, json_mode: bool, stream: bool) -> dict[str, object]:
+    def _body(
+        self, model: str, messages: list[ChatMessage], *, json_mode: bool, stream: bool, temperature: float | None = None
+    ) -> dict[str, object]:
         body: dict[str, object] = {"model": model, "messages": [m.model_dump() for m in messages]}
+        if temperature is not None:
+            body["temperature"] = temperature
         if self._no_thinking_supported:
             body.update(_NO_THINKING.get(self._provider, {}))
         if json_mode and self._json_mode_supported:
@@ -315,13 +319,19 @@ class OpenAiCompatClient:
         return result
 
     async def _attempt(
-        self, api_key: str, model: str, messages: list[ChatMessage], json_mode: bool, on_delta: DeltaHook | None
+        self,
+        api_key: str,
+        model: str,
+        messages: list[ChatMessage],
+        json_mode: bool,
+        on_delta: DeltaHook | None,
+        temperature: float | None = None,
     ) -> ChatResult:
         """One logical request: optional features a provider refuses are
         dropped and the request sent again, once each."""
         started = time.monotonic()
         while True:
-            body = self._body(model, messages, json_mode=json_mode, stream=on_delta is not None)
+            body = self._body(model, messages, json_mode=json_mode, stream=on_delta is not None, temperature=temperature)
             try:
                 if on_delta is None:
                     return await self._complete(api_key, body, started)
@@ -362,13 +372,14 @@ class OpenAiCompatClient:
         messages: list[ChatMessage],
         json_mode: bool = False,
         on_delta: DeltaHook | None = None,
+        temperature: float | None = None,
     ) -> ChatResult:
         model = self._replaced.get((self._provider, model), model)
         attempt = 0
         replaced = False
         while True:
             try:
-                return await self._attempt(api_key, model, messages, json_mode, on_delta)
+                return await self._attempt(api_key, model, messages, json_mode, on_delta, temperature)
             except LlmProviderError as e:
                 if e.kind is LlmErrorKind.BAD_REQUEST and not replaced and "model" in str(e).lower():
                     replaced = True

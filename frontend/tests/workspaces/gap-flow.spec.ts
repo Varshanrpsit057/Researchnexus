@@ -96,7 +96,9 @@ test.describe("Research gaps", () => {
     await expect(page.getByRole("button", { name: "Find gaps" })).toBeDisabled();
     await expect(page.getByText(/1 of 4 papers has a research profile; the other 3 need a model to read their text first\./)).toBeVisible();
 
-    // 3. A run: the first fails, the second is the real pipeline's.
+    // 3. A run: it reports each step; the first fails unexpectedly, the second
+    // because the provider is down (the job records that as the backend does:
+    // app/jobs/runner.py::run_gaps_job), the third is the real pipeline's.
     await claimAKey(page);
     const jobs: Record<string, { status: string; progress: Record<string, string>; error: string | null }> = {};
     let started = 0;
@@ -104,7 +106,7 @@ test.describe("Research gaps", () => {
       if (route.request().method() !== "POST") return route.fallback();
       started += 1;
       const jobId = `job_pw_gaps_${stamp}_${started}`;
-      jobs[jobId] = { status: "running", progress: { gaps: "running" }, error: null };
+      jobs[jobId] = { status: "running", progress: { stage: "starting", gaps: "running" }, error: null };
       return route.fulfill({ status: 202, json: { job: { job_id: jobId, kind: "gaps", status: "queued", poll_url: `/api/v1/jobs/${jobId}` } } });
     });
     await page.route(`**/api/v1/jobs/job_pw_gaps_${stamp}_*`, (route) => {
@@ -113,20 +115,43 @@ test.describe("Research gaps", () => {
     });
     await page.reload();
     await page.getByRole("button", { name: "Find gaps" }).click();
-    await expect(page.getByText(/Profiling papers where needed, applying the gap rules/)).toBeVisible();
-    jobs[`job_pw_gaps_${stamp}_1`] = { status: "failed", progress: { gaps: "running" }, error: "synthesis_internal_ref_77" };
-    await expect(page.getByText("The run failed before it finished. Try again.")).toBeVisible({ timeout: 10_000 });
+    const first = `job_pw_gaps_${stamp}_1`;
+    const steps = page.getByRole("list", { name: "Steps of the run" });
+    jobs[first].progress = { stage: "profiling", done: "1", total: "3" };
+    await expect(page.getByRole("status").filter({ hasText: "Reading the papers that have no research profile yet…" })).toBeVisible({ timeout: 10_000 });
+    await expect(steps.locator('[aria-current="step"]')).toHaveText(/Read papers/);
+    await expect(page.getByRole("progressbar", { name: "Reading the papers that have no research profile yet" })).toHaveAttribute("aria-valuenow", "1");
+    await expect(page.getByText("1 of 3", { exact: true })).toBeVisible();
+    jobs[first].progress = { stage: "checking", done: "4", total: "7" };
+    await expect(steps.locator('[aria-current="step"]')).toHaveText(/Check each gap/, { timeout: 10_000 });
+    await expect(steps.getByText("Read papers")).toContainText("(done)");
+    await expect(page.getByText("4 of 7", { exact: true })).toBeVisible();
+    // leaving the page and coming back picks the run up again
+    await page.reload();
+    await expect(steps.locator('[aria-current="step"]')).toHaveText(/Check each gap/, { timeout: 10_000 });
+    await expect(page.getByText("4 of 7", { exact: true })).toBeVisible();
+
+    jobs[first] = { status: "failed", progress: { stage: "failed", error_code: "internal" }, error: "synthesis_internal_ref_77" };
+    await expect(page.getByText("The run failed before it finished. Papers read so far are kept; run it again to continue.")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("synthesis_internal_ref_77")).toBeHidden();
     await page.getByText("Technical details").click();
     await expect(page.getByText("synthesis_internal_ref_77")).toBeVisible();
 
-    await page.getByRole("button", { name: "Find gaps" }).click();
-    await expect(page.getByText(/Profiling papers where needed/)).toBeVisible();
+    await page.getByRole("button", { name: "Run again" }).click();
+    jobs[`job_pw_gaps_${stamp}_2`] = {
+      status: "failed",
+      progress: { stage: "failed", error_code: "provider_error", error_kind: "unavailable" },
+      error: "DeepSeek is unavailable right now. Try again in a moment.",
+    };
+    await expect(page.getByText("DeepSeek is unavailable right now. Try again in a moment.")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Technical details")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Run again" }).click();
     const real = JSON.parse(py([path.join(HELPERS, "seed-gaps.py"), workspaceId])) as {
       progress: Record<string, string>;
       gaps: { gap_id: string; statement: string; supporting_papers: string[] }[];
     };
-    jobs[`job_pw_gaps_${stamp}_2`] = { status: "succeeded", progress: real.progress, error: null };
+    jobs[`job_pw_gaps_${stamp}_3`] = { status: "succeeded", progress: real.progress, error: null };
     const kept = Number(real.progress.count);
     expect(kept).toBeGreaterThan(1);
     await expect(page.getByText(`Kept ${kept} of ${real.progress.candidates} candidate gaps.`)).toBeVisible({ timeout: 10_000 });

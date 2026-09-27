@@ -704,6 +704,8 @@ export interface ComparisonResponse {
   coverage: number;
   decontext_eval: number | null;
   warnings?: string[];
+  /** When it was made (UTC); absent from comparisons served before remediation Phase 4. */
+  created_at?: string;
 }
 
 // --- research gaps ------------------------------------------------------

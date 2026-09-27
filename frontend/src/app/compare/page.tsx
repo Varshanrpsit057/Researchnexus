@@ -4,7 +4,8 @@ import Link from "next/link";
 import useSWR from "swr";
 import { ArrowRight } from "@phosphor-icons/react/dist/ssr";
 import { workspaces } from "@/lib/api/endpoints";
-import { parseUtc, relativeTime } from "@/lib/chat";
+import { newestFirst } from "@/lib/time";
+import { Timestamp } from "@/components/ui/Timestamp";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { C, InlineError, focusRing, panel, primaryButton, quietButton } from "../workspace/[id]/ui";
@@ -15,7 +16,7 @@ export default function CompareIndexPage() {
   const { ready } = useRequireAuth();
   const { data, error, mutate } = useSWR(ready ? "workspaces" : null, () => workspaces.list());
   // most recently worked on first; titles repeat (every workspace is named after its seed)
-  const list = [...(data?.workspaces ?? [])].sort((a, b) => parseUtc(b.updated_at).getTime() - parseUtc(a.updated_at).getTime());
+  const list = newestFirst(data?.workspaces ?? [], (ws) => ws.updated_at);
 
   if (!ready) return null;
   return (
@@ -69,7 +70,8 @@ export default function CompareIndexPage() {
                       <span className="block truncate font-semibold">{ws.title}</span>
                       <span className="mt-0.5 block text-[13px]" style={{ color: C.muted }}>
                         <span className="tabular-nums">{count}</span> paper{count === 1 ? "" : "s"}
-                        {` · updated ${relativeTime(ws.updated_at)}`}
+                        {" · updated "}
+                        <Timestamp at={ws.updated_at} />
                         {ready2 ? (
                           compared === true ? " · compared before" : compared === false ? " · not compared yet" : ""
                         ) : (
