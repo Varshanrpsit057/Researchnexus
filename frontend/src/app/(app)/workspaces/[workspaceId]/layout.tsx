@@ -73,7 +73,6 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  const budgetFraction = workspace.token_budget_usd > 0 ? Math.min(1, workspace.cost_used_usd / workspace.token_budget_usd) : 0;
   const currentSlug = pathname === basePath ? "" : (pathname.slice(basePath.length + 1).split("/")[0] ?? "");
   // The overview itself is the cinematic /workspace/[id] page.
   const overviewPath = `/workspace/${workspaceId}`;
@@ -83,29 +82,14 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="space-y-6">
-      {/* The drawer's own face: title as its outer label, budget as a
-          ruled gauge rather than a soft progress pill. */}
+      {/* The drawer's own face: title as its outer label. Model usage is
+          on the workspace overview and in Settings, in real tokens. */}
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border-strong pb-4">
         <div className="min-w-0">
           <h1 className="truncate text-xl font-semibold tracking-tightest text-ink">{workspace.title}</h1>
           <p className="mt-1 font-mono text-xs text-ink-subtle">
             {workspace.workspace_id} · seed {workspace.seed_paper_id}
           </p>
-        </div>
-        <div className="shrink-0 text-right">
-          <p className="font-mono text-xs text-ink-muted">
-            ${workspace.cost_used_usd.toFixed(3)} / ${workspace.token_budget_usd.toFixed(2)} spent
-          </p>
-          <div
-            className="relative mt-1.5 h-2 w-32 overflow-hidden bg-[repeating-linear-gradient(90deg,var(--border-strong)_0,var(--border-strong)_1px,transparent_1px,transparent_8px)]"
-            role="progressbar"
-            aria-valuenow={Math.round(budgetFraction * 100)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label="Budget spent"
-          >
-            <div className="absolute inset-y-0 left-0 bg-accent" style={{ width: `${budgetFraction * 100}%` }} />
-          </div>
         </div>
       </header>
 

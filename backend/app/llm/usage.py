@@ -11,6 +11,10 @@ What a call was for comes from the `usage_scope` its caller is running in
 follows the work into async tasks without being passed through every
 stage. A call outside any scope is recorded as "other".
 
+`usage_tally` counts what one piece of work used while it runs (a stage
+run's real tokens, remediation Phase 5), from the same calls the ledger
+records -- never from a stage's own estimate.
+
 A rejected key (the provider answered 401/403 on a real call) is marked
 failed as it happens, so the next call picks another working key, or says
 plainly that none works, instead of failing the same way again.
@@ -73,19 +77,56 @@ def usage_scope(feature: str, *, workspace_id: str | None = None, job_id: str | 
 
 
 @contextmanager
-def usage_scope_default(feature: str, *, workspace_id: str | None = None) -> Iterator[UsageScope]:
+def usage_scope_default(
+    feature: str, *, workspace_id: str | None = None, job_id: str | None = None
+) -> Iterator[UsageScope]:
     """`usage_scope`, unless the caller already set one (a gaps run that
     profiles its papers is still the gaps run's usage)."""
     outer = _scope.get()
     if outer is not None:
         yield outer
         return
-    with usage_scope(feature, workspace_id=workspace_id) as scope:
+    with usage_scope(feature, workspace_id=workspace_id, job_id=job_id) as scope:
         yield scope
 
 
 def current_scope() -> UsageScope:
     return _scope.get() or UsageScope("other")
+
+
+@dataclass
+class UsageTally:
+    """What the calls made while it was open used (see `usage_tally`)."""
+
+    calls: int = 0
+    failed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    def add(self, call: LlmCall) -> None:
+        self.calls += 1
+        self.failed_calls += 0 if call.ok else 1
+        self.prompt_tokens += call.prompt_tokens
+        self.completion_tokens += call.completion_tokens
+        self.cached_prompt_tokens += call.cached_prompt_tokens
+        self.reasoning_tokens += call.reasoning_tokens
+
+
+_tallies: ContextVar[tuple[UsageTally, ...]] = ContextVar("llm_usage_tallies", default=())
+
+
+@contextmanager
+def usage_tally() -> Iterator[UsageTally]:
+    """Counts every call made inside this block, including those in tasks it
+    starts; tallies nest (a stage inside a job counts toward both)."""
+    tally = UsageTally()
+    token = _tallies.set((*_tallies.get(), tally))
+    try:
+        yield tally
+    finally:
+        _tallies.reset(token)
 
 
 Recorder = Callable[[LlmCall], None]
@@ -120,6 +161,11 @@ class MeteredClient:
         self._provider = provider
         self._record = recorder
 
+    def _note(self, call: LlmCall) -> None:
+        for tally in _tallies.get():
+            tally.add(call)
+        self._record(call)
+
     def _call(self, scope: UsageScope, model: str, started: float, **fields: object) -> LlmCall:
         return LlmCall(
             id=f"llm_{uuid.uuid4().hex[:20]}",
@@ -151,12 +197,12 @@ class MeteredClient:
                 temperature=temperature,
             )
         except LlmProviderError as e:
-            self._record(self._call(scope, model, started, ok=False, error_kind=e.kind.value))
+            self._note(self._call(scope, model, started, ok=False, error_kind=e.kind.value))
             raise
         except Exception:
-            self._record(self._call(scope, model, started, ok=False, error_kind="error"))
+            self._note(self._call(scope, model, started, ok=False, error_kind="error"))
             raise
-        self._record(
+        self._note(
             self._call(
                 scope,
                 result.model or model,

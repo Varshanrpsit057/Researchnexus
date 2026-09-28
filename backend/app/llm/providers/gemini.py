@@ -119,13 +119,16 @@ class GeminiClient:
         if not text.strip():
             raise _error("gemini sent an empty reply", LlmErrorKind.BAD_RESPONSE)
         usage = data.get("usageMetadata") or {}
+        # Gemini counts a thinking model's thoughts apart from the reply
+        # (candidatesTokenCount leaves them out); ChatResult's completion is both
+        thoughts = int(usage.get("thoughtsTokenCount") or 0)
         return ChatResult(
             content=text,
             latency_ms=int((time.monotonic() - started) * 1000),
             prompt_tokens=int(usage.get("promptTokenCount") or 0),
-            completion_tokens=int(usage.get("candidatesTokenCount") or 0),
+            completion_tokens=int(usage.get("candidatesTokenCount") or 0) + thoughts,
             cached_prompt_tokens=int(usage.get("cachedContentTokenCount") or 0),
-            reasoning_tokens=int(usage.get("thoughtsTokenCount") or 0),
+            reasoning_tokens=thoughts,
             model=data.get("modelVersion") if isinstance(data.get("modelVersion"), str) else None,
             finish_reason=candidate.get("finishReason"),
         )

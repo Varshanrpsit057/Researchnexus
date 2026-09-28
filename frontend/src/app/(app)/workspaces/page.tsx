@@ -60,9 +60,6 @@ export default function WorkspacesPage() {
                 </div>
                 <div className="flex shrink-0 items-center gap-4 text-right font-mono text-xs text-ink-subtle">
                   <span>{ws.counts?.papers ?? ws.papers.length} papers</span>
-                  <span>
-                    ${ws.cost_used_usd.toFixed(2)} / ${ws.token_budget_usd.toFixed(2)}
-                  </span>
                 </div>
               </Link>
             </li>

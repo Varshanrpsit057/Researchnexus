@@ -60,13 +60,10 @@ class CreateWorkspaceBody(BaseModel):
     title: str
     seed_paper_id: str
     import_run_id: str | None = None
-    # the workspace's estimated-spend cap: a zero or negative one would block every model stage
-    token_budget_usd: float = Field(default=5.0, gt=0)
 
 
 class UpdateWorkspaceBody(BaseModel):
     title: str | None = None
-    token_budget_usd: float | None = Field(default=None, gt=0)
 
 
 class AddPapersBody(BaseModel):
@@ -90,7 +87,6 @@ class EdgeStateBody(BaseModel):
 
 def _workspace_json(ws: object, *, counts: dict | None = None) -> dict:
     payload = ws.model_dump(mode="json")  # type: ignore[attr-defined]
-    payload["cost_used"] = payload.get("cost_used_usd")
     if counts is not None:
         payload["counts"] = counts
     return payload
@@ -111,7 +107,6 @@ def create_workspace(
                 title=body.title,
                 seed_paper_id=body.seed_paper_id,
                 import_run_id=body.import_run_id,
-                token_budget_usd=body.token_budget_usd,
             ),
             settings=settings,
         )
@@ -147,7 +142,6 @@ def update_workspace(
             owner=current_user,
             workspace_id=workspace_id,
             title=body.title,
-            token_budget_usd=body.token_budget_usd,
         )
     except pipeline.WorkspaceNotFound as e:
         raise _err(404, "not_found", "workspace not found") from e

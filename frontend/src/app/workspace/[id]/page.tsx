@@ -19,11 +19,12 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react/dist/ssr";
-import { papers as papersApi, workspaces } from "@/lib/api/endpoints";
+import { papers as papersApi, usage as usageApi, workspaces } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import { latestComparisonOrNull } from "@/lib/compare";
+import { compactTokens, featureLabel, formatTokens, plural } from "@/lib/usage";
 import { Reveal } from "@/components/effects/Reveal";
 import { Timestamp } from "@/components/ui/Timestamp";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
@@ -83,11 +84,6 @@ function toLoadable<T>(q: { data?: T; error?: unknown }): Loadable<T> {
  * sections rebuilt in the cinematic app live under /workspace/{id}. */
 function sectionHref(base: string, slug: string): string {
   return ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(slug) ? `${base.replace("/workspaces/", "/workspace/")}/${slug}` : `${base}/${slug}`;
-}
-
-function formatUsd(value: number): string {
-  if (value > 0 && value < 0.01) return "<$0.01";
-  return `$${value.toFixed(2)}`;
 }
 
 function Skeleton({ className = "" }: { className?: string }) {
@@ -215,7 +211,6 @@ export default function WorkspacePage() {
 
 function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: string }) {
   const { data: seed } = useSWR(["paper", workspace.seed_paper_id], () => papersApi.get(workspace.seed_paper_id));
-  const budgetUsed = workspace.token_budget_usd > 0 ? Math.min(1, workspace.cost_used_usd / workspace.token_budget_usd) : 0;
 
   return (
     <Reveal>
@@ -239,22 +234,7 @@ function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: stri
         </div>
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end lg:shrink-0 lg:flex-col lg:items-end">
-          <div className="min-w-[180px]">
-            <p className="text-sm tabular-nums" style={{ color: C.muted }}>
-              <span style={{ color: C.ink }}>{formatUsd(workspace.cost_used_usd)}</span> of {formatUsd(workspace.token_budget_usd)} budget
-            </p>
-            <div
-              className="mt-2 h-1 w-full overflow-hidden rounded-full"
-              style={{ background: "rgba(255,255,255,.08)" }}
-              role="progressbar"
-              aria-label="Budget used"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(budgetUsed * 100)}
-            >
-              <div className="h-full rounded-full" style={{ width: `${budgetUsed * 100}%`, background: budgetUsed > 0.85 ? C.warning : C.mint }} />
-            </div>
-          </div>
+          <WorkspaceUsage workspaceId={workspace.workspace_id} />
           <div className="flex flex-wrap gap-2 lg:justify-end">
             {workspace.source_run_id && (
               <Link
@@ -277,6 +257,44 @@ function WorkspaceHeader({ workspace, base }: { workspace: Workspace; base: stri
         </div>
       </header>
     </Reveal>
+  );
+}
+
+/** What the models used in this workspace lately: the provider's own token
+ * counts from the usage ledger, never a cost (remediation Phase 5). */
+function WorkspaceUsage({ workspaceId }: { workspaceId: string }) {
+  const { data, error } = useSWR(["usage", "30d", workspaceId], () => usageApi.get("30d", workspaceId));
+  const top = data?.by_feature.filter((f) => f.total_tokens > 0).slice(0, 2) ?? [];
+
+  return (
+    <div className="min-w-[180px] text-sm lg:text-right" data-testid="workspace-usage">
+      {error ? (
+        <p style={{ color: C.muted }}>Model usage is unavailable right now.</p>
+      ) : !data ? (
+        <p role="status" className="h-10 w-48 rounded-lg motion-safe:animate-pulse" style={{ background: "rgba(255,255,255,.05)" }}>
+          <span className="sr-only">Loading model usage…</span>
+        </p>
+      ) : data.totals.calls === 0 ? (
+        <p style={{ color: C.muted }}>No model calls in the last 30 days</p>
+      ) : (
+        <>
+          <p className="tabular-nums" style={{ color: C.muted }} title={`${formatTokens(data.totals.total_tokens)} tokens across ${plural(data.totals.calls, "call")}`}>
+            <span className="font-semibold" style={{ color: C.ink }}>
+              {compactTokens(data.totals.total_tokens)} tokens
+            </span>{" "}
+            in the last 30 days
+          </p>
+          {top.length > 0 && (
+            <p className="mt-0.5 text-[13px] tabular-nums" style={{ color: C.muted }}>
+              {top.map((f) => `${featureLabel(f.feature)} ${compactTokens(f.total_tokens)}`).join(" · ")}
+            </p>
+          )}
+        </>
+      )}
+      <Link href="/settings#usage" className={`mt-1 inline-block rounded-sm text-[13px] font-medium hover:text-white ${focusRing}`} style={{ color: C.mint }}>
+        Usage details
+      </Link>
+    </div>
   );
 }
 
@@ -741,7 +759,7 @@ function RecentActivity({
   error,
 }: {
   base: string;
-  activity: { id: string; stage: StageName; tool: string; ok: boolean; cost_usd: number; ts: string; error: string | null }[] | undefined;
+  activity: { id: string; stage: StageName; tool: string; ok: boolean; tokens_prompt: number; tokens_completion: number; ts: string; error: string | null }[] | undefined;
   error: boolean;
 }) {
   return (
@@ -784,7 +802,7 @@ function RecentActivity({
                 </p>
                 <p className="text-[13px] tabular-nums" style={{ color: C.muted }}>
                   <Timestamp at={run.ts} />
-                  {run.cost_usd > 0 && ` · ${formatUsd(run.cost_usd)}`}
+                  {run.tokens_prompt + run.tokens_completion > 0 && ` · ${plural(run.tokens_prompt + run.tokens_completion, "token")}`}
                   {!run.ok && run.error && ` · ${run.error}`}
                 </p>
               </div>

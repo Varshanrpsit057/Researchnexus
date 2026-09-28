@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.domain.orchestrator import BudgetDecision, StageName, StageRun
+from app.domain.orchestrator import StageName, StageRun
 
 
 def _run(**kw: object) -> StageRun:
@@ -28,10 +28,6 @@ def test_all_eleven_stage_names_are_defined() -> None:
     }
 
 
-def test_all_three_budget_decisions_are_defined() -> None:
-    assert {d.value for d in BudgetDecision} == {"allow", "degrade", "block"}
-
-
 def test_stage_run_requires_a_stage_from_the_enum() -> None:
     with pytest.raises(ValidationError):
         StageRun(
@@ -46,7 +42,6 @@ def test_stage_run_defaults_are_workspace_and_job_agnostic() -> None:
     assert run.job_id is None
     assert run.tokens_prompt == 0
     assert run.tokens_completion == 0
-    assert run.cost_usd == 0.0
     assert run.error is None
 
 
@@ -58,7 +53,7 @@ def test_stage_run_carries_no_prompt_or_response_bodies() -> None:
     assert fields == {
         "id", "owner_id", "workspace_id", "job_id", "stage", "tool",
         "input_hash", "output_hash", "tokens_prompt", "tokens_completion",
-        "cost_usd", "latency_ms", "ok", "error", "ts",
+        "latency_ms", "ok", "error", "ts",
     }
 
 
@@ -69,6 +64,6 @@ def test_a_failed_stage_run_carries_an_error_string() -> None:
 
 
 def test_workspace_and_job_scoped_run_round_trips_through_json() -> None:
-    run = _run(workspace_id="ws_1", job_id="job_1", tokens_prompt=10, tokens_completion=5, cost_usd=0.001)
+    run = _run(workspace_id="ws_1", job_id="job_1", tokens_prompt=10, tokens_completion=5)
     restored = StageRun.model_validate(run.model_dump(mode="json"))
     assert restored == run

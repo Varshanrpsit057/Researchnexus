@@ -263,6 +263,10 @@ class WorkspaceORM(Base):
         String(64), ForeignKey("search_runs.id", ondelete="SET NULL"), nullable=True
     )
     combined_index_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Retired in remediation Phase 5, kept only so the table matches its
+    # migrations: nothing reads or writes these. The USD cap and running
+    # total rested on a flat-rate estimate (and were never written);
+    # usage now comes from `llm_calls`, in the provider's own token counts.
     token_budget_usd: Mapped[float] = mapped_column(Float, default=5.0)
     tokens_prompt: Mapped[int] = mapped_column(Integer, default=0)
     tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
@@ -474,7 +478,9 @@ class StageRunORM(Base):
     tool-call log (Roadmap Phase 14 `ToolLog`). Never blocks the path it
     observes: a failed write here is a logging bug, not a pipeline failure.
     No prompt/response bodies, no secrets -- only hashes, counts, and a
-    short error string."""
+    short error string. `tokens_*` are the provider-reported tokens of the
+    model calls the stage made (remediation Phase 5); `cost_usd` is retired
+    and always 0 (see WorkspaceORM)."""
 
     __tablename__ = "stage_runs"
     __table_args__ = (

@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timezone
 
 from app.domain.candidate import CandidateSource, NormalizedCandidate, RawExternalRecord
+from app.services.normalize.text import clean_abstract
 
 _TITLE_HASH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 _ARXIV_VERSION_RE = re.compile(r"v\d+$")
@@ -114,7 +115,7 @@ def to_normalized(rec: RawExternalRecord) -> NormalizedCandidate:
         external_ids=external_ids,
         authors=normalize_authors(rec.authors),
         year=normalize_year(rec.year),
-        abstract=(rec.abstract or None),
+        abstract=(clean_abstract(rec.abstract or "") or None),
         venue=(rec.venue or None),
         url=(rec.url or None),
         is_preprint=rec.is_preprint,

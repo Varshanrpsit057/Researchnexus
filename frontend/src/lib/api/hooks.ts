@@ -1,8 +1,23 @@
 "use client";
 
 import useSWR from "swr";
-import { jobs } from "./endpoints";
-import type { Job } from "./types";
+import { ApiError } from "./client";
+import { jobs, papers } from "./endpoints";
+import type { Job, ResearchProfile } from "./types";
+
+/** A paper's stored research profile, or null when it has none yet (a 404
+ * is "not analysed", not an error). Every page showing a profile reads it
+ * through this one key, so analysing on one updates them all. */
+export function useProfile(paperId: string | null) {
+  return useSWR<ResearchProfile | null>(paperId ? ["profile", paperId] : null, async () => {
+    try {
+      return await papers.getProfile(paperId as string);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  });
+}
 
 const TERMINAL_STATUSES = new Set<Job["status"]>(["succeeded", "failed", "partial"]);
 

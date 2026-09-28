@@ -27,6 +27,7 @@ from app.domain.jobs import Job, JobKind
 from app.domain.rag import FilteredChunk
 from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
+from app.llm.usage import usage_scope
 from app.retrieval.workspace_index import FaissWorkspaceIndex
 from app.services.citations.ledger import build_ledger
 from app.services.citations.metadata_resolver import to_citation
@@ -85,7 +86,8 @@ async def summary(
                 FilteredChunk(chunk_id=c.chunk_id, paper_id=c.paper_id, text=c.text, section=c.section, page=c.page, kept=True)
             )
 
-    result = await summarize(session, chunks, length=body.length, faithfulness_min=settings.rag_faithfulness_min)
+    with usage_scope("summary", workspace_id=workspace_id):
+        result = await summarize(session, chunks, length=body.length, faithfulness_min=settings.rag_faithfulness_min)
     summary_id = new_id("sum")
     claims = result.to_claims(workspace_id=workspace_id, artefact_id=summary_id)
     chunk_to_paper = {c.chunk_id: c.paper_id for c in chunks}
@@ -122,7 +124,8 @@ async def keypoints(
 
     papers_out: list[dict] = []
     for pid in targets:
-        result = await extract_keypoints(session, pid, repo.get_chunks_for_paper(db, pid))
+        with usage_scope("keypoints", workspace_id=workspace_id):
+            result = await extract_keypoints(session, pid, repo.get_chunks_for_paper(db, pid))
         papers_out.append(
             {
                 "paper_id": pid,
@@ -216,16 +219,17 @@ async def compare(
     ensure_abstract_chunks(db, [p.paper_id for p in workspace.papers])
     index.rebuild([p.paper_id for p in workspace.papers])
 
-    result = await build_comparison(
-        db,
-        workspace=workspace,
-        comparison_id=new_id("cmp"),
-        paper_ids=targets,
-        column_schema=column_schema,
-        session=session,
-        settings=settings,
-        index=index,
-    )
+    with usage_scope("comparison", workspace_id=workspace_id):
+        result = await build_comparison(
+            db,
+            workspace=workspace,
+            comparison_id=new_id("cmp"),
+            paper_ids=targets,
+            column_schema=column_schema,
+            session=session,
+            settings=settings,
+            index=index,
+        )
     repo.save_claims(db, result.claims)
     stored = repo.save_comparison(db, result.comparison, owner_id=current_user.id)
     repo.set_workspace_comparison_schema(db, workspace_id, current_user.id, column_schema)

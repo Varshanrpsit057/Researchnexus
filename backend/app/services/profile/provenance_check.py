@@ -17,7 +17,13 @@ import re
 from difflib import SequenceMatcher
 
 from app.domain.chunk import PaperChunk
-from app.domain.profile import ProfileField, ProfileList, ProvenanceStatus, SourceSpan
+from app.domain.profile import (
+    ProfileField,
+    ProfileList,
+    ProvenanceStatus,
+    ReportedValue,
+    SourceSpan,
+)
 from app.llm.prompts.profile_v1 import ExtractedField, ExtractedList
 
 _FUZZY_MATCH_THRESHOLD = 0.9
@@ -43,6 +49,13 @@ def _partial_ratio(needle: str, haystack: str) -> float:
 
 
 def resolve_field(paper_id: str, extracted: ExtractedField, chunks: list[PaperChunk]) -> ProfileField:
+    field = _resolve(paper_id, extracted, chunks)
+    result = (extracted.result or "").strip()
+    # recorded unchecked: refine.py counts it only when it is written in the verified quote
+    return field.model_copy(update={"reported_value": ReportedValue(text=result)}) if result else field
+
+
+def _resolve(paper_id: str, extracted: ExtractedField, chunks: list[PaperChunk]) -> ProfileField:
     value = extracted.value.strip()
     quote = (extracted.quote or "").strip()
     if not quote:

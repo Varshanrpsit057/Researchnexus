@@ -40,6 +40,7 @@ from app.domain.user import LlmProvider  # noqa: E402
 from app.llm.providers.openai_compat import OpenAiCompatClient  # noqa: E402
 from app.llm.session import LlmSession  # noqa: E402
 from app.services.directions.pipeline import build_directions  # noqa: E402
+from app.services.normalize.text import in_sentence  # noqa: E402
 
 DB = os.environ.get("RN_DB", r"H:/Researchnexus/backend/data/researchnexus.db")
 
@@ -75,7 +76,8 @@ def reader(request: httpx.Request) -> httpx.Response:
         }
         second = (
             {
-                "proposal": f"Pair {methods[0]} with claim-level verification on the problem the papers share.",
+                # as a model writes it: a sentence-case name loses its capital mid-sentence
+                "proposal": f"Pair {in_sentence(methods[0])} with claim-level verification on the problem the papers share.",
                 "motivation": why,
                 "suggested_method": "claim-level verification",
                 "possible_dataset": None,

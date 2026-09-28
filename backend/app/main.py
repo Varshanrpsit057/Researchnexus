@@ -16,7 +16,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db.session import configure
-from app.routers import auth, chat, health, jobs, papers, settings_keys, synthesis, workspaces
+from app.routers import (
+    auth,
+    chat,
+    health,
+    jobs,
+    papers,
+    settings_keys,
+    synthesis,
+    usage,
+    workspaces,
+)
 from app.telemetry.logging import configure_logging
 
 
@@ -42,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspaces.router)
     app.include_router(chat.router)
     app.include_router(synthesis.router)
+    app.include_router(usage.router)
     return app
 
 

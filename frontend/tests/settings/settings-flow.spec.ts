@@ -1,8 +1,10 @@
 // spec: Phase 14 (Settings) at /settings.
 //
 // The account, the keys list, choosing a default provider, removing a key,
-// the provider in use, workspace caps and the service's health are all the
-// real backend. Keys are stored through the real repository (seed-keys.py,
+// the provider in use, model usage, renaming a workspace and the service's
+// health are all the real backend. Usage comes from the real ledger
+// (seed-usage.py records calls through the real metering path with a
+// scripted model). Keys are stored through the real repository (seed-keys.py,
 // encrypted with the server's own secret). The three calls that make the
 // backend talk to a provider -- testing, saving and re-checking a key -- are
 // answered at the network layer: tests never send a key to a real provider.
@@ -16,6 +18,7 @@ const PYTHON = String.raw`H:\Researchnexus\backend\.venv\Scripts\python.exe`;
 const SEED = path.join(__dirname, "seed-keys.py");
 const EMAIL = "playwright@researchnexus.dev";
 const keys = (...args: string[]) => JSON.parse(execFileSync(PYTHON, [SEED, ...args]).toString());
+const usage = (...args: string[]) => JSON.parse(execFileSync(PYTHON, [path.join(__dirname, "seed-usage.py"), ...args]).toString());
 
 function collectConsoleErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -27,10 +30,17 @@ function collectConsoleErrors(page: Page): string[] {
 const provider = (page: Page, id: string) => page.getByTestId(`provider-${id}`);
 
 test.describe("Settings", () => {
-  test.beforeEach(() => keys("clear", EMAIL));
-  test.afterEach(() => keys("clear", EMAIL)); // other specs rely on "no working key" being real
+  test.beforeEach(() => {
+    keys("clear", EMAIL);
+    usage("clear", EMAIL);
+  });
+  test.afterEach(() => {
+    keys("clear", EMAIL); // other specs rely on "no working key" being real
+    usage("clear", EMAIL);
+  });
 
-  test("account, keys and the provider in use, workspace caps, device preferences and service health", async ({ page }) => {
+  test("account, keys and the provider in use, model usage, workspaces, device preferences and service health", async ({ page }) => {
+    test.setTimeout(90_000); // one walk through every section, two ledger seeds and a workspace visit
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     keys("set", EMAIL, "groq=working:wk01", "openai=failed:fl02");
     const consoleErrors = collectConsoleErrors(page);
@@ -108,21 +118,57 @@ test.describe("Settings", () => {
     await expect(input).toHaveAttribute("type", "password");
     await expect(provider(page, "gemini")).toContainText("•••• gm03");
 
-    // 4. a workspace's cap: only a positive amount is accepted, and it is saved (real PATCH)
+    // 4. model usage: the providers' own token counts from the real ledger, over a stated range -- and no cost
+    await expect(page.getByTestId("usage-summary")).toHaveText("No model calls in the last 30 days.");
+    const seeded = usage("seed", EMAIL) as { workspace_id: string; title: string };
+    await page.reload();
+    const panel = page.getByTestId("usage");
+    const summary = page.getByTestId("usage-summary");
+    const row = (name: string | RegExp) => panel.getByRole("row", { name });
+    await expect(summary).toContainText(/^11,300 tokens across 5 calls · Last 30 days, since /);
+    await expect(row(/^Research gaps/)).toContainText("5,800");
+    await expect(row(/^Research gaps/)).toContainText("200 reasoning");
+    await expect(row(/^Chat/)).toContainText("3,000");
+    await expect(row(/^Chat/)).toContainText("800 cached");
+    await expect(row(/^Chat/)).toContainText("1 failed");
+    await expect(row(/^Paper profiles/)).toContainText("2,500");
+    await expect(row(/^All/)).toContainText("11,300");
+    await expect(panel).toContainText("1 call failed and reported no tokens; it is counted as calls only.");
+    // the range reaches the backend: the call from 45 days ago joins for all time
+    await panel.getByRole("group", { name: "Range" }).getByRole("button", { name: "All time" }).click();
+    await expect(summary).toContainText(/^22,300 tokens across 6 calls · All time, since /);
+    await expect(row(/^Chat/)).toContainText("14,000");
+    await panel.getByRole("group", { name: "Group" }).getByRole("button", { name: "By model" }).click();
+    await expect(row(/^DeepSeek deepseek-flash/)).toContainText("19,800");
+    await expect(row(/^Gemini gemini-2\.5-flash/)).toContainText("2,500");
+    await panel.getByRole("group", { name: "Group" }).getByRole("button", { name: "By workspace" }).click();
+    await expect(row(/^Outside a workspace/)).toContainText("2,500");
+    await expect(panel.getByRole("link", { name: seeded.title })).toHaveAttribute("href", `/workspace/${seeded.workspace_id}`);
+    // no price is known, so none is shown: the bill is the provider's
+    await expect(page.getByTestId("usage-cost-note")).toContainText("No cost is shown.");
+    await expect(page.getByTestId("usage-cost-note").getByRole("link", { name: /DeepSeek/ })).toHaveAttribute("href", "https://platform.deepseek.com");
+    await expect(page.getByTestId("usage-cost-note").getByRole("link", { name: /Gemini/ })).toHaveAttribute("href", "https://aistudio.google.com");
+    expect(await page.locator("main").innerText()).not.toContain("$");
+
+    // the workspace's own overview shows its share, from the same ledger
+    await page.goto(`/workspace/${seeded.workspace_id}`);
+    await expect(page.getByTestId("workspace-usage")).toContainText("8,800 tokens in the last 30 days");
+    await expect(page.getByTestId("workspace-usage")).toContainText("Research gaps 5,800 · Chat 3,000");
+    await page.goto("/settings");
+
+    // 5. a workspace's name is saved (real PATCH); there is no spending cap any more
     const firstWorkspace = page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first();
-    const cap = firstWorkspace.getByLabel("Spending cap (USD)");
-    const originalCap = await cap.inputValue();
-    await cap.fill("0");
-    await expect(cap).toHaveAttribute("aria-invalid", "true");
-    await expect(firstWorkspace.getByRole("button", { name: "Save" })).toBeDisabled();
-    await cap.fill("7.50");
+    await expect(firstWorkspace.getByLabel("Spending cap (USD)")).toHaveCount(0);
+    const name = firstWorkspace.getByLabel("Name");
+    const originalName = await name.inputValue();
+    await name.fill(`${originalName} (renamed)`);
     await firstWorkspace.getByRole("button", { name: "Save" }).click();
     await expect(firstWorkspace.getByText("Saved.")).toBeVisible();
     const workspaceHref = await firstWorkspace.getByRole("link", { name: "Open workspace" }).getAttribute("href");
     await page.reload();
-    await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first().getByLabel("Spending cap (USD)")).toHaveValue("7.50");
+    await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first().getByLabel("Name")).toHaveValue(`${originalName} (renamed)`);
 
-    // 5. this device: a still background, and the reference style the citations page opens in
+    // 6. this device: a still background, and the reference style the citations page opens in
     await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Still" }).click();
     await expect(page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Still" })).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("group", { name: "Reference style" }).getByRole("button", { name: "IEEE" }).click();
@@ -134,19 +180,17 @@ test.describe("Settings", () => {
     await page.goto("/settings");
     // leave the workspace and this device as they were
     const restore = page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first();
-    if (originalCap !== "7.50") {
-      await restore.getByLabel("Spending cap (USD)").fill(originalCap);
-      await restore.getByRole("button", { name: "Save" }).click();
-      await expect(restore.getByText("Saved.")).toBeVisible();
-    }
+    await restore.getByLabel("Name").fill(originalName);
+    await restore.getByRole("button", { name: "Save" }).click();
+    await expect(restore.getByText("Saved.")).toBeVisible();
     await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Moving" }).click();
     await page.getByRole("group", { name: "Reference style" }).getByRole("button", { name: "APA" }).click();
 
-    // 6. the service (real /health)
+    // 7. the service (real /health)
     await expect(page.getByTestId("service-status")).toContainText("http://localhost:8000");
     await expect(page.getByTestId("service-status")).toContainText("Connected · database ok");
 
-    // 7. signing out
+    // 8. signing out
     await page.locator("#account").getByRole("button", { name: "Sign out" }).click();
     await page.waitForURL(/\/sign-in/);
     expect(consoleErrors).toEqual([]);

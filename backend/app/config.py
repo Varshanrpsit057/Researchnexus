@@ -139,15 +139,10 @@ class Settings(BaseSettings):
     direction_max_per_gap: int = 2
 
     # Agentic orchestrator (Roadmap Phase 14 / Architecture §4
-    # ResearchOrchestrator). BYOK means there is no single real-world price
-    # list ResearchNexus can know in advance; this blended per-1k-token USD
-    # rate is a deliberately simple MVP approximation used only to compare
-    # running spend against a workspace's own `token_budget_usd` cap --
-    # actual billing is always the user's own provider's, never this app's.
-    orchestrator_cost_per_1k_tokens_usd: float = 0.002
-    # Degrade (fewer strategies / smaller k) once spend crosses this
-    # fraction of the budget; block once spend reaches the budget itself.
-    orchestrator_budget_degrade_threshold: float = 0.8
+    # ResearchOrchestrator). There is no cost setting: with the user's own
+    # keys, ResearchNexus can't know what their provider charges, so usage
+    # is reported in the provider's own token counts only (remediation
+    # Phase 5; app/services/usage/report.py).
     orchestrator_stage_timeout_s: float = 60.0
     # Hard cap on attempts for any single stage call, regardless of what a
     # caller requests -- "no unbounded loops" (Roadmap Phase 14 tests).

@@ -35,12 +35,6 @@ class StageName(str, Enum):
     CITATIONS = "citations"
 
 
-class BudgetDecision(str, Enum):
-    ALLOW = "allow"
-    DEGRADE = "degrade"
-    BLOCK = "block"
-
-
 class StageRun(BaseModel):
     id: str
     owner_id: str
@@ -52,7 +46,6 @@ class StageRun(BaseModel):
     output_hash: str
     tokens_prompt: int = 0
     tokens_completion: int = 0
-    cost_usd: float = 0.0
     latency_ms: int
     ok: bool
     error: str | None = None

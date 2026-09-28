@@ -73,7 +73,6 @@ def test_create_and_get_workspace_round_trip(db: Session) -> None:
     assert ws.owner_id == uid
     assert [p.paper_id for p in ws.papers] == [seed]
     assert ws.papers[0].role is WorkspacePaperRole.SEED
-    assert ws.token_budget_usd == 5.0
 
 
 def test_get_workspace_is_tenant_isolated(db: Session) -> None:
@@ -95,10 +94,8 @@ def test_update_workspace_only_touches_given_fields(db: Session) -> None:
 
     updated = repo.update_workspace(db, "ws_1", uid, title="new title")
     assert updated is not None and updated.title == "new title"
-    assert updated.token_budget_usd == 5.0
-
-    updated = repo.update_workspace(db, "ws_1", uid, token_budget_usd=12.5)
-    assert updated is not None and updated.token_budget_usd == 12.5 and updated.title == "new title"
+    assert repo.update_workspace(db, "ws_1", uid) is not None
+    assert repo.get_workspace(db, "ws_1", uid).title == "new title"  # type: ignore[union-attr]
 
     assert repo.update_workspace(db, "ws_missing", uid, title="x") is None
     assert repo.update_workspace(db, "ws_1", "usr_other", title="x") is None

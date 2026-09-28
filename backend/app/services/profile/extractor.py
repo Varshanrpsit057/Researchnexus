@@ -45,7 +45,9 @@ async def extract_profile(
     context_chunks = select_context_chunks(chunks, max_context_chars)
     messages = build_profile_messages(render_context(context_chunks))
 
-    result = await llm_client.chat(api_key=api_key, model=model, messages=messages)
+    # JSON mode, and temperature 0: the same paper reads the same way twice,
+    # and a method gets the same name in every paper it appears in
+    result = await llm_client.chat(api_key=api_key, model=model, messages=messages, json_mode=True, temperature=0)
     tokens = TokenUsage(prompt=result.prompt_tokens, completion=result.completion_tokens)
     try:
         return parse_structured(result.content, ProfileExtraction), tokens
@@ -54,7 +56,11 @@ async def extract_profile(
             [m.model_dump() for m in messages], result.content, e, ProfileExtraction
         )
         retry_result = await llm_client.chat(
-            api_key=api_key, model=model, messages=[ChatMessage(**m) for m in repair_messages_raw]
+            api_key=api_key,
+            model=model,
+            messages=[ChatMessage(**m) for m in repair_messages_raw],
+            json_mode=True,
+            temperature=0,
         )
         tokens = TokenUsage(
             prompt=tokens.prompt + retry_result.prompt_tokens,

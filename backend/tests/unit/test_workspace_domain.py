@@ -57,9 +57,6 @@ def test_workspace_paper_defaults() -> None:
 def test_workspace_defaults() -> None:
     ws = _ws()
     assert ws.papers == []
-    assert ws.token_budget_usd == 5.0
-    assert ws.tokens_used.prompt == 0 and ws.tokens_used.completion == 0
-    assert ws.cost_used_usd == 0.0
     assert ws.combined_index_path is None
     assert ws.source_run_id is None
 

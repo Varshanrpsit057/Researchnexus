@@ -26,6 +26,7 @@ from app.domain.profile import (
 from app.llm.prompts.profile_v1 import ProfileExtraction
 from app.services.profile.confidence import compute_extraction_confidence
 from app.services.profile.provenance_check import resolve_field, resolve_list
+from app.services.profile.refine import refine_profile
 
 _ABSTRACT_FALLBACK_CHARS = 600
 _MAX_CANDIDATE_QUERIES = 25
@@ -122,7 +123,7 @@ def build_profile(
         extraction_model=extraction_model,
         tokens=tokens,
     )
-    return profile, warnings
+    return refine_profile(profile, abstract_found=has_explicit_abstract), warnings
 
 
 def build_fallback_profile(
@@ -136,15 +137,16 @@ def build_fallback_profile(
     doi: str | None,
     arxiv_id: str | None,
     chunks: list[PaperChunk],
+    grounding: str = "full_text",
 ) -> ResearchProfile:
     """Data Model §2: repair-retry exhausted -> bibliographic fields filled,
     understanding fields empty, extraction_confidence=low."""
-    abstract, _ = reconstruct_abstract(chunks)
+    abstract, has_explicit_abstract = reconstruct_abstract(chunks)
     empty_field = ProfileField(value="", source_span=None, status=ProvenanceStatus.UNVERIFIED)
-    return ResearchProfile(
+    profile = ResearchProfile(
         profile_id=profile_id,
         paper_id=paper_id,
-        grounding="full_text",
+        grounding=grounding,
         title=title,
         abstract=abstract,
         authors=authors,
@@ -157,6 +159,7 @@ def build_fallback_profile(
         extraction_confidence=Confidence.LOW,
         extraction_model=None,
     )
+    return refine_profile(profile, abstract_found=has_explicit_abstract)
 
 
 class ProfilePatchRequest(BaseModel):

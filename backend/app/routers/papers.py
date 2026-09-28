@@ -110,6 +110,9 @@ def get_paper(paper_id: str, db: DbSession) -> dict[str, object]:
         "doi": paper.doi,
         "arxiv_id": paper.arxiv_id,
         "has_full_text": paper.has_full_text,
+        # an uploaded PDF, or a paper found by discovery (which has at most its abstract)
+        "source": paper.source,
+        "has_abstract": bool((paper.abstract or "").strip()),
         "parse_confidence": paper.parse_confidence,
         "page_count": paper.page_count,
         "sections": [
@@ -141,10 +144,11 @@ async def analyze_paper(paper_id: str, db: DbSession, settings: AppSettings, cur
     paper = repo.get_paper(db, paper_id)
     if paper is None:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "paper not found"}})
-    if not paper.has_full_text:
+    # full text when it has it, else its abstract (a paper found by discovery)
+    if not paper.has_full_text and not (paper.abstract or "").strip():
         raise HTTPException(
             status_code=409,
-            detail={"error": {"code": "conflict", "message": "paper has no extracted text yet"}},
+            detail={"error": {"code": "conflict", "message": "paper has no text to analyse yet"}},
         )
 
     try:

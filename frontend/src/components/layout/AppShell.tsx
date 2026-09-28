@@ -23,7 +23,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col">
+    // the neural background behind every page is dark: the light palette put dark titles on it
+    <div data-theme="dark" className="relative flex min-h-dvh flex-col text-ink">
+      {/* the same scrim the cinematic pages lay over the background, so dense content stays legible */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 -z-10"
+        style={{ background: "linear-gradient(180deg, rgba(4,6,15,.55) 0%, rgba(4,6,15,.82) 320px, rgba(4,6,15,.9) 100%)" }}
+      />
       <header className="border-b border-border-strong bg-surface-raised">
         <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-4">
           <Link

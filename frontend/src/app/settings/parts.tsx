@@ -7,7 +7,7 @@ import { ApiError } from "@/lib/api/client";
 import { llmKeys, workspaces as workspacesApi } from "@/lib/api/endpoints";
 import type { LlmProvider, Workspace } from "@/lib/api/types";
 import { Timestamp } from "@/components/ui/Timestamp";
-import { PROVIDERS, STATUS_COPY, budgetOf, describeTest, maskedKey, parseCap, usd, type ProviderRow } from "@/lib/settings";
+import { PROVIDERS, STATUS_COPY, describeTest, maskedKey, type ProviderRow } from "@/lib/settings";
 import { C, InlineError, focusRing, primaryButton, quietButton } from "../workspace/[id]/ui";
 
 export function Section({ id, title, lead, children }: { id: string; title: string; lead: ReactNode; children: ReactNode }) {
@@ -319,34 +319,27 @@ export function KeyForm({
   );
 }
 
-/** A workspace's name and estimated-spend cap, editable in place. */
-export function WorkspaceBudget({ ws, onSaved }: { ws: Workspace; onSaved: () => void }) {
-  const budget = budgetOf(ws);
+/** A workspace's name, editable in place. */
+export function WorkspaceRow({ ws, onSaved }: { ws: Workspace; onSaved: () => void }) {
   const [title, setTitle] = useState(ws.title);
-  const [cap, setCap] = useState(ws.token_budget_usd.toFixed(2));
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-  const capValue = parseCap(cap);
-  const changed = title.trim() !== ws.title || (capValue != null && capValue !== ws.token_budget_usd);
+  const changed = title.trim() !== ws.title;
   const titleId = useId();
-  const capId = useId();
   const saving = useRef(false);
 
   async function save(e: FormEvent) {
     e.preventDefault();
-    if (saving.current || !changed || capValue == null || !title.trim()) return;
+    if (saving.current || !changed || !title.trim()) return;
     saving.current = true;
     setBusy(true);
     setNote(null);
     try {
-      const body: { title?: string; token_budget_usd?: number } = {};
-      if (title.trim() !== ws.title) body.title = title.trim();
-      if (capValue !== ws.token_budget_usd) body.token_budget_usd = capValue;
-      await workspacesApi.update(ws.workspace_id, body);
+      await workspacesApi.update(ws.workspace_id, { title: title.trim() });
       setNote({ ok: true, text: "Saved." });
       onSaved();
-    } catch (err) {
-      setNote({ ok: false, text: err instanceof ApiError && err.status === 422 ? "The cap has to be more than zero." : "That wasn't saved. Try again." });
+    } catch {
+      setNote({ ok: false, text: "That wasn't saved. Try again." });
     } finally {
       saving.current = false;
       setBusy(false);
@@ -354,8 +347,8 @@ export function WorkspaceBudget({ ws, onSaved }: { ws: Workspace; onSaved: () =>
   }
 
   return (
-    <li className="px-4 py-4" data-testid={`budget-${ws.workspace_id}`}>
-      <form onSubmit={save} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_150px_auto] md:items-end">
+    <li className="px-4 py-4" data-testid={`workspace-${ws.workspace_id}`}>
+      <form onSubmit={save} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <label htmlFor={titleId} className="block min-w-0">
           <span className="text-[12.5px] font-semibold" style={{ color: C.muted }}>
             Name
@@ -369,59 +362,33 @@ export function WorkspaceBudget({ ws, onSaved }: { ws: Workspace; onSaved: () =>
             style={{ ...quietButton, color: C.ink }}
           />
         </label>
-        <label htmlFor={capId} className="block">
-          <span className="text-[12.5px] font-semibold" style={{ color: C.muted }}>
-            Spending cap (USD)
-          </span>
-          <input
-            id={capId}
-            inputMode="decimal"
-            value={cap}
-            onChange={(e) => setCap(e.target.value)}
-            aria-invalid={capValue == null}
-            className={`mt-1 min-h-11 w-full rounded-xl bg-transparent px-3 text-[14px] tabular-nums caret-[#5df0a8] outline-none ${focusRing}`}
-            style={{ ...quietButton, color: C.ink, border: `1px solid ${capValue == null ? C.danger : C.lineStrong}` }}
-          />
-        </label>
         <button
           type="submit"
-          disabled={!changed || busy || capValue == null || !title.trim()}
+          disabled={!changed || busy || !title.trim()}
           className={`inline-flex min-h-11 items-center justify-center rounded-full px-4 text-sm font-semibold transition-[opacity,background-color] hover:bg-white/10 disabled:opacity-45 ${focusRing}`}
           style={{ ...quietButton, color: C.ink }}
         >
           {busy ? "Saving…" : "Save"}
         </button>
       </form>
-      <div className="mt-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-[13px]">
-          <span style={{ color: C.muted }}>
-            Estimated spend <span className="tabular-nums" style={{ color: C.ink }}>{usd(budget.used)}</span> of{" "}
-            <span className="tabular-nums">{usd(budget.cap)}</span> · <span className="tabular-nums">{budget.tokens.toLocaleString("en-US")}</span> tokens ·{" "}
-            <span className="tabular-nums">{ws.papers.length}</span> paper{ws.papers.length === 1 ? "" : "s"}
-          </span>
-          <Link
-            href={`/workspace/${ws.workspace_id}`}
-            className={`inline-flex min-h-11 items-center gap-1 rounded-sm text-[13px] hover:text-white sm:min-h-0 ${focusRing}`}
-            style={{ color: C.muted }}
-          >
-            Open workspace
-            <ArrowSquareOut className="size-3.5" aria-hidden />
-          </Link>
-        </div>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: "rgba(150,175,230,.14)" }} aria-hidden>
-          <div className="h-full rounded-full" style={{ width: `${Math.max(budget.used > 0 ? 2 : 0, budget.fraction * 100)}%`, background: budget.reached ? C.warning : C.mint }} />
-        </div>
-        {budget.reached && (
-          <p className="mt-2 text-[13px]" style={{ color: C.warning }}>
-            The cap is reached, so model stages in this workspace are paused. Raise the cap to continue.
-          </p>
-        )}
-        {note && (
-          <p className="mt-2 text-[13px]" style={{ color: note.ok ? C.mint : C.danger }} role="status">
-            {note.text}
-          </p>
-        )}
+      <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-[13px]">
+        <span style={{ color: C.muted }}>
+          <span className="tabular-nums">{ws.papers.length}</span> paper{ws.papers.length === 1 ? "" : "s"} · created <Timestamp at={ws.created_at} style="date" />
+        </span>
+        <Link
+          href={`/workspace/${ws.workspace_id}`}
+          className={`inline-flex min-h-11 items-center gap-1 rounded-sm text-[13px] hover:text-white sm:min-h-0 ${focusRing}`}
+          style={{ color: C.muted }}
+        >
+          Open workspace
+          <ArrowSquareOut className="size-3.5" aria-hidden />
+        </Link>
       </div>
+      {note && (
+        <p className="mt-2 text-[13px]" style={{ color: note.ok ? C.mint : C.danger }} role="status">
+          {note.text}
+        </p>
+      )}
     </li>
   );
 }

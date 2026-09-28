@@ -54,10 +54,21 @@ class SourceSpan(BaseModel):
     quote: str = Field(max_length=_MAX_QUOTE_LEN)
 
 
+class ReportedValue(BaseModel):
+    """The value a paper reports for a field -- an evaluation metric's
+    "95.83%" -- verbatim. `verified` only when it is written in the field's
+    own verified evidence; an unverified value is kept to say one was
+    claimed, never shown as the paper's result (remediation Phase 6)."""
+
+    text: str
+    status: ProvenanceStatus = ProvenanceStatus.UNVERIFIED
+
+
 class ProfileField(BaseModel):
     value: str
     source_span: SourceSpan | None = None
     status: ProvenanceStatus = ProvenanceStatus.UNVERIFIED
+    reported_value: ReportedValue | None = None
 
 
 class ProfileList(BaseModel):
@@ -73,6 +84,11 @@ class ResearchProfile(BaseModel):
     # --- bibliographic (deterministic, not LLM) ---
     title: str
     abstract: str
+    # False when no abstract was found and `abstract` is stand-in text (the
+    # start of the body): it must not be shown as the paper's abstract
+    abstract_found: bool = True
+    # at most two of the abstract's own sentences (services/profile/refine.py)
+    summary: str = ""
     authors: list[str] = Field(default_factory=list)
     year: int | None = None
     venue: str | None = None

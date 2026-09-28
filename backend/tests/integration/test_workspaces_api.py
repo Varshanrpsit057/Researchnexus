@@ -107,7 +107,8 @@ def test_create_then_get_workspace(tmp_path: Path) -> None:
     assert got.status_code == 200
     body = got.json()
     assert body["counts"] == {"papers": 1, "edges": 0, "gaps": 0, "directions": 0, "comparisons": 0}
-    assert body["cost_used"] == 0.0
+    # no estimated spend or cap: usage is GET /usage, in the provider's own tokens (remediation Phase 5)
+    assert not {"cost_used", "cost_used_usd", "token_budget_usd", "tokens_used"} & body.keys()
 
 
 def test_workspace_times_read_back_as_utc(tmp_path: Path) -> None:
@@ -167,34 +168,30 @@ def test_workspace_is_invisible_to_other_tenants(tmp_path: Path) -> None:
     assert client.get("/api/v1/workspaces", headers=_headers(intruder)).json()["workspaces"] == []
 
 
-def test_patch_workspace_updates_title_and_budget(tmp_path: Path) -> None:
+def test_patch_workspace_updates_title(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)
     _seed_analysed_paper()
     wid = _create_ws(client, token)["workspace_id"]
 
-    resp = client.patch(
-        f"/api/v1/workspaces/{wid}", json={"title": "new", "token_budget_usd": 9.0}, headers=_headers(token)
-    )
+    resp = client.patch(f"/api/v1/workspaces/{wid}", json={"title": "new"}, headers=_headers(token))
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["title"] == "new" and body["token_budget_usd"] == 9.0
+    assert resp.json()["title"] == "new"
 
 
-def test_a_workspace_budget_must_be_a_positive_amount(tmp_path: Path) -> None:
-    # a zero or negative cap would silently block every model stage in the workspace
+def test_a_spending_cap_from_an_older_client_is_ignored_not_an_error(tmp_path: Path) -> None:
+    # the USD cap is retired (remediation Phase 5): it rested on a flat-rate guess
     client = _make_client(tmp_path)
     token = _token(client)
     _seed_analysed_paper()
-    wid = _create_ws(client, token)["workspace_id"]
-    for bad in (0, -1):
-        resp = client.patch(f"/api/v1/workspaces/{wid}", json={"token_budget_usd": bad}, headers=_headers(token))
-        assert resp.status_code == 422, bad
-    assert client.post(
-        "/api/v1/workspaces", json={"title": "x", "seed_paper_id": "pap_seed", "token_budget_usd": 0}, headers=_headers(token)
-    ).status_code == 422
-    title_only = client.patch(f"/api/v1/workspaces/{wid}", json={"title": "kept"}, headers=_headers(token)).json()
-    assert (title_only["title"], title_only["token_budget_usd"]) == ("kept", 5.0)
+    created = client.post(
+        "/api/v1/workspaces", json={"title": "x", "seed_paper_id": "pap_seed", "token_budget_usd": 3}, headers=_headers(token)
+    )
+    assert created.status_code == 201
+    wid = created.json()["workspace_id"]
+    resp = client.patch(f"/api/v1/workspaces/{wid}", json={"title": "kept", "token_budget_usd": 0}, headers=_headers(token))
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "kept" and "token_budget_usd" not in resp.json()
 
 
 def test_add_pin_tag_annotate_and_remove_paper(tmp_path: Path) -> None:

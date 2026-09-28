@@ -157,6 +157,25 @@ def test_generating_directions_writes_an_activity_row(tmp_path: Path, monkeypatc
     assert "error" not in rows[0] or rows[0]["error"] is None
 
 
+def test_a_stage_run_keeps_the_tokens_its_model_calls_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # remediation Phase 5: from the provider's own counts, the same the usage report sums
+    c = _client(tmp_path)
+    token = _token(c)
+    wid, gap_id = _seed_ws_with_accepted_gap(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_directions_llm(monkeypatch)
+    assert c.post(f"/api/v1/workspaces/{wid}/directions", json={"gap_ids": [gap_id]}, headers=_h(token)).status_code == 200
+
+    [run] = c.get(f"/api/v1/workspaces/{wid}/activity", headers=_h(token)).json()["stage_runs"]
+    usage = c.get(f"/api/v1/usage?workspace_id={wid}", headers=_h(token)).json()
+    [directions] = usage["by_feature"]
+    assert directions["feature"] == "directions"  # named after the stage, not "other"
+    calls = directions["calls"]
+    assert calls >= 2  # a proposal and its rating, each 12 in / 8 out
+    assert (run["tokens_prompt"], run["tokens_completion"]) == (12 * calls, 8 * calls)
+    assert (directions["prompt_tokens"], directions["completion_tokens"]) == (12 * calls, 8 * calls)
+
+
 def test_activity_can_filter_by_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     c = _client(tmp_path)
     token = _token(c)
@@ -202,5 +221,5 @@ def test_activity_never_leaks_prompt_or_response_bodies(tmp_path: Path, monkeypa
     row = c.get(f"/api/v1/workspaces/{wid}/activity", headers=_h(token)).json()["stage_runs"][0]
     assert set(row) == {
         "id", "owner_id", "workspace_id", "job_id", "stage", "tool", "input_hash", "output_hash",
-        "tokens_prompt", "tokens_completion", "cost_usd", "latency_ms", "ok", "error", "ts",
+        "tokens_prompt", "tokens_completion", "latency_ms", "ok", "error", "ts",
     }

@@ -105,3 +105,21 @@ def test_extract_profile_lets_provider_errors_propagate_uncaught() -> None:
     client = OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     with pytest.raises(LlmProviderError):
         asyncio.run(extract_profile(client, api_key="sk-bad", model="test-model", chunks=_chunks(), max_context_chars=10_000))
+
+
+def test_the_first_request_carries_the_schema_json_mode_and_temperature_zero() -> None:
+    # remediation Phase 6: without the field names the first reply rarely parsed,
+    # so nearly every profile paid for a second (repair) call
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": _VALID_EXTRACTION_JSON}}]})
+
+    client = OpenAiCompatClient(LlmProvider.GROQ, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    asyncio.run(extract_profile(client, api_key="sk-x", model="test-model", chunks=_chunks(), max_context_chars=10_000))
+    [body] = seen  # one call, no repair
+    assert body["response_format"] == {"type": "json_object"} and body["temperature"] == 0
+    prompt = "\n".join(m["content"] for m in body["messages"])
+    for field in ("domain", "research_problem", "evaluation_metrics", "cited_methods", "candidate_search_queries", '"result"'):
+        assert field in prompt

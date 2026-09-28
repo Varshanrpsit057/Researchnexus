@@ -75,7 +75,9 @@
   }
 }
 
-:root[data-theme="dark"] {
+/* a subtree can opt in too: the app shell does, since every page now sits on the dark neural background */
+:root[data-theme="dark"],
+[data-theme="dark"] {
   --surface: #171918;
   --surface-raised: #1f221f;
   --surface-sunken: #0f110f;

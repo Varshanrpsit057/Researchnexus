@@ -21,6 +21,7 @@ from app.db.base import Base
 from app.domain.usage import LlmCall
 from app.domain.user import ApiKeyStatus, LlmProvider
 from app.llm.client import ChatMessage, LlmProviderError
+from app.llm.providers.gemini import GeminiClient
 from app.llm.providers.openai_compat import OpenAiCompatClient
 from app.llm.session import resolve_llm_session
 from app.llm.usage import (
@@ -29,6 +30,7 @@ from app.llm.usage import (
     db_recorder,
     usage_scope,
     usage_scope_default,
+    usage_tally,
 )
 from app.security.key_vault import KeyVault
 
@@ -190,3 +192,78 @@ def test_a_key_saved_under_another_vault_secret_is_not_a_usable_session(db: Sess
     assert user is not None
     rotated = Settings(_env_file=None, key_vault_secret=Fernet.generate_key().decode())  # type: ignore[call-arg]
     assert resolve_llm_session(db, user, rotated) is None
+
+
+# --- one meaning for every provider's counts (remediation Phase 5) -----------
+
+
+def test_every_adapter_counts_reasoning_inside_completion_and_cache_inside_prompt() -> None:
+    """prompt + completion is the whole call whichever provider answered, so
+    usage from different providers can be added up."""
+
+    def deepseek(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,  # includes the 30 reasoning tokens
+                    "prompt_cache_hit_tokens": 60,
+                    "completion_tokens_details": {"reasoning_tokens": 30},
+                },
+            },
+        )
+
+    def gemini(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                # Gemini counts thoughts apart: the reply is 20, the thinking 30
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "cachedContentTokenCount": 60,
+                    "candidatesTokenCount": 20,
+                    "thoughtsTokenCount": 30,
+                    "totalTokenCount": 150,
+                },
+            },
+        )
+
+    async def ask() -> list[tuple[int, int, int, int]]:
+        out = []
+        for adapter in (_adapter(deepseek), GeminiClient(client=httpx.AsyncClient(transport=httpx.MockTransport(gemini)))):
+            r = await adapter.chat(api_key="sk-x", model="m", messages=PING)
+            out.append((r.prompt_tokens, r.completion_tokens, r.cached_prompt_tokens, r.reasoning_tokens))
+        return out
+
+    ds, gm = asyncio.run(ask())
+    assert ds == gm == (100, 50, 60, 30)
+
+
+def test_a_tally_counts_the_calls_made_inside_it_including_in_tasks_it_starts() -> None:
+    calls: list[LlmCall] = []
+    client = MeteredClient(_adapter(_ok), owner_id="usr_1", provider=LlmProvider.DEEPSEEK, recorder=calls.append)
+    failing = MeteredClient(
+        _adapter(lambda r: httpx.Response(401, json={"error": {"message": "bad key"}})),
+        owner_id="usr_1",
+        provider=LlmProvider.DEEPSEEK,
+        recorder=calls.append,
+    )
+
+    async def work() -> tuple[object, object]:
+        await client.chat(api_key="sk-x", model="m", messages=PING)  # outside every tally
+        with usage_tally() as outer:
+            await client.chat(api_key="sk-x", model="m", messages=PING)
+            with usage_tally() as inner:
+                await asyncio.gather(*(client.chat(api_key="sk-x", model="m", messages=PING) for _ in range(2)))
+                with pytest.raises(LlmProviderError):
+                    await failing.chat(api_key="sk-x", model="m", messages=PING)
+        return outer, inner
+
+    outer, inner = asyncio.run(work())
+    assert len(calls) == 5  # the ledger has every call; each tally only its own
+    assert (inner.calls, inner.failed_calls, inner.prompt_tokens, inner.completion_tokens, inner.cached_prompt_tokens) == (3, 1, 240, 60, 128)  # type: ignore[attr-defined]
+    assert (outer.calls, outer.prompt_tokens, outer.completion_tokens) == (4, 360, 90)  # type: ignore[attr-defined]
+

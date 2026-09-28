@@ -9,13 +9,14 @@ concern, separate from parsing logic).
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, Select, and_, case, func, select
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.db.models import (
     ApiKeyORM,
@@ -57,7 +58,7 @@ from app.domain.graph import ResearchGraph
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.orchestrator import StageName, StageRun
 from app.domain.paper import ParsedDocument
-from app.domain.profile import Confidence, ResearchProfile, TokenUsage
+from app.domain.profile import Confidence, ResearchProfile
 from app.domain.ranking import RankedPaper, RankingExplanation, SignalScores
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge, UserState
 from app.domain.usage import LlmCall
@@ -70,6 +71,7 @@ from app.domain.workspace import (
     WorkspacePaperRole,
 )
 from app.security.pdf_sanitizer import PdfFileMeta
+from app.services.profile.refine import refine_profile
 
 # ---------------------------------------------------------------------------
 # User
@@ -398,8 +400,25 @@ def update_job(
 # ---------------------------------------------------------------------------
 
 
-def _profile_domain_from_orm(row: ResearchProfileORM) -> ResearchProfile:
-    return ResearchProfile.model_validate(row.profile_json)
+def _abstract_found(db: Session, paper_id: str) -> bool:
+    """Whether the paper has a real abstract: one from its source, or an
+    Abstract section in its PDF (a PDF without one stands in its body's first
+    lines, which must not be shown as the abstract)."""
+    paper = db.get(PaperORM, paper_id)
+    if paper is None or (paper.abstract or "").strip():
+        return True
+    return any(
+        re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", str(s.get("title", ""))).strip().lower() == "abstract"
+        for s in (paper.sections or [])
+    )
+
+
+def _profile_domain_from_orm(db: Session, row: ResearchProfileORM) -> ResearchProfile:
+    """Every profile is read refined (services/profile/refine.py): clean
+    abstract, a summary, metric values from their evidence, one name per
+    thing -- including profiles extracted before that existed."""
+    profile = ResearchProfile.model_validate(row.profile_json)
+    return refine_profile(profile, abstract_found=_abstract_found(db, row.paper_id))
 
 
 def upsert_profile(db: Session, profile: ResearchProfile) -> ResearchProfile:
@@ -434,7 +453,7 @@ def upsert_profile(db: Session, profile: ResearchProfile) -> ResearchProfile:
     row.extraction_model = profile.extraction_model
     db.commit()
     db.refresh(row)
-    return _profile_domain_from_orm(row)
+    return _profile_domain_from_orm(db, row)
 
 
 def get_profile(db: Session, paper_id: str, workspace_id: str | None = None) -> ResearchProfile | None:
@@ -444,7 +463,7 @@ def get_profile(db: Session, paper_id: str, workspace_id: str | None = None) -> 
     row = db.execute(
         select(ResearchProfileORM).where(ResearchProfileORM.paper_id == paper_id, workspace_clause)
     ).scalar_one_or_none()
-    return _profile_domain_from_orm(row) if row else None
+    return _profile_domain_from_orm(db, row) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -894,9 +913,6 @@ def _workspace_domain_from_orm(row: WorkspaceORM, papers: list[WorkspacePaperORM
         seed_profile_id=row.seed_profile_id,
         papers=[_workspace_paper_domain_from_orm(pr) for pr in ordered],
         combined_index_path=row.combined_index_path,
-        token_budget_usd=row.token_budget_usd,
-        tokens_used=TokenUsage(prompt=row.tokens_prompt, completion=row.tokens_completion),
-        cost_used_usd=row.cost_usd,
         source_run_id=row.source_run_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -939,10 +955,6 @@ def create_workspace(db: Session, ws: ResearchWorkspace) -> ResearchWorkspace:
             seed_profile_id=ws.seed_profile_id,
             source_run_id=ws.source_run_id,
             combined_index_path=ws.combined_index_path,
-            token_budget_usd=ws.token_budget_usd,
-            tokens_prompt=ws.tokens_used.prompt,
-            tokens_completion=ws.tokens_used.completion,
-            cost_usd=ws.cost_used_usd,
         )
     )
     for wp in ws.papers:
@@ -992,15 +1004,12 @@ def update_workspace(
     owner_id: str,
     *,
     title: str | None = None,
-    token_budget_usd: float | None = None,
 ) -> ResearchWorkspace | None:
     row = _owned_workspace_row(db, workspace_id, owner_id)
     if row is None:
         return None
     if title is not None:
         row.title = title
-    if token_budget_usd is not None:
-        row.token_budget_usd = token_budget_usd
     db.commit()
     return get_workspace(db, workspace_id, owner_id)
 
@@ -1012,21 +1021,6 @@ def set_workspace_index_path(
     if row is None:
         return None
     row.combined_index_path = path
-    db.commit()
-    return get_workspace(db, workspace_id, owner_id)
-
-
-def add_workspace_spend(
-    db: Session, workspace_id: str, owner_id: str, *, tokens_prompt: int, tokens_completion: int, cost_usd: float
-) -> ResearchWorkspace | None:
-    """Accumulates onto the workspace's running total (Roadmap Phase 14
-    `BudgetGuard`) -- the only writer of `workspaces.cost_usd`."""
-    row = _owned_workspace_row(db, workspace_id, owner_id)
-    if row is None:
-        return None
-    row.tokens_prompt += tokens_prompt
-    row.tokens_completion += tokens_completion
-    row.cost_usd += cost_usd
     db.commit()
     return get_workspace(db, workspace_id, owner_id)
 
@@ -1817,7 +1811,6 @@ def _stage_run_from_orm(row: StageRunORM) -> StageRun:
         output_hash=row.output_hash,
         tokens_prompt=row.tokens_prompt,
         tokens_completion=row.tokens_completion,
-        cost_usd=row.cost_usd,
         latency_ms=row.latency_ms,
         ok=row.ok,
         error=row.error,
@@ -1838,7 +1831,6 @@ def record_stage_run(db: Session, run: StageRun) -> StageRun:
             output_hash=run.output_hash,
             tokens_prompt=run.tokens_prompt,
             tokens_completion=run.tokens_completion,
-            cost_usd=run.cost_usd,
             latency_ms=run.latency_ms,
             ok=run.ok,
             error=run.error,
@@ -1884,3 +1876,101 @@ def list_llm_calls(db: Session, owner_id: str, *, workspace_id: str | None = Non
         )
         for r in rows
     ]
+
+
+@dataclass(frozen=True)
+class UsageTotals:
+    """Provider-reported usage summed over some of one user's `llm_calls`."""
+
+    calls: int = 0
+    failed_calls: int = 0
+    # answered calls the provider sent no usage for: their tokens are unknown, not zero
+    unreported_calls: int = 0
+    prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    first_at: datetime | None = None
+    last_at: datetime | None = None
+
+
+_USAGE_GROUPS = {
+    "feature": LlmCallORM.feature,
+    "provider": LlmCallORM.provider,
+    "model": LlmCallORM.model,
+    "workspace_id": LlmCallORM.workspace_id,
+}
+
+
+def summarize_llm_calls(
+    db: Session,
+    owner_id: str,
+    *,
+    since: datetime | None = None,
+    workspace_id: str | None = None,
+    by: tuple[str, ...] = (),
+) -> list[tuple[tuple[str | None, ...], UsageTotals]]:
+    """One user's usage since `since` (all of it if None), in one workspace
+    or all, grouped by any of feature / provider / model / workspace_id --
+    or a single total when `by` is empty (a total of nothing is all zeros)."""
+    keys = [_USAGE_GROUPS[k] for k in by]
+    c = LlmCallORM
+    # an answered call can't have used no tokens at all: its provider didn't say
+    no_usage = and_(c.ok.is_(True), c.prompt_tokens == 0, c.completion_tokens == 0)
+
+    def total(expr: ColumnElement[int] | InstrumentedAttribute[int]) -> ColumnElement[int]:
+        return func.coalesce(func.sum(expr), 0)
+
+    stmt = select(
+        *keys,
+        func.count(c.id),
+        total(case((c.ok.is_(False), 1), else_=0)),
+        total(case((no_usage, 1), else_=0)),
+        total(c.prompt_tokens),
+        total(c.cached_prompt_tokens),
+        total(c.completion_tokens),
+        total(c.reasoning_tokens),
+        func.min(c.created_at),
+        func.max(c.created_at),
+    ).where(c.owner_id == owner_id)
+    if since is not None:
+        stmt = stmt.where(c.created_at >= since)
+    if workspace_id is not None:
+        stmt = stmt.where(c.workspace_id == workspace_id)
+    if keys:
+        stmt = stmt.group_by(*keys)
+    out: list[tuple[tuple[str | None, ...], UsageTotals]] = []
+    n = len(keys)
+    for row in db.execute(stmt).all():
+        values = tuple(row)
+        calls, failed, unreported, prompt, cached, completion, reasoning = (int(v) for v in values[n : n + 7])
+        out.append(
+            (
+                values[:n],
+                UsageTotals(
+                    calls=calls,
+                    failed_calls=failed,
+                    unreported_calls=unreported,
+                    prompt_tokens=prompt,
+                    cached_prompt_tokens=cached,
+                    completion_tokens=completion,
+                    reasoning_tokens=reasoning,
+                    first_at=values[n + 7],
+                    last_at=values[n + 8],
+                ),
+            )
+        )
+    return out
+
+
+def workspace_titles(db: Session, owner_id: str, workspace_ids: list[str]) -> dict[str, str]:
+    """Titles of the owner's workspaces among `workspace_ids` (a deleted one is absent)."""
+    if not workspace_ids:
+        return {}
+    rows = db.execute(
+        select(WorkspaceORM.id, WorkspaceORM.title).where(
+            WorkspaceORM.owner_id == owner_id, WorkspaceORM.id.in_(workspace_ids)
+        )
+    ).all()
+    return {r[0]: r[1] for r in rows}
+

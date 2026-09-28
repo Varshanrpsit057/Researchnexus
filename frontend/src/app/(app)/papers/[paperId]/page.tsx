@@ -1,27 +1,15 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import {
-  ArrowSquareOut,
-  CaretUp,
-  Compass,
-  Quotes,
-  Sparkle,
-} from "@phosphor-icons/react/dist/ssr";
+import { ArrowSquareOut, CaretUp, Compass, Sparkle } from "@phosphor-icons/react/dist/ssr";
 import { papers, workspaces } from "@/lib/api/endpoints";
-import { useJobPolling } from "@/lib/api/hooks";
+import { useJobPolling, useProfile } from "@/lib/api/hooks";
 import { ApiError } from "@/lib/api/client";
-import type {
-  CitationRelationship,
-  ProfileField as ProfileFieldT,
-  ProfileList as ProfileListT,
-  ProvenanceStatus,
-  RelatedResult,
-  ResearchProfile,
-  SourceSpan,
-} from "@/lib/api/types";
+import type { CitationRelationship, RelatedResult } from "@/lib/api/types";
+import { CINEMATIC as C } from "@/lib/cinematic-theme";
+import { ProfilePanel } from "@/components/profile/ProfilePanel";
 import { Button } from "@/components/ui/Button";
 import { Badge, ConfidenceBadge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader, CardTracings } from "@/components/ui/Card";
@@ -65,44 +53,9 @@ function PaperDetail() {
 
   // A paper that already has an extracted profile shows it on arrival --
   // `analyze` always re-runs (and re-bills) LLM extraction, so it must
-  // never be the only way to see a profile that already exists. A 404
-  // here just means "not analyzed yet", not a real error, so the fetcher
-  // absorbs it into a plain `null` rather than surfacing an error state.
-  const {
-    data: profile,
-    isLoading: profileLoading,
-    mutate: mutateProfile,
-  } = useSWR(paper?.has_full_text ? ["profile", paperId] : null, async () => {
-    try {
-      return await papers.getProfile(paperId);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return null;
-      throw err;
-    }
-  });
-
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  const [analyzeWarnings, setAnalyzeWarnings] = useState<string[]>([]);
-
-  async function handleAnalyze() {
-    setAnalyzing(true);
-    setAnalyzeError(null);
-    setAnalyzeWarnings([]);
-    try {
-      const res = await papers.analyze(paperId);
-      await mutateProfile(res.profile, { revalidate: false });
-      setAnalyzeWarnings(res.warnings);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === "llm_key_required") {
-        setAnalyzeError("No working LLM provider key is saved yet. Add one in Settings, then analyze again.");
-      } else {
-        setAnalyzeError(err instanceof ApiError ? err.message : "Analysis failed. Try again.");
-      }
-    } finally {
-      setAnalyzing(false);
-    }
-  }
+  // never be the only way to see a profile that already exists. A paper
+  // found by discovery has one (read from its abstract) without full text.
+  const { data: profile, isLoading: profileLoading, mutate: mutateProfile } = useProfile(paper ? paperId : null);
 
   // The job id lives in the URL (like the final run_id) so a refresh
   // mid-discovery resumes polling instead of silently losing an
@@ -236,54 +189,32 @@ function PaperDetail() {
       </header>
 
       <div className="lg:grid lg:grid-cols-[1.5fr_1fr] lg:items-start lg:gap-8">
-        {/* Left: the paper's own card -- its tracings footer holds the
-            external identifiers it is also filed under, the way a catalog
-            card's cross-reference numbers point to other indexes. */}
-        <Card>
-          <CardHeader>
-            <h2 className="text-sm font-semibold text-ink">Research profile</h2>
-          </CardHeader>
-          <CardBody>
-            {!paper.has_full_text ? (
-              <p className="text-sm text-ink-muted">Still extracting text from this paper — analysis will be available once parsing finishes.</p>
-            ) : profileLoading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-2/3" />
-              </div>
-            ) : profile ? (
-              <div className="space-y-4">
-                {analyzeWarnings.length > 0 && (
-                  <ul className="space-y-0.5">
-                    {analyzeWarnings.map((w) => (
-                      <li key={w} className="text-xs text-warning">
-                        {w}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <ProfileDetail profile={profile} />
-              </div>
-            ) : (
-              <div className="flex flex-col items-start gap-3">
-                <p className="text-sm text-ink-muted">
-                  Extract the research problem, methods, datasets, and findings from this paper&apos;s full text.
-                </p>
-                <Button onClick={handleAnalyze} loading={analyzing}>
-                  <Sparkle className="size-4" aria-hidden />
-                  Run analysis
-                </Button>
-                {analyzeError && <InlineError message={analyzeError} />}
-              </div>
-            )}
-          </CardBody>
-          <CardTracings
-            entries={externalRefs.map((r) => ({
-              label: r.label,
-              href: r.href,
-            }))}
-          />
-        </Card>
+        {/* Left: the paper's research profile, the same view the seed page shows. */}
+        <section
+          aria-labelledby="research-profile-title"
+          className="overflow-hidden rounded-2xl"
+          style={{ background: C.glass, border: `1px solid ${C.line}`, color: C.ink }}
+        >
+          <div className="flex items-center gap-2 border-b px-5 py-3.5" style={{ borderColor: C.line }}>
+            <Sparkle className="size-4" style={{ color: C.mint }} aria-hidden />
+            <h2 id="research-profile-title" className="text-sm font-semibold">
+              Research profile
+            </h2>
+          </div>
+          <div className="p-5">
+            <ProfilePanel paper={paper} profile={profile} loading={profileLoading} mutate={mutateProfile} />
+          </div>
+          {externalRefs.length > 0 && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 border-t px-5 py-3 font-mono text-xs" style={{ borderColor: C.line }}>
+              {externalRefs.map((r) => (
+                <a key={r.label} href={r.href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-white" style={{ color: C.muted }}>
+                  {r.label}
+                  <ArrowSquareOut className="size-3" aria-hidden />
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
 
         {/* Right: the action rail. Desktop: a sticky column. Mobile: a
             bottom sheet, collapsed to a peek bar by default so it never
@@ -459,152 +390,6 @@ function discoverStageLabel(stage: string | undefined): string {
     default:
       return "Starting…";
   }
-}
-
-// --- research profile ------------------------------------------------
-
-const provenanceLabel: Record<ProvenanceStatus, string> = {
-  verified: "verified",
-  unverified: "unverified",
-  user_edited: "edited",
-};
-
-function EvidenceDisclosure({ span }: { span: SourceSpan }) {
-  if (!span.quote) return null;
-  return (
-    <details className="mt-1">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs text-ink-subtle hover:text-ink-muted">
-        <Quotes className="size-3" aria-hidden />
-        Evidence
-      </summary>
-      <blockquote className="rule-t mt-1 bg-surface-sunken px-2.5 py-1.5 text-xs italic text-ink-muted">
-        &ldquo;{span.quote}&rdquo;
-        {span.page != null && <span className="ml-1.5 not-italic text-ink-subtle">p.{span.page}</span>}
-      </blockquote>
-    </details>
-  );
-}
-
-function FieldValue({ field }: { field: ProfileFieldT }) {
-  if (!field.value) return <p className="text-sm text-ink-subtle">Not extracted</p>;
-  return (
-    <div>
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm text-ink">{field.value}</p>
-        <span className="shrink-0 text-xs text-ink-subtle">{provenanceLabel[field.status]}</span>
-      </div>
-      {field.source_span && <EvidenceDisclosure span={field.source_span} />}
-    </div>
-  );
-}
-
-function ListFieldValue({ list }: { list: ProfileListT }) {
-  if (list.items.length === 0) return <p className="text-sm text-ink-subtle">None extracted</p>;
-  return (
-    <ul className="space-y-2">
-      {list.items.map((item, i) => (
-        <li key={i}>
-          <FieldValue field={item} />
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function ProfileGroup({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="space-y-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-subtle">{title}</h3>
-      {children}
-    </div>
-  );
-}
-
-function LabeledField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-xs font-medium text-ink-muted">{label}</p>
-      {children}
-    </div>
-  );
-}
-
-function ProfileDetail({ profile }: { profile: ResearchProfile }) {
-  return (
-    <div className="space-y-6">
-      {profile.abstract && <p className="text-sm leading-relaxed text-ink-muted">{profile.abstract}</p>}
-      {profile.keywords.length > 0 && (
-        <p className="text-xs text-ink-subtle">{profile.keywords.join(" · ")}</p>
-      )}
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ProfileGroup title="Problem & domain">
-          <LabeledField label="Domain">
-            <FieldValue field={profile.domain} />
-          </LabeledField>
-          {profile.subdomains.items.length > 0 && (
-            <LabeledField label="Subdomains">
-              <ListFieldValue list={profile.subdomains} />
-            </LabeledField>
-          )}
-          <LabeledField label="Research problem">
-            <FieldValue field={profile.research_problem} />
-          </LabeledField>
-          <LabeledField label="Research questions">
-            <ListFieldValue list={profile.research_questions} />
-          </LabeledField>
-          <LabeledField label="Objectives">
-            <ListFieldValue list={profile.objectives} />
-          </LabeledField>
-        </ProfileGroup>
-
-        <ProfileGroup title="Method & data">
-          <LabeledField label="Methods">
-            <ListFieldValue list={profile.methods} />
-          </LabeledField>
-          {profile.algorithms.items.length > 0 && (
-            <LabeledField label="Algorithms">
-              <ListFieldValue list={profile.algorithms} />
-            </LabeledField>
-          )}
-          <LabeledField label="Models">
-            <ListFieldValue list={profile.models} />
-          </LabeledField>
-          <LabeledField label="Datasets">
-            <ListFieldValue list={profile.datasets} />
-          </LabeledField>
-          <LabeledField label="Evaluation metrics">
-            <ListFieldValue list={profile.evaluation_metrics} />
-          </LabeledField>
-        </ProfileGroup>
-
-        <ProfileGroup title="Findings & limitations">
-          <LabeledField label="Findings">
-            <ListFieldValue list={profile.findings} />
-          </LabeledField>
-          <LabeledField label="Limitations">
-            <ListFieldValue list={profile.limitations} />
-          </LabeledField>
-          <LabeledField label="Future work">
-            <ListFieldValue list={profile.future_work} />
-          </LabeledField>
-        </ProfileGroup>
-
-        <ProfileGroup title="Entities">
-          <LabeledField label="Important entities">
-            <ListFieldValue list={profile.important_entities} />
-          </LabeledField>
-          <LabeledField label="Cited methods">
-            <ListFieldValue list={profile.cited_methods} />
-          </LabeledField>
-        </ProfileGroup>
-      </div>
-
-      <p className="rule-t pt-3 text-xs text-ink-subtle">
-        Extracted with {profile.extraction_model ?? "an unspecified model"} · {profile.extraction_confidence} confidence
-      </p>
-    </div>
-  );
 }
 
 // --- related results ----------------------------------------------------

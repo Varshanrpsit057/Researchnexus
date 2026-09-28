@@ -1,4 +1,4 @@
-import type { ApiKeyStatus, ApiKeySummary, LlmProvider, LlmTestResult, MeResponse, Workspace } from "@/lib/api/types";
+import type { ApiKeyStatus, ApiKeySummary, LlmProvider, LlmTestResult, MeResponse } from "@/lib/api/types";
 
 /** The backend's fixed allowlist (app/domain/user.py::LlmProvider), in display order. */
 export const PROVIDERS: { id: LlmProvider; name: string }[] = [
@@ -81,32 +81,3 @@ export function describeTest(result: LlmTestResult): string {
 
 /** Only the tail a saved key keeps; the key itself is never shown again. */
 export const maskedKey = (last4: string) => `•••• ${last4}`;
-
-export interface BudgetState {
-  used: number;
-  cap: number;
-  fraction: number;
-  reached: boolean;
-  tokens: number;
-}
-
-/** A workspace's estimated spend against its cap (app/services/orchestrator/budget.py). */
-export function budgetOf(ws: Pick<Workspace, "cost_used_usd" | "token_budget_usd" | "tokens_used">): BudgetState {
-  const used = ws.cost_used_usd ?? 0;
-  const cap = ws.token_budget_usd;
-  return {
-    used,
-    cap,
-    fraction: cap > 0 ? Math.min(1, used / cap) : 1,
-    reached: used >= cap,
-    tokens: (ws.tokens_used?.prompt ?? 0) + (ws.tokens_used?.completion ?? 0),
-  };
-}
-
-export const usd = (v: number) => (v > 0 && v < 0.01 ? "<$0.01" : `$${v.toFixed(2)}`);
-
-/** A cap the backend accepts: a positive amount, in cents. */
-export function parseCap(input: string): number | null {
-  const v = Number(input.trim().replace(/^\$/, ""));
-  return Number.isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : null;
-}

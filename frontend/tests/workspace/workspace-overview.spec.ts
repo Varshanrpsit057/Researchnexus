@@ -113,6 +113,10 @@ test.describe("Research workspace", () => {
     await expect(page.getByRole("link", { name: /^Research graph/ })).toHaveAttribute("href", `/workspace/${workspaceId}/graph`);
     await expect(page.getByRole("link", { name: /^Citations/ })).toHaveAttribute("href", `/workspace/${workspaceId}/citations`);
     await expect(page.getByRole("link", { name: "Ask this workspace" })).toHaveAttribute("href", `/workspace/${workspaceId}/chat`);
+    // real usage for this workspace (a new one has made no model calls), never a cost or a cap
+    await expect(page.getByTestId("workspace-usage")).toContainText("No model calls in the last 30 days");
+    await expect(page.getByTestId("workspace-usage").getByRole("link", { name: "Usage details" })).toHaveAttribute("href", "/settings#usage");
+    await expect(page.getByText(/budget|\$\d/)).toHaveCount(0);
 
     // 6. Add the remaining result from the workspace's own run.
     await page.getByRole("button", { name: "Add papers" }).click();

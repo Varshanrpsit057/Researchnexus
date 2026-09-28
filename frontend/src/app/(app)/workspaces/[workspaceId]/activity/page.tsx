@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody } from "@/components/ui/Card";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/States";
 import { Timestamp } from "@/components/ui/Timestamp";
+import { formatTokens } from "@/lib/usage";
 
 const STAGES: StageName[] = [
   "ingest", "profile", "discovery", "ranking", "trail", "workspace", "rag", "comparison", "gaps", "directions", "citations",
@@ -57,8 +58,7 @@ export default function WorkspaceActivityPage() {
                   <th className="px-4 py-2 font-medium text-ink-muted">Stage</th>
                   <th className="px-4 py-2 font-medium text-ink-muted">Tool</th>
                   <th className="px-4 py-2 font-medium text-ink-muted">Status</th>
-                  <th className="px-4 py-2 font-medium text-ink-muted">Tokens</th>
-                  <th className="px-4 py-2 font-medium text-ink-muted">Cost</th>
+                  <th className="px-4 py-2 font-medium text-ink-muted">Tokens (in / out)</th>
                   <th className="px-4 py-2 font-medium text-ink-muted">Latency</th>
                   <th className="px-4 py-2 font-medium text-ink-muted">When</th>
                 </tr>
@@ -74,9 +74,8 @@ export default function WorkspaceActivityPage() {
                       <Badge tone={run.ok ? "verified" : "danger"}>{run.ok ? "ok" : "error"}</Badge>
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-ink-muted">
-                      {run.tokens_prompt}/{run.tokens_completion}
+                      {formatTokens(run.tokens_prompt)} / {formatTokens(run.tokens_completion)}
                     </td>
-                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">${run.cost_usd.toFixed(4)}</td>
                     <td className="px-4 py-2 font-mono text-xs text-ink-muted">{run.latency_ms}ms</td>
                     <td className="px-4 py-2 text-xs text-ink-subtle"><Timestamp at={run.ts} style="datetime" /></td>
                   </tr>

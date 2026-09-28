@@ -19,6 +19,12 @@ of which is worth the complexity here. The async stages (profile,
 discovery, ranking, trail) already yield at their own `await` points, so
 `asyncio.wait_for` around them is a real, cancellable timeout.
 
+Every model call a stage makes is recorded in the usage ledger
+(app/llm/usage.py) under the stage's name, unless its caller already named
+the work (a gaps job, a chat turn); the stage run itself keeps the tokens
+those calls really used. No cost is estimated: ResearchNexus can't know
+what a user's own provider charges them (remediation Phase 5).
+
 `run_full_pipeline` is the fixed DAG itself: ingest -> profile -> discovery
 (S5+S6 combined, per `services/discovery/pipeline.py`'s own docstring,
 with the bounded "one extra citation hop" decision) -> ranking -> trail ->
@@ -39,26 +45,21 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db import repository as repo
 from app.domain.jobs import JobStatus
-from app.domain.orchestrator import BudgetDecision, StageName, StageRun
+from app.domain.orchestrator import StageName, StageRun
 from app.domain.rag import RagAnswer
 from app.domain.user import User
 from app.domain.workspace import ResearchWorkspace
 from app.jobs.runner import new_id
 from app.llm.session import LlmSession
+from app.llm.usage import usage_scope_default, usage_tally
 from app.services.citations.pipeline import CitationsBuildResult, build_citations
 from app.services.directions.pipeline import DirectionBuildResult, build_directions
-from app.services.discovery.pipeline import DiscoveryOptions, run_discovery
+from app.services.discovery.pipeline import DiscoveryOptions, DiscoveryResult, run_discovery
 from app.services.discovery.relevance import (
     discovery_options as default_discovery_options,
 )
 from app.services.discovery.relevance import rank_options, relevance_embedder
 from app.services.gaps.pipeline import GapBuildOptions, GapBuildResult, build_gaps
-from app.services.orchestrator.budget import (
-    decide_budget,
-    degrade_top_k,
-    estimate_cost_usd,
-    should_authorise_extra_citation_hop,
-)
 from app.services.profile.pipeline import run_profile_extraction
 from app.services.rag.pipeline import RagRequest, answer_question
 from app.services.ranking.pipeline import rank_search_run
@@ -84,10 +85,13 @@ class InvalidStageInput(OrchestratorError):
     a runnable state (Roadmap Phase 14 test: "invalid stage inputs")."""
 
 
-class BudgetBlocked(OrchestratorError):
-    """`BudgetGuard` returned BLOCK -- the workspace has reached its
-    `token_budget_usd` cap. The stage is never attempted; no tokens are
-    spent (Architecture §4: "hard stop at cap -> notify user, offer raise")."""
+def should_authorise_extra_citation_hop(result: DiscoveryResult, settings: Settings) -> bool:
+    """The bounded "one extra citation hop" (Architecture §4): only when the
+    first discovery pass came back thin or from too few strategies."""
+    return (
+        result.count_after_filter < settings.orchestrator_min_candidates_for_hop
+        or len(result.strategies_succeeded) < settings.orchestrator_min_strategy_diversity
+    )
 
 
 def _hash_value(value: object) -> str:
@@ -133,7 +137,6 @@ class ResearchOrchestrator:
         timeout_s: float | None = None,
         max_attempts: int = 1,
         input_for_hash: object = None,
-        extract_usage: Callable[[T], tuple[int, int]] | None = None,
     ) -> T:
         attempts = max(1, min(max_attempts, self.settings.orchestrator_max_stage_attempts))
         timeout = self.settings.orchestrator_stage_timeout_s if timeout_s is None else timeout_s
@@ -142,31 +145,26 @@ class ResearchOrchestrator:
         last_exc: Exception | None = None
         for _attempt in range(attempts):
             timer = StageTimer()
-            try:
-                with timer:
-                    awaitable = fn()
-                    result = await (asyncio.wait_for(awaitable, timeout=timeout) if timeout else awaitable)
-            except Exception as e:  # noqa: BLE001 - always logged; re-raised once attempts are exhausted -- never BaseException, so Ctrl-C/SystemExit still propagate immediately
-                last_exc = e
-                self._record(
-                    stage, tool, ok=False, error=str(e)[:500], latency_ms=timer.elapsed_ms or 0,
-                    owner_id=owner_id, workspace_id=workspace_id, job_id=job_id,
-                    input_hash=input_hash, output_hash=_hash_value(None),
-                    tokens_prompt=0, tokens_completion=0, cost_usd=0.0,
-                )
-                continue
-            tokens_prompt, tokens_completion = extract_usage(result) if extract_usage else (0, 0)
-            cost_usd = estimate_cost_usd(tokens_prompt, tokens_completion, self.settings)
-            if workspace_id is not None and cost_usd:
-                repo.add_workspace_spend(
-                    self.db, workspace_id, owner_id,
-                    tokens_prompt=tokens_prompt, tokens_completion=tokens_completion, cost_usd=cost_usd,
-                )
+            # a failed attempt's calls were billed too, so they count as well
+            with usage_scope_default(stage.value, workspace_id=workspace_id, job_id=job_id), usage_tally() as used:
+                try:
+                    with timer:
+                        awaitable = fn()
+                        result = await (asyncio.wait_for(awaitable, timeout=timeout) if timeout else awaitable)
+                except Exception as e:  # noqa: BLE001 - always logged; re-raised once attempts are exhausted -- never BaseException, so Ctrl-C/SystemExit still propagate immediately
+                    last_exc = e
+                    self._record(
+                        stage, tool, ok=False, error=str(e)[:500], latency_ms=timer.elapsed_ms or 0,
+                        owner_id=owner_id, workspace_id=workspace_id, job_id=job_id,
+                        input_hash=input_hash, output_hash=_hash_value(None),
+                        tokens_prompt=used.prompt_tokens, tokens_completion=used.completion_tokens,
+                    )
+                    continue
             self._record(
                 stage, tool, ok=True, error=None, latency_ms=timer.elapsed_ms or 0,
                 owner_id=owner_id, workspace_id=workspace_id, job_id=job_id,
                 input_hash=input_hash, output_hash=_hash_value(result),
-                tokens_prompt=tokens_prompt, tokens_completion=tokens_completion, cost_usd=cost_usd,
+                tokens_prompt=used.prompt_tokens, tokens_completion=used.completion_tokens,
             )
             return result
 
@@ -188,7 +186,6 @@ class ResearchOrchestrator:
         output_hash: str,
         tokens_prompt: int,
         tokens_completion: int,
-        cost_usd: float,
     ) -> None:
         run = StageRun(
             id=new_id("sr"),
@@ -201,7 +198,6 @@ class ResearchOrchestrator:
             output_hash=output_hash,
             tokens_prompt=tokens_prompt,
             tokens_completion=tokens_completion,
-            cost_usd=cost_usd,
             latency_ms=latency_ms,
             ok=ok,
             error=error,
@@ -362,7 +358,7 @@ class ResearchOrchestrator:
 
     # ------------------------------------------------------------------
     # Post-workspace stages: on-demand, user-triggered, each individually
-    # wrapped for telemetry + budget -- these are the "orchestrated variants
+    # wrapped for telemetry and usage -- these are the "orchestrated variants
     # of discover/gaps/directions already exposed" (Roadmap Phase 14).
     # ------------------------------------------------------------------
 
@@ -378,37 +374,16 @@ class ResearchOrchestrator:
         reranker: object = None,
         answer_fn: Callable[..., Awaitable[RagAnswer]] = answer_question,
     ) -> RagAnswer:
-        """The RAG stage is the concrete example of "graceful degradation
-        under budget" (Architecture §4 `BudgetGuard`): DEGRADE halves the
-        retrieval `k`; BLOCK never calls `answer_question` at all -- no
-        tokens are spent once a workspace has reached its cap."""
-        decision = decide_budget(workspace, self.settings)
-        if decision is BudgetDecision.BLOCK:
-            self._record(
-                StageName.RAG, "answer_question", ok=False, error="budget_blocked", latency_ms=0,
-                owner_id=owner_id, workspace_id=workspace.workspace_id, job_id=job_id,
-                input_hash=_hash_value({"query": request.query}), output_hash=_hash_value(None),
-                tokens_prompt=0, tokens_completion=0, cost_usd=0.0,
-            )
-            raise BudgetBlocked(f"workspace {workspace.workspace_id} has reached its token budget")
-
-        call_settings = self.settings
-        if decision is BudgetDecision.DEGRADE:
-            call_settings = self.settings.model_copy(
-                update={"rag_retrieve_k": degrade_top_k(self.settings.rag_retrieve_k)}
-            )
-
         async def _call() -> RagAnswer:
             return await answer_fn(
                 db=self.db, workspace=workspace, request=request, session=session,
-                settings=call_settings, index=index, reranker=reranker,
+                settings=self.settings, index=index, reranker=reranker,
             )
 
         return await self.run_stage(
             StageName.RAG, "answer_question", _call,
             owner_id=owner_id, workspace_id=workspace.workspace_id, job_id=job_id,
             input_for_hash={"query": request.query, "mode": request.mode},
-            extract_usage=lambda r: (r.prompt_tokens, r.completion_tokens),
         )
 
     async def run_gaps_stage(
@@ -456,7 +431,6 @@ class ResearchOrchestrator:
             StageName.DIRECTIONS, "build_directions", _call,
             owner_id=owner_id, workspace_id=workspace.workspace_id, job_id=job_id,
             input_for_hash={"gap_ids": sorted(gap_ids)},
-            extract_usage=lambda r: (r.prompt_tokens, r.completion_tokens),
         )
 
     async def run_comparison_stage(
@@ -482,7 +456,6 @@ class ResearchOrchestrator:
             StageName.COMPARISON, "build_comparison", _call,
             owner_id=owner_id, workspace_id=workspace.workspace_id, job_id=job_id,
             input_for_hash={"paper_ids": sorted(paper_ids)},
-            extract_usage=lambda r: (r.prompt_tokens, r.completion_tokens),
         )
 
     async def run_citations_stage(

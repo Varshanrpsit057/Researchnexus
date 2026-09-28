@@ -72,9 +72,11 @@ test.describe("Seed -> Analyze", () => {
     await page.getByRole("button", { name: "Run analysis" }).click();
 
     await expect(page.getByText(profile.abstract)).toBeVisible();
-    await expect(page.getByText("Subdomains")).toBeVisible();
-    await expect(page.getByText("Retrieval-augmented generation").first()).toBeVisible();
     await expect(page.getByText("Algorithms")).toBeVisible();
+    // the field and its subfields are context: one click down, not the first read
+    await page.getByText("More about this paper").click();
+    await expect(page.getByText("Subfields")).toBeVisible();
+    await expect(page.getByText("Retrieval-augmented generation").first()).toBeVisible();
     await expect(page.getByText("Maximum inner product search.")).toBeVisible();
 
     // 4. The defining behavior this slice was missing: reloading the page

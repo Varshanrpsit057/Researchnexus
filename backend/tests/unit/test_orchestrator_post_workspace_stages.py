@@ -14,10 +14,14 @@ from app.db.models import PaperORM
 from app.domain.candidate import NormalizedCandidate
 from app.domain.orchestrator import StageName
 from app.domain.rag import RagAnswer
+from app.domain.usage import LlmCall
+from app.domain.user import LlmProvider
 from app.domain.workspace import AddedBy, ResearchWorkspace, WorkspacePaper, WorkspacePaperRole
+from app.llm.client import ChatMessage, ChatResult, LlmErrorKind, LlmProviderError
+from app.llm.usage import MeteredClient, usage_scope
 from app.services.gaps.pipeline import GapBuildResult
 from app.services.normalize.canonical import title_hash
-from app.services.orchestrator.orchestrator import BudgetBlocked, ResearchOrchestrator
+from app.services.orchestrator.orchestrator import ResearchOrchestrator
 from app.services.rag.pipeline import RagRequest
 
 
@@ -44,7 +48,7 @@ def settings() -> Settings:
     return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
-def _workspace(db: Session, *, budget: float = 5.0, used: float = 0.0) -> ResearchWorkspace:
+def _workspace(db: Session) -> ResearchWorkspace:
     uid = "usr_1"
     repo.create_user(db, user_id=uid, email="u@example.com")
     seed = repo.upsert_discovered_paper(db, NormalizedCandidate(title="Seed", title_hash=title_hash("Seed")))
@@ -53,11 +57,8 @@ def _workspace(db: Session, *, budget: float = 5.0, used: float = 0.0) -> Resear
     ws = ResearchWorkspace(
         workspace_id="ws_1", owner_id=uid, title="W", seed_paper_id=seed, seed_profile_id="prof",
         papers=[WorkspacePaper(workspace_id="ws_1", paper_id=seed, added_by=AddedBy.MANUAL, role=WorkspacePaperRole.SEED)],
-        token_budget_usd=budget,
     )
     repo.create_workspace(db, ws)
-    if used:
-        repo.add_workspace_spend(db, "ws_1", uid, tokens_prompt=0, tokens_completion=0, cost_usd=used)
     return repo.get_workspace(db, "ws_1", uid)  # type: ignore[return-value]
 
 
@@ -65,70 +66,96 @@ def _orch(db: Session, settings: Settings) -> ResearchOrchestrator:
     return ResearchOrchestrator(db=db, settings=settings)
 
 
-# --- RAG stage: budget allow / degrade / block ------------------------------
+class _Model:
+    """A provider that answers every call with the same usage."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+
+    async def chat(self, **kw: object) -> ChatResult:
+        if self.fail:
+            raise LlmProviderError("rate limited", kind=LlmErrorKind.RATE_LIMITED, provider="deepseek")
+        return ChatResult(content="ok", latency_ms=1, prompt_tokens=300, completion_tokens=40, cached_prompt_tokens=100)
+
+    async def structured(self, **kw: object) -> object:
+        raise NotImplementedError
+
+    async def probe_capabilities(self, **kw: object) -> object:
+        raise NotImplementedError
 
 
-def test_rag_stage_allows_and_records_spend_when_well_under_budget(db: Session, settings: Settings) -> None:
-    ws = _workspace(db, budget=5.0, used=0.0)
+def _metered(ledger: list[LlmCall], *, fail: bool = False) -> MeteredClient:
+    return MeteredClient(_Model(fail=fail), owner_id="usr_1", provider=LlmProvider.DEEPSEEK, recorder=ledger.append)  # type: ignore[arg-type]
+
+
+PING = [ChatMessage(role="user", content="q")]
+
+
+# --- every stage keeps the tokens its model calls really used (remediation Phase 5)
+
+
+def test_a_stage_run_keeps_the_tokens_its_calls_used_and_labels_them_with_the_stage(db: Session, settings: Settings) -> None:
+    ws = _workspace(db)
     orch = _orch(db, settings)
+    ledger: list[LlmCall] = []
+    model = _metered(ledger)
 
-    async def fake_answer(**kw: object) -> RagAnswer:
-        return RagAnswer(answerable=True, text="ok", prompt_tokens=500, completion_tokens=500)
+    async def answer(**kw: object) -> RagAnswer:
+        for _ in range(2):
+            await model.chat(api_key="k", model="deepseek-flash", messages=PING)
+        # the stage's own figure is ignored: the ledger's calls are the truth
+        return RagAnswer(answerable=True, text="ok", prompt_tokens=1, completion_tokens=1)
 
-    result = asyncio.run(
-        orch.run_rag_stage(
-            workspace=ws, request=RagRequest(query="what dataset?"), session=None,
-            owner_id=ws.owner_id, answer_fn=fake_answer,
-        )
-    )
-    assert result.text == "ok"
-    updated = repo.get_workspace(db, "ws_1", ws.owner_id)
-    assert updated is not None and updated.cost_used_usd > 0.0
+    asyncio.run(orch.run_rag_stage(workspace=ws, request=RagRequest(query="q"), session=None, owner_id=ws.owner_id, answer_fn=answer))
 
-    rows = repo.list_stage_runs(db, "ws_1")
-    assert len(rows) == 1 and rows[0].ok is True and rows[0].tokens_prompt == 500
+    [run] = repo.list_stage_runs(db, "ws_1")
+    assert (run.ok, run.tokens_prompt, run.tokens_completion) == (True, 600, 80)
+    assert {(c.feature, c.workspace_id) for c in ledger} == {("rag", "ws_1")}
 
 
-def test_rag_stage_degrades_k_once_past_the_threshold(db: Session, settings: Settings) -> None:
-    ws = _workspace(db, budget=5.0, used=4.5)  # 90% spent, threshold is 80%
+def test_a_failed_stage_still_keeps_the_tokens_it_spent(db: Session, settings: Settings) -> None:
+    ws = _workspace(db)
     orch = _orch(db, settings)
-    seen_k: dict[str, int] = {}
+    ledger: list[LlmCall] = []
+    model, failing = _metered(ledger), _metered(ledger, fail=True)
 
-    async def fake_answer(**kw: object) -> RagAnswer:
-        call_settings = kw["settings"]
-        assert isinstance(call_settings, Settings)
-        seen_k["k"] = call_settings.rag_retrieve_k
-        return RagAnswer(answerable=True, text="ok")
+    async def answer(**kw: object) -> RagAnswer:
+        await model.chat(api_key="k", model="m", messages=PING)
+        await failing.chat(api_key="k", model="m", messages=PING)
+        raise AssertionError("unreachable")
 
-    asyncio.run(
-        orch.run_rag_stage(
-            workspace=ws, request=RagRequest(query="q"), session=None, owner_id=ws.owner_id, answer_fn=fake_answer,
-        )
-    )
-    assert seen_k["k"] < settings.rag_retrieve_k
+    with pytest.raises(LlmProviderError):
+        asyncio.run(orch.run_rag_stage(workspace=ws, request=RagRequest(query="q"), session=None, owner_id=ws.owner_id, answer_fn=answer))
+    [run] = repo.list_stage_runs(db, "ws_1")
+    assert (run.ok, run.tokens_prompt, run.tokens_completion) == (False, 300, 40)
+    assert [c.ok for c in ledger] == [True, False]
 
 
-def test_rag_stage_blocks_and_never_calls_answer_question_once_the_cap_is_reached(
-    db: Session, settings: Settings
-) -> None:
-    ws = _workspace(db, budget=5.0, used=5.0)
+def test_a_stage_inside_named_work_keeps_the_callers_name(db: Session, settings: Settings) -> None:
+    ws = _workspace(db)
     orch = _orch(db, settings)
-    called = {"n": 0}
+    ledger: list[LlmCall] = []
+    model = _metered(ledger)
 
-    async def fake_answer(**kw: object) -> RagAnswer:
-        called["n"] += 1
-        return RagAnswer(answerable=True, text="should not happen")
+    async def build(**kw: object) -> GapBuildResult:
+        await model.chat(api_key="k", model="m", messages=PING)
+        return GapBuildResult(workspace_id="ws_1", gap_count=0)
 
-    with pytest.raises(BudgetBlocked):
-        asyncio.run(
-            orch.run_rag_stage(
-                workspace=ws, request=RagRequest(query="q"), session=None, owner_id=ws.owner_id, answer_fn=fake_answer,
-            )
-        )
-    assert called["n"] == 0
+    async def run() -> None:
+        with usage_scope("gaps", workspace_id="ws_1", job_id="job_7"):
+            await orch.run_gaps_stage(workspace=ws, session=None, owner_id=ws.owner_id, job_id="job_7", build_fn=build)
 
-    rows = repo.list_stage_runs(db, "ws_1")
-    assert len(rows) == 1 and rows[0].ok is False and rows[0].error == "budget_blocked"
+    asyncio.run(run())
+    assert [(c.feature, c.job_id) for c in ledger] == [("gaps", "job_7")]
+    assert repo.list_stage_runs(db, "ws_1", stage=StageName.GAPS)[0].tokens_prompt == 300
+
+
+def test_a_stage_that_calls_no_model_records_no_tokens(db: Session, settings: Settings) -> None:
+    ws = _workspace(db)
+    orch = _orch(db, settings)
+    asyncio.run(orch.run_citations_stage(workspace=ws, paper_ids=None, formats=["apa"], owner_id=ws.owner_id))
+    [run] = repo.list_stage_runs(db, "ws_1", stage=StageName.CITATIONS)
+    assert (run.tokens_prompt, run.tokens_completion) == (0, 0)
 
 
 # --- gaps / directions / comparison / citations stage wrappers --------------
@@ -147,20 +174,20 @@ def test_gaps_stage_wraps_build_gaps_and_logs_a_stage_run(db: Session, settings:
     assert len(rows) == 1 and rows[0].ok is True
 
 
-def test_directions_stage_wraps_build_directions_and_records_spend(db: Session, settings: Settings) -> None:
+def test_directions_stage_wraps_build_directions_and_logs_a_stage_run(db: Session, settings: Settings) -> None:
     from app.services.directions.pipeline import DirectionBuildResult
 
     ws = _workspace(db)
     orch = _orch(db, settings)
 
     async def fake_build_directions(**kw: object) -> DirectionBuildResult:
-        return DirectionBuildResult(workspace_id="ws_1", prompt_tokens=100, completion_tokens=50)
+        return DirectionBuildResult(workspace_id="ws_1")
 
     asyncio.run(
         orch.run_directions_stage(workspace=ws, gap_ids=["gap_1"], session=None, owner_id=ws.owner_id, build_fn=fake_build_directions)
     )
-    updated = repo.get_workspace(db, "ws_1", ws.owner_id)
-    assert updated is not None and updated.cost_used_usd > 0.0
+    [run] = repo.list_stage_runs(db, "ws_1", stage=StageName.DIRECTIONS)
+    assert run.ok is True
 
 
 def test_citations_stage_wraps_build_citations(db: Session, settings: Settings) -> None:

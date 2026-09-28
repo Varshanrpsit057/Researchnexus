@@ -14,12 +14,14 @@ import { usePreference, writePreference, type Preferences } from "@/lib/preferen
 import { activeSummary, describeTest, providerName, providerRows } from "@/lib/settings";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { C, focusRing, panel, quietButton } from "../workspace/[id]/ui";
-import { KeyForm, LoadFailure, ProviderLine, Section, SmallButton, WorkspaceBudget } from "./parts";
+import { KeyForm, LoadFailure, ProviderLine, Section, SmallButton, WorkspaceRow } from "./parts";
+import { UsagePanel } from "./usage";
 import { Timestamp } from "@/components/ui/Timestamp";
 
 const SECTIONS = [
   { id: "account", label: "Account" },
   { id: "models", label: "Language models" },
+  { id: "usage", label: "Model usage" },
   { id: "workspaces", label: "Workspaces" },
   { id: "device", label: "This device" },
   { id: "service", label: "Service" },
@@ -134,7 +136,8 @@ export default function SettingsPage() {
         <header className="border-b pb-6" style={{ borderColor: C.lineStrong }}>
           <h1 className="text-[clamp(26px,3.6vw,40px)] font-extrabold leading-[1.1] tracking-[-0.025em]">Settings</h1>
           <p className="mt-3 max-w-[68ch] text-[15px] leading-relaxed" style={{ color: C.muted }}>
-            Your account, the language model keys ResearchNexus uses on your behalf, each workspace&apos;s spending cap, and how the app looks on this device.
+            Your account, the language model keys ResearchNexus uses on your behalf and what they have used, your workspaces, and how the app looks on this
+            device.
           </p>
         </header>
 
@@ -253,12 +256,17 @@ export default function SettingsPage() {
               </div>
             </Section>
 
-            {/* workspaces */}
+            {/* model usage */}
             <Section
-              id="workspaces"
-              title="Workspaces"
-              lead="Each workspace has a cap on its estimated model spend. Near the cap it works lighter; at the cap its model stages pause until you raise it. The estimate uses a flat rate: your provider bills you, not ResearchNexus."
+              id="usage"
+              title="Model usage"
+              lead="What your keys have used, in tokens, as each provider counted them: every call, including ones that failed or whose answer was never saved."
             >
+              <UsagePanel ready={ready} />
+            </Section>
+
+            {/* workspaces */}
+            <Section id="workspaces" title="Workspaces" lead="Rename a workspace here; everything else lives inside the workspace itself.">
               {workspacesQ.error ? (
                 <LoadFailure what="your workspaces" onRetry={() => workspacesQ.mutate()} />
               ) : !workspacesQ.data ? (
@@ -277,7 +285,7 @@ export default function SettingsPage() {
               ) : (
                 <ul className="divide-y divide-[rgba(150,175,230,0.12)] overflow-hidden rounded-2xl" style={{ ...panel, borderColor: C.line }} aria-label="Workspaces">
                   {workspacesQ.data.workspaces.map((ws) => (
-                    <WorkspaceBudget
+                    <WorkspaceRow
                       key={ws.workspace_id}
                       ws={ws}
                       onSaved={() => {

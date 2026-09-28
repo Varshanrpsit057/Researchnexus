@@ -77,7 +77,6 @@ class WorkspaceCreateRequest:
     title: str
     seed_paper_id: str
     import_run_id: str | None = None
-    token_budget_usd: float = 5.0
 
 
 def _index_dir(settings: Settings) -> Path:
@@ -156,7 +155,6 @@ def create_workspace(
         title=req.title,
         seed_paper_id=seed.id,
         seed_profile_id=profile.profile_id,
-        token_budget_usd=req.token_budget_usd,
         source_run_id=verified_run_id,
         papers=[seed_paper],
     )
@@ -186,12 +184,9 @@ def update_workspace(
     owner: User,
     workspace_id: str,
     title: str | None = None,
-    token_budget_usd: float | None = None,
 ) -> ResearchWorkspace:
     _require_workspace(db, owner, workspace_id)
-    updated = repo.update_workspace(
-        db, workspace_id, owner.id, title=title, token_budget_usd=token_budget_usd
-    )
+    updated = repo.update_workspace(db, workspace_id, owner.id, title=title)
     assert updated is not None  # ownership already checked
     return updated
 

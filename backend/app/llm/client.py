@@ -105,13 +105,19 @@ class ChatMessage(BaseModel):
 
 
 class ChatResult(BaseModel):
+    """One reply, with the provider's own token counts. Every adapter reports
+    them the same way, whatever its wire format: `prompt_tokens` includes
+    `cached_prompt_tokens`, and `completion_tokens` is every token the model
+    produced, `reasoning_tokens` included -- so prompt + completion is the
+    whole call, for any provider."""
+
     content: str
     latency_ms: int
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    # the prompt tokens the provider served from its cache (billed lower)
+    # the part of prompt_tokens the provider served from its cache (billed lower)
     cached_prompt_tokens: int = 0
-    # hidden reasoning tokens a thinking model spent (billed as completion)
+    # the part of completion_tokens a thinking model spent on hidden reasoning
     reasoning_tokens: int = 0
     # the model that actually answered (a provider may resolve an alias)
     model: str | None = None

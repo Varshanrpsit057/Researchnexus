@@ -38,6 +38,8 @@ import type {
   SummaryResponse,
   TrailEdge,
   UploadResponse,
+  UsageRange,
+  UsageReport,
   Workspace,
   WorkspaceListResponse,
   WorkspacePaper,
@@ -54,6 +56,14 @@ export const auth = {
 
 export const service = {
   health: () => apiFetch<HealthResponse>("/health"),
+};
+
+// --- model usage --------------------------------------------------------
+
+export const usage = {
+  /** The signed-in user's usage over `range`, for every workspace or one. */
+  get: (range: UsageRange, workspaceId?: string) =>
+    apiFetch<UsageReport>("/api/v1/usage", { query: { range, workspace_id: workspaceId } }),
 };
 
 // --- BYOK keys --------------------------------------------------------
@@ -98,10 +108,10 @@ export const jobs = {
 
 export const workspaces = {
   list: () => apiFetch<WorkspaceListResponse>("/api/v1/workspaces"),
-  create: (body: { title: string; seed_paper_id: string; import_run_id?: string | null; token_budget_usd?: number }) =>
+  create: (body: { title: string; seed_paper_id: string; import_run_id?: string | null }) =>
     apiFetch<Workspace>("/api/v1/workspaces", { method: "POST", body }),
   get: (workspaceId: string) => apiFetch<Workspace>(`/api/v1/workspaces/${workspaceId}`),
-  update: (workspaceId: string, body: { title?: string; token_budget_usd?: number }) =>
+  update: (workspaceId: string, body: { title?: string }) =>
     apiFetch<Workspace>(`/api/v1/workspaces/${workspaceId}`, { method: "PATCH", body }),
   remove: (workspaceId: string) => apiFetch<void>(`/api/v1/workspaces/${workspaceId}`, { method: "DELETE" }),
 

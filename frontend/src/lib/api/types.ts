@@ -110,6 +110,9 @@ export interface Paper {
   doi: string | null;
   arxiv_id: string | null;
   has_full_text: boolean;
+  /** An uploaded PDF, or a paper found by discovery (at most its abstract). */
+  source?: "upload" | "discovery";
+  has_abstract?: boolean;
   parse_confidence: ParseConfidence | null;
   page_count: number | null;
   sections: PaperSection[];
@@ -133,10 +136,19 @@ export interface UploadResponse {
 
 export type ProvenanceStatus = "verified" | "unverified" | "user_edited";
 
+/** The value a paper reports for a field (a metric's "95.83%"), verbatim.
+ * "verified" only when it is written in the field's own evidence; an
+ * unverified one was claimed but not found, and is never shown as a result. */
+export interface ReportedValue {
+  text: string;
+  status: ProvenanceStatus;
+}
+
 export interface ProfileField {
   value: string;
   source_span: SourceSpan | null;
   status: ProvenanceStatus;
+  reported_value?: ReportedValue | null;
 }
 
 export interface ProfileList {
@@ -150,6 +162,10 @@ export interface ResearchProfile {
   grounding: string;
   title: string;
   abstract: string;
+  /** False when no abstract was found and `abstract` is stand-in body text. Absent before remediation Phase 6. */
+  abstract_found?: boolean;
+  /** At most two of the abstract's own sentences. Absent before remediation Phase 6. */
+  summary?: string;
   authors: string[];
   year: number | null;
   venue: string | null;
@@ -280,10 +296,6 @@ export interface Workspace {
   seed_profile_id: string;
   papers: WorkspacePaper[];
   combined_index_path: string | null;
-  token_budget_usd: number;
-  tokens_used: TokenUsage;
-  cost_used_usd: number;
-  cost_used: number;
   source_run_id: string | null;
   created_at: string;
   updated_at: string;
@@ -901,9 +913,9 @@ export interface StageRun {
   tool: string;
   input_hash: string;
   output_hash: string;
+  /** The provider-reported tokens of the model calls this run made. */
   tokens_prompt: number;
   tokens_completion: number;
-  cost_usd: number;
   latency_ms: number;
   ok: boolean;
   error: string | null;
@@ -912,6 +924,36 @@ export interface StageRun {
 
 export interface ActivityResponse {
   stage_runs: StageRun[];
+}
+
+// --- model usage (remediation Phase 5) -------------------------------------
+
+export type UsageRange = "7d" | "30d" | "90d" | "all";
+
+/** The provider's own counts: prompt includes cached, completion includes reasoning. */
+export interface UsageTotals {
+  calls: number;
+  failed_calls: number;
+  /** Answered calls whose provider sent no usage: their tokens are unknown, not zero. */
+  unreported_calls: number;
+  prompt_tokens: number;
+  cached_prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageReport {
+  /** A rolling window ending `until`; `since` is null for all time. */
+  range: { key: UsageRange; days: number | null; since: string | null; until: string };
+  workspace_id: string | null;
+  totals: UsageTotals;
+  first_call_at: string | null;
+  last_call_at: string | null;
+  by_feature: (UsageTotals & { feature: string })[];
+  by_model: (UsageTotals & { provider: string; model: string })[];
+  /** Absent when the report is for one workspace. A null id: work outside any workspace; a null title: a deleted one. */
+  by_workspace?: (UsageTotals & { workspace_id: string | null; title: string | null })[];
 }
 
 // --- error envelope -------------------------------------------------------

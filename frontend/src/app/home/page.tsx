@@ -269,7 +269,7 @@ export default function HomePage() {
                   <div className="mt-4 flex items-center justify-between text-xs" style={{ color: MUTED }}>
                     <span>{ws.papers.length} paper{ws.papers.length === 1 ? "" : "s"}</span>
                     <span>
-                      ${ws.cost_used_usd.toFixed(2)} / ${ws.token_budget_usd.toFixed(2)}
+                      created <Timestamp at={ws.created_at} style="date" />
                     </span>
                   </div>
                 </Link>

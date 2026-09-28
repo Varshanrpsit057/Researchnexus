@@ -1,25 +1,18 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
-import {
-  ArrowSquareOut,
-  Compass,
-  FileText,
-  Quotes,
-  Sparkle,
-  Table as TableIcon,
-  WarningCircle,
-} from "@phosphor-icons/react/dist/ssr";
+import { ArrowSquareOut, Compass, FileText, Sparkle, Table as TableIcon, WarningCircle } from "@phosphor-icons/react/dist/ssr";
 import { papers } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
+import { useProfile } from "@/lib/api/hooks";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import { CINEMATIC } from "@/lib/cinematic-theme";
 import { Reveal } from "@/components/effects/Reveal";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
-import type { ProfileField as ProfileFieldT, ProfileList as ProfileListT, ProvenanceStatus, SourceSpan } from "@/lib/api/types";
+import { ProfilePanel } from "@/components/profile/ProfilePanel";
 
 const C = CINEMATIC;
 
@@ -68,41 +61,8 @@ export default function SeedPaperPage() {
     mutate: refetchPaper,
   } = useSWR(ready ? ["paper", paperId] : null, () => papers.get(paperId));
 
-  const {
-    data: profile,
-    isLoading: profileLoading,
-    mutate: mutateProfile,
-  } = useSWR(paper?.has_full_text ? ["profile", paperId] : null, async () => {
-    try {
-      return await papers.getProfile(paperId);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return null;
-      throw err;
-    }
-  });
-
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  const [analyzeWarnings, setAnalyzeWarnings] = useState<string[]>([]);
-
-  async function handleAnalyze() {
-    setAnalyzing(true);
-    setAnalyzeError(null);
-    setAnalyzeWarnings([]);
-    try {
-      const res = await papers.analyze(paperId);
-      await mutateProfile(res.profile, { revalidate: false });
-      setAnalyzeWarnings(res.warnings);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === "llm_key_required") {
-        setAnalyzeError("No working LLM provider key is saved yet. Add one in Settings, then analyze again.");
-      } else {
-        setAnalyzeError(err instanceof ApiError ? err.message : "Analysis failed. Try again.");
-      }
-    } finally {
-      setAnalyzing(false);
-    }
-  }
+  // a paper found by discovery has a profile (read from its abstract) without full text
+  const { data: profile, isLoading: profileLoading, mutate: mutateProfile } = useProfile(paper ? paperId : null);
 
   if (!ready) return null;
 
@@ -226,66 +186,7 @@ export default function SeedPaperPage() {
 
           <Reveal delay={0.1}>
             <GlassCard title="Research profile" icon={<Sparkle className="size-4" style={{ color: C.mint }} aria-hidden />}>
-              {!paper.has_full_text ? (
-                <p className="text-sm" style={{ color: C.muted }}>
-                  Still extracting text from this paper — analysis will be available once parsing finishes.
-                </p>
-              ) : profileLoading ? (
-                <div className="space-y-2">
-                  <div className="h-4 w-full animate-pulse rounded" style={{ background: C.line }} />
-                  <div className="h-4 w-2/3 animate-pulse rounded" style={{ background: C.line }} />
-                </div>
-              ) : profile ? (
-                <div className="space-y-5">
-                  {analyzeWarnings.length > 0 && (
-                    <ul className="space-y-0.5">
-                      {analyzeWarnings.map((w) => (
-                        <li key={w} className="text-xs" style={{ color: C.warning }}>
-                          {w}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {profile.abstract && (
-                    <p className="text-sm leading-relaxed" style={{ color: C.muted }}>
-                      {profile.abstract}
-                    </p>
-                  )}
-                  {profile.keywords.length > 0 && (
-                    <p className="text-xs" style={{ color: C.muted2 }}>
-                      {profile.keywords.join(" · ")}
-                    </p>
-                  )}
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <FieldRow label="Domain" field={profile.domain} />
-                    <FieldRow label="Research problem" field={profile.research_problem} />
-                  </div>
-                  <ListFieldRows label="Methods" list={profile.methods} />
-                  <ListFieldRows label="Datasets" list={profile.datasets} />
-                  <ListFieldRows label="Findings" list={profile.findings} />
-                  <ListFieldRows label="Limitations" list={profile.limitations} />
-                  <p className="border-t pt-3 text-xs" style={{ borderColor: C.line, color: C.muted2 }}>
-                    Extracted with {profile.extraction_model ?? "an unspecified model"} · {profile.extraction_confidence} confidence
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col items-start gap-3">
-                  <p className="text-sm" style={{ color: C.muted }}>
-                    Extract the research problem, methods, datasets, and findings from this paper&apos;s full text.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleAnalyze}
-                    disabled={analyzing}
-                    className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold disabled:opacity-60"
-                    style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
-                  >
-                    <Sparkle className="size-4" aria-hidden />
-                    {analyzing ? "Running analysis…" : "Run analysis"}
-                  </button>
-                  {analyzeError && <InlineError message={analyzeError} />}
-                </div>
-              )}
+              <ProfilePanel paper={paper} profile={profile} loading={profileLoading} mutate={mutateProfile} />
             </GlassCard>
           </Reveal>
 
@@ -387,83 +288,6 @@ export default function SeedPaperPage() {
   );
 }
 
-const provenanceLabel: Record<ProvenanceStatus, string> = {
-  verified: "verified",
-  unverified: "unverified",
-  user_edited: "edited",
-};
-
-function EvidenceDisclosure({ span }: { span: SourceSpan }) {
-  if (!span.quote) return null;
-  return (
-    <details className="mt-1">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs" style={{ color: C.muted2 }}>
-        <Quotes className="size-3" aria-hidden />
-        Evidence
-      </summary>
-      <blockquote className="mt-1 rounded-lg px-2.5 py-1.5 text-xs italic" style={{ background: "rgba(0,0,0,.3)", color: C.muted }}>
-        &ldquo;{span.quote}&rdquo;
-        {span.page != null && (
-          <span className="ml-1.5 not-italic" style={{ color: C.muted2 }}>
-            p.{span.page}
-          </span>
-        )}
-      </blockquote>
-    </details>
-  );
-}
-
-function FieldRow({ label, field }: { label: string; field: ProfileFieldT }) {
-  return (
-    <div>
-      <p className="text-xs font-medium" style={{ color: C.muted2 }}>
-        {label}
-      </p>
-      {!field.value ? (
-        <p className="mt-1 text-sm" style={{ color: C.muted2 }}>
-          Not extracted
-        </p>
-      ) : (
-        <div className="mt-1">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-sm">{field.value}</p>
-            <span className="shrink-0 text-xs" style={{ color: C.muted2 }}>
-              {provenanceLabel[field.status]}
-            </span>
-          </div>
-          {field.source_span && <EvidenceDisclosure span={field.source_span} />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ListFieldRows({ label, list }: { label: string; list: ProfileListT }) {
-  if (list.items.length === 0) return null;
-  return (
-    <div>
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: C.muted2 }}>
-        {label}
-      </p>
-      <ul className="space-y-2.5">
-        {list.items.map((item, i) => (
-          <li key={i}>
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-sm" style={{ color: C.muted }}>
-                {item.value}
-              </p>
-              <span className="shrink-0 text-xs" style={{ color: C.muted2 }}>
-                {provenanceLabel[item.status]}
-              </span>
-            </div>
-            {item.source_span && <EvidenceDisclosure span={item.source_span} />}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function StatusStat({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -472,14 +296,5 @@ function StatusStat({ label, value }: { label: string; value: string }) {
       </dt>
       <dd className="mt-0.5 font-mono text-sm capitalize">{value}</dd>
     </div>
-  );
-}
-
-function InlineError({ message }: { message: string }) {
-  return (
-    <p role="alert" className="flex items-center gap-1.5 text-sm" style={{ color: C.danger }}>
-      <WarningCircle className="size-4 shrink-0" weight="bold" aria-hidden />
-      {message}
-    </p>
   );
 }

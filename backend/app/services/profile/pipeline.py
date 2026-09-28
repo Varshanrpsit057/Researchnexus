@@ -41,6 +41,9 @@ class AnalyzeResult:
 async def run_profile_extraction(
     db: Session, paper: PaperORM, current_user: User, settings: Settings
 ) -> AnalyzeResult:
+    # a paper found by discovery has only its abstract: it is read from that, and says so
+    grounding = "full_text" if paper.has_full_text else "abstract"
+    ensure_abstract_chunks(db, [paper.id])
     chunks = repo.get_chunks_for_paper(db, paper.id)
     sections = [Section(**s) for s in paper.sections]
 
@@ -76,6 +79,7 @@ async def run_profile_extraction(
             doi=paper.doi,
             arxiv_id=paper.arxiv_id,
             chunks=chunks,
+            grounding=grounding,
         )
         stored = repo.upsert_profile(db, profile)
         return AnalyzeResult(profile=stored, warnings=["profile_extraction_failed"])
@@ -94,6 +98,7 @@ async def run_profile_extraction(
         extraction=extraction,
         extraction_model=f"{working_key.provider.value}:{model}",
         tokens=tokens,
+        grounding=grounding,
     )
     stored = repo.upsert_profile(db, profile)
     return AnalyzeResult(profile=stored, warnings=warnings)

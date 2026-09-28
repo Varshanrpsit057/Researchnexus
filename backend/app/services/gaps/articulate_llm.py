@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from app.llm.session import LlmSession
 from app.services.gaps.candidates import GapCandidate
 from app.services.gaps.matrix import norm
+from app.services.normalize.text import in_sentence
 from app.services.rag._llm import chat_json
 
 _LONG_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9-]{7,}")
@@ -171,7 +172,8 @@ def _template(candidate: GapCandidate, fallback: str | None = None) -> Articulat
 
 
 def _clean(value: object) -> str:
-    return str(value).strip().rstrip(".;:, ")
+    # a name read from a profile, as it reads inside the sentence it is put in
+    return in_sentence(str(value).strip().rstrip(".;:, "))
 
 
 def _template_text(candidate: GapCandidate) -> Articulation:
@@ -188,9 +190,10 @@ def _template_text(candidate: GapCandidate) -> Articulation:
         why = f"The {n_sup} papers addressing that shared problem do not adopt {value}, although {others}."
         direction = f"Evaluate {value} on the shared problem setting."
     elif candidate.affected_methods and candidate.affected_datasets:
-        statement = f"No workspace paper combines {candidate.affected_methods[0]} with {candidate.affected_datasets[0]}."
-        why = f"{candidate.affected_methods[0]} and {candidate.affected_datasets[0]} are each used by separate papers, never together."
-        direction = f"Apply {candidate.affected_methods[0]} on {candidate.affected_datasets[0]}."
+        method, dataset = _clean(candidate.affected_methods[0]), _clean(candidate.affected_datasets[0])
+        statement = f"No workspace paper combines {method} with {dataset}."
+        why = f"{method[0].upper()}{method[1:]} and {dataset} are each used by separate papers, never together."
+        direction = f"Apply {method} on {dataset}."
     elif f.get("facet") in {"dataset", "metric"}:
         statement = f"The {n_sup} papers share no common {f['facet']}, so their results are not directly comparable."
         why = f"Each of the {n_sup} papers reports a different {f['facet']}."

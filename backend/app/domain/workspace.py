@@ -22,7 +22,6 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.domain.profile import TokenUsage
 from app.domain.ranking import RankedPaper
 
 _MAX_TAGS = 50
@@ -95,9 +94,6 @@ class ResearchWorkspace(BaseModel):
     seed_profile_id: str
     papers: list[WorkspacePaper] = Field(default_factory=list)
     combined_index_path: str | None = None
-    token_budget_usd: float = 5.0
-    tokens_used: TokenUsage = Field(default_factory=TokenUsage)
-    cost_used_usd: float = 0.0
     source_run_id: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

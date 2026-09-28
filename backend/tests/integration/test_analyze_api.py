@@ -238,8 +238,8 @@ def test_patch_profile_marks_touched_fields_user_edited(
     assert profile["domain"]["status"] == "user_edited"
     assert profile["datasets"]["items"][0]["value"] == "ImageNet"
     assert profile["datasets"]["items"][0]["status"] == "user_edited"
-    # untouched field keeps its original value
-    assert profile["research_problem"]["value"] == "grounding LLM answers in evidence"
+    # an untouched field keeps its extracted value (as every profile reads: a sentence)
+    assert profile["research_problem"]["value"] == "Grounding LLM answers in evidence."
 
 
 def test_a_provider_failure_while_analysing_is_named_and_its_call_counted(
