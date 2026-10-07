@@ -163,12 +163,13 @@ async def generate_search_plan(
 
 
 async def _call_with_repair(session: LlmSession, messages: list[ChatMessage]) -> SearchPlanExtraction:
-    result = await session.client.chat(api_key=session.api_key, model=session.model, messages=messages)
+    # temperature 0: the same seed is searched with the same queries each run (remediation Phase 8)
+    result = await session.client.chat(api_key=session.api_key, model=session.model, messages=messages, temperature=0)
     try:
         return parse_structured(result.content, SearchPlanExtraction)
     except (json.JSONDecodeError, ValidationError) as e:
         repair = build_repair_messages([m.model_dump() for m in messages], result.content, e, SearchPlanExtraction)
         retry = await session.client.chat(
-            api_key=session.api_key, model=session.model, messages=[ChatMessage(**m) for m in repair]
+            api_key=session.api_key, model=session.model, messages=[ChatMessage(**m) for m in repair], temperature=0
         )
         return parse_structured(retry.content, SearchPlanExtraction)

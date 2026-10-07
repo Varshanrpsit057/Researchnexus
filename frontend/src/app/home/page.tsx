@@ -1,368 +1,249 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
 import useSWR from "swr";
-import { motion, useReducedMotion, type Variants } from "motion/react";
-import {
-  ArrowRight,
-  ChartBar,
-  Columns,
-  Compass,
-  FileText,
-  FlaskIcon,
-  GearSix,
-  GitBranch,
-  Lightbulb,
-  MagnifyingGlass,
-  SignOut,
-  UploadSimple,
-  Warning,
-} from "@phosphor-icons/react/dist/ssr";
+import { ArrowRight, CheckCircle, CircleDashed, UploadSimple, Warning } from "@phosphor-icons/react/dist/ssr";
 import { useAuth } from "@/lib/auth/auth-context";
-import { workspaces as workspacesApi } from "@/lib/api/endpoints";
-import { useRecentPapers } from "@/lib/local-history";
+import { useRequireAuth } from "@/lib/auth/use-require-auth";
+import { papers as papersApi, workspaces as workspacesApi } from "@/lib/api/endpoints";
+import { COVERAGE_LABEL } from "@/lib/coverage";
+import { authorLine } from "@/lib/discovery-results";
+import { nextStep } from "@/lib/library";
+import { clearNewAccount, peekNewAccount } from "@/lib/recent-accounts";
 import { parseTimestamp } from "@/lib/time";
+import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
+import { Reveal } from "@/components/effects/Reveal";
 import { Timestamp } from "@/components/ui/Timestamp";
-import type { ComponentType } from "react";
+import { C, COVERAGE_TONE, focusRing, panel, primaryButton, quietButton } from "@/components/cinematic/ui";
 
-// Same dark/mint world as landing and sign-in, carried one step into the
-// authenticated app -- but calmer: no full WebGL constellation on a page
-// whose job is to get a researcher back to real work, only its resting
-// atmosphere. AppShell and the rest of the authenticated app deliberately
-// keep the existing light/dark-adaptive "Index" tokens for now; extending
-// this palette further is a separate, much larger decision this phase does
-// not make on its own.
-const INK = "#f3f6ff";
-const MUTED = "#9aa6c4";
-const MUTED_2 = "#6b7796";
-const MINT = "#5df0a8";
-const MINT_2 = "#2fd38a";
-const MINT_INK = "#032018";
-const GLASS = "rgba(12,18,38,.55)";
-const LINE = "rgba(150,175,230,.12)";
-const LINE_STRONG = "rgba(150,175,230,.22)";
-const WARNING = "#e8c15c";
+const STEPS: { title: string; text: string }[] = [
+  { title: "Upload a paper", text: "Its sections, abstract and references are read, and its record completed from the scholarly sources." },
+  { title: "Analyse it", text: "A research profile: its problem, methods, datasets, results and limitations, each with the passage it comes from." },
+  { title: "Discover related work", text: "Seven sources searched, every result ranked by criteria you weigh, with the reason for each rank." },
+  { title: "Keep what matters in a workspace", text: "A research trail of typed connections, a graph through time, and chat that cites its passages." },
+  { title: "Compare, find gaps, plan next steps", text: "A comparison table quoted from the papers, gaps two or more papers support, and directions from them." },
+];
 
-const fadeUp: Variants = { hidden: { opacity: 0, y: 18 }, show: { opacity: 1, y: 0 } };
-
-function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      initial={reduce ? "show" : "hidden"}
-      animate="show"
-      variants={fadeUp}
-      transition={{ duration: reduce ? 0 : 0.5, delay: reduce ? 0 : delay, ease: [0.22, 0.7, 0.2, 1] }}
-    >
-      {children}
-    </motion.div>
-  );
+function plural(n: number, one: string, many = `${one}s`) {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 export default function HomePage() {
-  const { me, isAuthenticated, isLoading, signOut } = useAuth();
-  const pathname = usePathname();
-  const router = useRouter();
+  const { ready } = useRequireAuth();
+  const { me, signOut } = useAuth();
+  // said once, right after sign-in made a new account
+  const [newAccount] = useState(peekNewAccount);
+  useEffect(() => clearNewAccount(), []);
+  const wsQ = useSWR(ready ? "workspaces" : null, () => workspacesApi.list());
+  const libraryQ = useSWR(ready ? "library" : null, () => papersApi.library());
 
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
-    }
-  }, [isLoading, isAuthenticated, pathname, router]);
+  if (!ready) return null;
 
-  const { data: wsData, isLoading: wsLoading } = useSWR(
-    isAuthenticated ? "workspaces" : null,
-    () => workspacesApi.list()
-  );
-  const recent = useRecentPapers();
-
-  const list = wsData?.workspaces ?? [];
-  const latestWorkspace = [...list].sort(
-    (a, b) => parseTimestamp(b.updated_at).getTime() - parseTimestamp(a.updated_at).getTime()
-  )[0];
-
-  const { data: activityData, isLoading: activityLoading } = useSWR(
-    latestWorkspace ? ["home-activity", latestWorkspace.workspace_id] : null,
-    () => workspacesApi.activity(latestWorkspace!.workspace_id, { limit: 5 })
-  );
-
-  if (!isLoading && !isAuthenticated) return null;
-
-  const firstName = me?.email ? me.email.split("@")[0] : "researcher";
-  const wsHref = (suffix: string) =>
-    !latestWorkspace
-      ? "/workspaces"
-      : ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(suffix)
-        ? `/workspace/${latestWorkspace.workspace_id}/${suffix}`
-        : `/workspaces/${latestWorkspace.workspace_id}/${suffix}`;
-
-  const PIPELINE: { label: string; desc: string; icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>; href: string }[] = [
-    { label: "Discover", desc: "Search arXiv, OpenAlex, Semantic Scholar, and Crossref.", icon: MagnifyingGlass, href: "/papers" },
-    { label: "Understand", desc: "Extracted profiles, evidence spans, grounded chat.", icon: FileText, href: "/papers" },
-    { label: "Rank", desc: "Transparent, per-signal explained scores.", icon: ChartBar, href: "/papers" },
-    { label: "Connect", desc: "Typed relationships and the research graph.", icon: GitBranch, href: wsHref("trail") },
-    { label: "Compare", desc: "Evidence-backed comparison across papers.", icon: Columns, href: wsHref("compare") },
-    { label: "Find gaps", desc: "Evidence-grounded gaps awaiting review.", icon: Lightbulb, href: wsHref("gaps") },
-    { label: "Develop directions", desc: "Turn an accepted gap into a direction.", icon: Compass, href: wsHref("directions") },
-  ];
+  const name = me?.email ? me.email.split("@")[0] : "researcher";
+  const workspaces = [...(wsQ.data?.workspaces ?? [])].sort((a, b) => parseTimestamp(b.updated_at).getTime() - parseTimestamp(a.updated_at).getTime());
+  const papers = libraryQ.data?.papers ?? [];
+  const loaded = Boolean(wsQ.data && libraryQ.data);
+  const fresh = loaded && workspaces.length === 0 && papers.length === 0;
 
   return (
-    <div className="relative min-h-dvh" style={{ color: INK }}>
-      {/* A denser scrim than landing/sign-in: this page's job is to get a
-          researcher back to real, dense work content (workspace cards,
-          real numbers), so the shared constellation reads as ambient
-          texture behind it rather than the immersive foreground it is on
-          the arrival pages. */}
-      <div
-        className="pointer-events-none fixed inset-0 -z-10"
-        style={{ background: "linear-gradient(180deg, rgba(4,6,15,.55) 0%, rgba(4,6,15,.82) 320px, rgba(4,6,15,.9) 100%)" }}
-      />
-      <header className="relative border-b" style={{ borderColor: LINE }}>
-        <div className="mx-auto flex h-16 max-w-[1180px] items-center justify-between gap-2 px-4 sm:px-6">
-          <Link
-            href="/home"
-            aria-label="ResearchNexus, home"
-            className="inline-flex shrink-0 items-center gap-2 text-sm font-extrabold tracking-[0.16em]"
-          >
-            <FlaskIcon className="size-[18px]" style={{ color: MINT }} weight="duotone" aria-hidden />
-            <span className="hidden sm:inline">RESEARCHNEXUS</span>
-          </Link>
-          <nav className="flex items-center gap-0.5 text-sm sm:gap-1" style={{ color: MUTED }}>
-            <Link href="/papers" className="rounded-full px-2.5 py-1.5 transition-colors hover:text-white sm:px-3">
-              Papers
-            </Link>
-            <Link href="/workspaces" className="rounded-full px-2.5 py-1.5 transition-colors hover:text-white sm:px-3">
-              Workspaces
-            </Link>
-            <Link
-              href="/papers"
-              aria-label="Upload paper"
-              className="ml-1 inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm font-semibold sm:ml-2 sm:px-4"
-              style={{ color: MINT_INK, background: `linear-gradient(180deg, ${MINT}, ${MINT_2})` }}
-            >
-              <UploadSimple className="size-4 shrink-0" aria-hidden />
-              <span className="hidden sm:inline">Upload paper</span>
-            </Link>
-            <Link
-              href="/settings"
-              aria-label="Settings"
-              className="ml-1 shrink-0 rounded-full p-2 transition-colors hover:text-white"
-            >
-              <GearSix className="size-[18px]" aria-hidden />
-            </Link>
-            <button
-              type="button"
-              onClick={signOut}
-              aria-label="Sign out"
-              className="shrink-0 rounded-full p-2 transition-colors hover:text-white"
-              style={{ color: MUTED }}
-            >
-              <SignOut className="size-[18px]" aria-hidden />
-            </button>
-          </nav>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-[1180px] px-6 py-14">
-        <Reveal>
-          <h1 className="text-[clamp(26px,3.4vw,38px)] font-extrabold tracking-[-0.02em]">
-            Welcome back, {firstName}.
-          </h1>
-          <p className="mt-2 text-[15.5px]" style={{ color: MUTED }}>
-            Pick up a workspace, or start a new seed paper through discovery.
+    <PageShell>
+      {newAccount && (
+        <div
+          role="status"
+          className="mb-8 flex flex-wrap items-center justify-between gap-3 rounded-2xl px-5 py-4 text-[14px]"
+          style={{ background: "rgba(93,240,168,.06)", border: "1px solid rgba(93,240,168,.3)" }}
+        >
+          <p className="max-w-[80ch] leading-relaxed">
+            A new account was made for <span className="font-semibold">{newAccount}</span>. If your papers and workspaces are under another email,
+            sign out and sign in with that one.
           </p>
-        </Reveal>
-
-        {!isLoading && me && !me.has_working_llm_key && (
-          <Reveal delay={0.06}>
-            <div
-              className="mt-6 flex items-center gap-3 rounded-2xl px-5 py-3.5 text-sm"
-              style={{ background: "rgba(232,193,92,.08)", border: "1px solid rgba(232,193,92,.25)", color: WARNING }}
-            >
-              <Warning className="size-4 shrink-0" weight="bold" aria-hidden />
-              No working LLM provider key is saved yet. Analysis, discovery, chat, gaps, and directions need one.
-              <Link href="/settings" className="ml-auto shrink-0 font-semibold underline underline-offset-2">
-                Add a key
-              </Link>
-            </div>
-          </Reveal>
-        )}
-
-        <Reveal delay={0.08}>
-          <h2 className="mt-10 text-sm font-semibold uppercase tracking-wider" style={{ color: MUTED_2 }}>
-            The research workflow
-          </h2>
-        </Reveal>
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {PIPELINE.map((stage, i) => (
-            <Reveal key={stage.label} delay={0.1 + i * 0.05}>
-              <Link
-                href={stage.href}
-                className="group flex h-full flex-col gap-2.5 rounded-2xl p-4 transition-colors duration-200 hover:border-white/20"
-                style={{ background: GLASS, border: `1px solid ${LINE}` }}
-              >
-                <span
-                  className="inline-flex size-9 items-center justify-center rounded-xl"
-                  style={{ background: "rgba(93,240,168,.1)", border: "1px solid rgba(93,240,168,.18)", color: MINT }}
-                >
-                  <stage.icon className="size-4" aria-hidden />
-                </span>
-                <span className="text-sm font-semibold">{stage.label}</span>
-                <span className="text-xs leading-relaxed" style={{ color: MUTED }}>
-                  {stage.desc}
-                </span>
-              </Link>
-            </Reveal>
-          ))}
+          <button type="button" onClick={signOut} className={`rounded-full px-4 py-2 text-sm font-semibold hover:bg-white/10 ${focusRing}`} style={{ ...quietButton, color: C.ink }}>
+            Sign out
+          </button>
         </div>
+      )}
 
-        <Reveal delay={0.1}>
-          <div className="mt-12 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: MUTED_2 }}>
-              Your workspaces
-            </h2>
-            <Link href="/workspaces" className="inline-flex items-center gap-1 text-sm font-medium" style={{ color: MINT }}>
-              View all <ArrowRight className="size-3.5" aria-hidden />
+      <Reveal>
+        <h1 className="text-[clamp(28px,3.8vw,44px)] font-extrabold leading-[1.08] tracking-[-0.025em]">
+          {fresh ? `Welcome, ${name}.` : `Welcome back, ${name}.`}
+        </h1>
+        <p className="mt-3 max-w-[62ch] text-[15.5px] leading-relaxed" style={{ color: C.muted }}>
+          {fresh
+            ? "Start from one paper you have, and ResearchNexus finds, ranks and connects the work around it, with the evidence for every step."
+            : "Pick up where you left off, or start from a new paper."}
+        </p>
+        <div className="mt-6 flex flex-wrap gap-2">
+          <Link href="/papers" className={`inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold ${focusRing}`} style={primaryButton}>
+            <UploadSimple className="size-4" aria-hidden />
+            Upload a paper
+          </Link>
+          {!fresh && (
+            <>
+              <Link href="/papers" className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-white/10 ${focusRing}`} style={{ ...quietButton, color: C.ink }}>
+                Your library
+              </Link>
+              <Link href="/workspaces" className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-white/10 ${focusRing}`} style={{ ...quietButton, color: C.ink }}>
+                All workspaces
+              </Link>
+            </>
+          )}
+        </div>
+      </Reveal>
+
+      {me && !me.has_working_llm_key && (
+        <Reveal delay={0.05}>
+          <div
+            className="mt-8 flex flex-wrap items-center gap-3 rounded-2xl px-5 py-3.5 text-sm"
+            style={{ background: "rgba(232,193,92,.07)", border: "1px solid rgba(232,193,92,.3)", color: C.warning }}
+          >
+            <Warning className="size-4 shrink-0" weight="bold" aria-hidden />
+            <span className="min-w-0 flex-1">No working language model key is saved yet. Analysing papers needs one, and so do chat, comparison, gaps and directions.</span>
+            <Link href="/settings#models" className={`shrink-0 rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
+              Add a key
             </Link>
           </div>
         </Reveal>
+      )}
 
-        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {wsLoading &&
-            [0, 1, 2].map((i) => (
-              <div key={i} className="h-28 animate-pulse rounded-2xl" style={{ background: GLASS, border: `1px solid ${LINE}` }} />
-            ))}
-          {!wsLoading && list.length === 0 && (
-            <Reveal delay={0.14}>
-              <div
-                className="rounded-2xl px-6 py-10 text-center sm:col-span-2 lg:col-span-3"
-                style={{ background: GLASS, border: `1px dashed ${LINE_STRONG}` }}
-              >
-                <p className="text-sm font-medium">No workspaces yet</p>
-                <p className="mt-1.5 text-sm" style={{ color: MUTED }}>
-                  Upload a seed paper, run discovery, then build a workspace from the results you accept.
-                </p>
-                <Link
-                  href="/papers"
-                  className="mt-4 inline-flex items-center gap-1.5 rounded-full px-5 py-2.5 text-sm font-semibold"
-                  style={{ color: MINT_INK, background: `linear-gradient(180deg, ${MINT}, ${MINT_2})` }}
-                >
-                  Start from a seed paper <ArrowRight className="size-4" aria-hidden />
-                </Link>
-              </div>
-            </Reveal>
-          )}
-          {!wsLoading &&
-            list.map((ws, i) => (
-              <Reveal key={ws.workspace_id} delay={0.1 + i * 0.06}>
-                <Link
-                  href={`/workspace/${ws.workspace_id}`}
-                  className="block h-full rounded-2xl p-5 transition-colors duration-200 hover:border-white/20"
-                  style={{ background: GLASS, border: `1px solid ${LINE}` }}
-                >
-                  <p className="truncate text-sm font-semibold">{ws.title}</p>
-                  <p className="mt-1 font-mono text-xs" style={{ color: MUTED_2 }}>
-                    {ws.workspace_id}
+      {fresh ? (
+        <Reveal delay={0.1}>
+          <section aria-labelledby="how-heading" className="mt-14">
+            <h2 id="how-heading" className="text-lg font-bold">
+              How a review goes
+            </h2>
+            <ol className="mt-5 grid gap-px overflow-hidden rounded-2xl md:grid-cols-5" style={{ ...panel, background: C.line }}>
+              {STEPS.map((s, i) => (
+                <li key={s.title} className="px-5 py-5" style={{ background: "rgba(8,12,26,.92)" }}>
+                  <span className="text-[13px] font-semibold tabular-nums" style={{ color: C.mint }}>
+                    Step {i + 1}
+                  </span>
+                  <p className="mt-2 text-[15px] font-semibold leading-snug">{s.title}</p>
+                  <p className="mt-1.5 text-[13px] leading-relaxed" style={{ color: C.muted }}>
+                    {s.text}
                   </p>
-                  <div className="mt-4 flex items-center justify-between text-xs" style={{ color: MUTED }}>
-                    <span>{ws.papers.length} paper{ws.papers.length === 1 ? "" : "s"}</span>
-                    <span>
-                      created <Timestamp at={ws.created_at} style="date" />
-                    </span>
-                  </div>
-                </Link>
-              </Reveal>
-            ))}
-        </div>
-
-        {latestWorkspace && (
-          <>
-            <Reveal delay={0.16}>
-              <h2 className="mt-12 text-sm font-semibold uppercase tracking-wider" style={{ color: MUTED_2 }}>
-                Recent activity · {latestWorkspace.title}
-              </h2>
-            </Reveal>
-            <div className="mt-4">
-              {activityLoading && (
-                <div className="h-32 animate-pulse rounded-2xl" style={{ background: GLASS, border: `1px solid ${LINE}` }} />
-              )}
-              {!activityLoading && (!activityData || activityData.stage_runs.length === 0) && (
-                <Reveal delay={0.2}>
-                  <p
-                    className="rounded-2xl px-6 py-8 text-center text-sm"
-                    style={{ background: GLASS, border: `1px dashed ${LINE_STRONG}`, color: MUTED }}
-                  >
-                    No activity recorded yet in this workspace.
-                  </p>
-                </Reveal>
-              )}
-              {!activityLoading && activityData && activityData.stage_runs.length > 0 && (
-                <Reveal delay={0.2}>
-                  <div className="overflow-hidden rounded-2xl" style={{ background: GLASS, border: `1px solid ${LINE}` }}>
-                    <ul className="divide-y" style={{ borderColor: LINE }}>
-                      {activityData.stage_runs.map((run) => (
-                        <li key={run.id} style={{ borderColor: LINE }}>
-                          <div className="flex items-center gap-3 px-5 py-3">
-                            <span
-                              className="size-1.5 shrink-0 rounded-full"
-                              style={{ background: run.ok ? MINT : "#ff9b9b" }}
-                              aria-hidden
-                            />
-                            <span className="min-w-0 flex-1 truncate text-sm capitalize">{run.stage}</span>
-                            <span className="shrink-0 font-mono text-xs" style={{ color: MUTED_2 }}>
-                              {run.ok ? "ok" : "failed"} · <Timestamp at={run.ts} style="datetime" />
-                            </span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </Reveal>
-              )}
-            </div>
-          </>
-        )}
-
-        <Reveal delay={0.16}>
-          <h2 className="mt-12 text-sm font-semibold uppercase tracking-wider" style={{ color: MUTED_2 }}>
-            Recently uploaded in this browser
-          </h2>
+                </li>
+              ))}
+            </ol>
+          </section>
         </Reveal>
-        <div className="mt-4">
-          {recent.length === 0 ? (
-            <Reveal delay={0.2}>
-              <p
-                className="rounded-2xl px-6 py-8 text-center text-sm"
-                style={{ background: GLASS, border: `1px dashed ${LINE_STRONG}`, color: MUTED }}
-              >
-                Papers you upload will appear here for quick access.
-              </p>
-            </Reveal>
-          ) : (
-            <Reveal delay={0.2}>
-              <div className="overflow-hidden rounded-2xl" style={{ background: GLASS, border: `1px solid ${LINE}` }}>
-                <ul className="divide-y" style={{ borderColor: LINE }}>
-                  {recent.map((p) => (
-                    <li key={p.paperId} style={{ borderColor: LINE }}>
-                      <Link
-                        href={`/seed/${p.paperId}`}
-                        className="flex items-center gap-3 px-5 py-3.5 text-sm transition-colors hover:bg-white/[0.03]"
-                      >
-                        <span className="min-w-0 flex-1 truncate">{p.title}</span>
-                        <span className="shrink-0 font-mono text-xs" style={{ color: MUTED_2 }}>
-                          {p.paperId}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
+      ) : (
+        <div className="mt-14 grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-12">
+          <Reveal delay={0.08}>
+            <section aria-labelledby="ws-heading">
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 id="ws-heading" className="text-lg font-bold">
+                  Your workspaces
+                </h2>
+                {workspaces.length > 3 && (
+                  <Link href="/workspaces" className={`inline-flex items-center gap-1 rounded-sm text-sm font-medium ${focusRing}`} style={{ color: C.mint }}>
+                    All {workspaces.length} <ArrowRight className="size-3.5" aria-hidden />
+                  </Link>
+                )}
               </div>
-            </Reveal>
-          )}
+              <div className="mt-4">
+                {!wsQ.data ? (
+                  <div role="status" className="h-40 rounded-2xl motion-safe:animate-pulse" style={panel}>
+                    <span className="sr-only">Loading your workspaces…</span>
+                  </div>
+                ) : workspaces.length === 0 ? (
+                  <p className="rounded-2xl px-5 py-8 text-center text-sm leading-relaxed" style={{ ...panel, border: `1px dashed ${C.lineStrong}`, color: C.muted }}>
+                    No workspace yet. Analyse a paper, discover related work, then keep the results you want in one.
+                  </p>
+                ) : (
+                  <ul className="overflow-hidden rounded-2xl" style={panel}>
+                    {workspaces.slice(0, 3).map((ws) => (
+                      <li key={ws.workspace_id} className="border-b last:border-b-0" style={{ borderColor: C.line }}>
+                        <Link href={`/workspace/${ws.workspace_id}`} className={`group block px-5 py-4 transition-colors hover:bg-white/[0.03] ${focusRing}`}>
+                          <span className="flex items-baseline justify-between gap-3">
+                            <span className="text-[15.5px] font-semibold group-hover:text-white">{ws.title}</span>
+                            <ArrowRight className="size-4 shrink-0 translate-y-0.5 opacity-60 transition-transform group-hover:translate-x-0.5" aria-hidden />
+                          </span>
+                          {ws.seed_title && (
+                            <span className="mt-1 block truncate text-[13px]" style={{ color: C.muted }}>
+                              From {ws.seed_title}
+                            </span>
+                          )}
+                          <span className="mt-2 block text-[12.5px] tabular-nums" style={{ color: C.muted2 }}>
+                            {plural(ws.counts?.papers ?? ws.papers.length, "paper")}
+                            {ws.counts && ` · ${plural(ws.counts.edges, "connection")} · ${plural(ws.counts.gaps, "gap")}`} · updated <Timestamp at={ws.updated_at} />
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </Reveal>
+
+          <Reveal delay={0.12}>
+            <section aria-labelledby="papers-heading">
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 id="papers-heading" className="text-lg font-bold">
+                  Recent papers
+                </h2>
+                {papers.length > 5 && (
+                  <Link href="/papers" className={`inline-flex items-center gap-1 rounded-sm text-sm font-medium ${focusRing}`} style={{ color: C.mint }}>
+                    All {papers.length} <ArrowRight className="size-3.5" aria-hidden />
+                  </Link>
+                )}
+              </div>
+              <div className="mt-4">
+                {!libraryQ.data ? (
+                  <div role="status" className="h-40 rounded-2xl motion-safe:animate-pulse" style={panel}>
+                    <span className="sr-only">Loading your papers…</span>
+                  </div>
+                ) : papers.length === 0 ? (
+                  <p className="rounded-2xl px-5 py-8 text-center text-sm" style={{ ...panel, border: `1px dashed ${C.lineStrong}`, color: C.muted }}>
+                    Papers you upload, analyse or collect appear here.
+                  </p>
+                ) : (
+                  <ul className="overflow-hidden rounded-2xl" style={panel}>
+                    {papers.slice(0, 5).map((p) => {
+                      const step = nextStep(p);
+                      return (
+                        <li key={p.id} className="flex items-start justify-between gap-4 border-b px-5 py-3.5 last:border-b-0" style={{ borderColor: C.line }}>
+                          <div className="min-w-0">
+                            <Link href={`/papers/${p.id}`} className={`line-clamp-2 rounded-sm text-[14px] font-semibold leading-snug hover:underline hover:underline-offset-4 ${focusRing}`}>
+                              {p.title}
+                            </Link>
+                            <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12.5px]" style={{ color: C.muted }}>
+                              <span className="truncate">{[authorLine(p.authors), p.year].filter(Boolean).join(" · ")}</span>
+                              <span className="inline-flex items-center gap-1">
+                                <span className="size-1.5 rounded-full" style={{ background: COVERAGE_TONE[p.coverage.state] }} aria-hidden />
+                                {COVERAGE_LABEL[p.coverage.state]}
+                              </span>
+                              {p.analyzed ? (
+                                <span className="inline-flex items-center gap-1" style={{ color: C.mint }}>
+                                  <CheckCircle className="size-3.5" weight="fill" aria-hidden />
+                                  Profile
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1">
+                                  <CircleDashed className="size-3.5" aria-hidden />
+                                  Not analysed
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <Link
+                            href={step.href}
+                            className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[12.5px] font-semibold transition-colors hover:bg-white/10 ${focusRing}`}
+                            style={{ ...quietButton, color: C.ink }}
+                          >
+                            {step.label}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </Reveal>
         </div>
-      </main>
-    </div>
+      )}
+    </PageShell>
   );
 }

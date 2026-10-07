@@ -1,16 +1,18 @@
 "use client";
 
 import { createContext, useCallback, useContext, useSyncExternalStore, type ReactNode } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { auth } from "@/lib/api/endpoints";
 import { clearToken, getToken, setToken } from "./token";
+import { noteNewAccount, recordAccount } from "@/lib/recent-accounts";
 import type { MeResponse } from "@/lib/api/types";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
   isLoading: boolean;
   me: MeResponse | undefined;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** resolves whether the server made a new, empty account for this email */
+  signIn: (email: string, password: string) => Promise<{ created: boolean }>;
   signOut: () => void;
   refreshMe: () => void;
 }
@@ -25,7 +27,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * The snapshot is deliberately three-valued, not a plain boolean: the
  * server/first-hydration-pass value must be distinguishable from a
  * confirmed "no token", or `isLoading` below would read false for one
- * render on every fresh navigation, and AppShell would read that render as
+ * render on every fresh navigation, and a page would read that render as
  * "not authenticated" and redirect to /sign-in before the real client value
  * (which may well be "yes, there is a token") ever gets a chance to apply. */
 type TokenState = "unknown" | "present" | "absent";
@@ -56,14 +58,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     revalidateOnFocus: false,
   });
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const session = await auth.createSession(email, password);
-    setToken(session.token);
-  }, []);
+  // every cached response belongs to the account that fetched it: a new
+  // sign-in, or signing out, starts from nothing so no other account's data shows
+  const { mutate: mutateAll } = useSWRConfig();
+  const forgetCached = useCallback(() => mutateAll(() => true, undefined, { revalidate: false }), [mutateAll]);
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const session = await auth.createSession(email, password);
+      await forgetCached();
+      setToken(session.token);
+      recordAccount(email);
+      if (session.created) noteNewAccount(email);
+      return { created: Boolean(session.created) };
+    },
+    [forgetCached],
+  );
 
   const signOut = useCallback(() => {
     clearToken();
-  }, []);
+    void forgetCached();
+  }, [forgetCached]);
 
   const value: AuthContextValue = {
     isAuthenticated: Boolean(hasToken && me),

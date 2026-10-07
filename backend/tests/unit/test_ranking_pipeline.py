@@ -311,3 +311,80 @@ def test_without_a_reranker_the_order_is_the_fused_score(db: Session, settings: 
     ranked = sorted(repo.get_ranked_papers(db, run_id), key=lambda r: r.final_rank)
     assert all(r.rerank_score is None for r in ranked)
     assert [r.fused_score for r in ranked] == sorted((r.fused_score for r in ranked), reverse=True)
+
+
+def test_tied_scores_are_ordered_by_the_papers_not_by_their_random_ids(db: Session, settings: Settings) -> None:
+    # remediation Phase 8: ties were broken by candidate id -- a random uuid --
+    # so without an embedder (every signal but recency and citation empty)
+    # the same candidates came back in a different order each run
+    run_id = _run_with_candidates(
+        db,
+        [
+            {"title": "Zeta Tied Paper", "year": 2020},
+            {"title": "Alpha Tied Paper", "year": 2020},
+            {"title": "Mu Tied Paper", "year": 2020},
+        ],
+    )
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions()))
+    by_rank = sorted(repo.get_ranked_papers(db, run_id), key=lambda r: r.final_rank)
+    assert len({r.fused_score for r in by_rank}) == 1  # a genuine three-way tie
+    titles = {c.candidate_id: c.title for c in repo.get_search_candidates(db, run_id)}
+    assert [titles[r.candidate_id] for r in by_rank] == ["Alpha Tied Paper", "Mu Tied Paper", "Zeta Tied Paper"]
+
+
+# --- remediation Phase 9: the researcher's weights rank the papers ------------------
+
+
+def _order(db: Session, run_id: str) -> list[str]:
+    titles = {c.candidate_id: c.title for c in repo.get_search_candidates(db, run_id)}
+    return [titles[r.candidate_id] for r in sorted(repo.get_ranked_papers(db, run_id), key=lambda r: r.final_rank)]
+
+
+_SPECS: list[dict[str, object]] = [
+    {"title": "Old but on-topic retrieval augmented generation", "abstract": "retrieval augmented generation parametric memory", "year": 2005},
+    {"title": "Brand new and loosely related", "abstract": "a survey of databases", "year": 2024},
+    {"title": "Cited by the seed", "abstract": "question answering", "year": 2015, "rel": CitationRelationship.CITED_BY_SEED, "hops": 1},
+]
+
+
+def test_weights_change_the_ranking_and_every_row_records_them(db: Session, settings: Settings) -> None:
+    from app.domain.ranking import RankingCriteria
+
+    run_id = _run_with_candidates(db, _SPECS)
+    recency_only = RankingCriteria(topic=0, problem=0, methods=0, datasets=0, citations=0, recency=100, publisher=0).to_weights()
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(weights=recency_only)))
+    assert _order(db, run_id)[0] == "Brand new and loosely related"
+    ranked = repo.get_ranked_papers(db, run_id)
+    assert {r.weights_version for r in ranked} == {"c-0.0.0.0.0.100.0"}
+    top = ranked[0].explanation
+    assert top.contributions and top.contributions[0].signal == "recency"
+    assert sum(c.contribution for c in top.contributions) == pytest.approx(ranked[0].fused_score, abs=1e-3)
+
+
+def test_re_weighing_a_saved_ranking_orders_it_exactly_as_a_fresh_ranking_would(db: Session, settings: Settings) -> None:
+    from app.domain.ranking import RankingCriteria
+    from app.services.ranking.pipeline import rerank_with_weights
+
+    citations_first = RankingCriteria(topic=10, problem=0, methods=0, datasets=0, citations=90, recency=0, publisher=0).to_weights()
+    run_id = _run_with_candidates(db, _SPECS)
+    # production ranks without a cross-encoder (see RankOptions.reranker)
+    embedders = {"chunk_embedder": FakeEmbeddingProvider(), "doc_embedder": FakeEmbeddingProvider()}
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(**embedders)))
+    asyncio.run(rerank_with_weights(db, run_id=run_id, weights=citations_first, settings=settings))
+    reweighed = [(r.candidate_id, r.final_rank, r.fused_score, r.weights_version) for r in repo.get_ranked_papers(db, run_id)]
+    assert _order(db, run_id)[0] == "Cited by the seed"
+
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(weights=citations_first, **embedders)))
+    fresh = [(r.candidate_id, r.final_rank, r.fused_score, r.weights_version) for r in repo.get_ranked_papers(db, run_id)]
+    assert reweighed == fresh
+
+
+def test_re_weighing_needs_a_saved_ranking(db: Session, settings: Settings) -> None:
+    from app.domain.ranking import RankingCriteria
+    from app.services.ranking.pipeline import RankingRequired, rerank_with_weights
+
+    run_id = _run_with_candidates(db, _SPECS)
+    with pytest.raises(RankingRequired):
+        asyncio.run(rerank_with_weights(db, run_id=run_id, weights=RankingCriteria().to_weights(), settings=settings))
+    with pytest.raises(SearchRunNotFound):
+        asyncio.run(rerank_with_weights(db, run_id="run_missing", weights=RankingCriteria().to_weights(), settings=settings))

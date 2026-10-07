@@ -21,6 +21,6 @@ class SpecterDocStrategy(_SemanticStrategyBase):
     def _embedder(self, ctx: StrategyContext) -> EmbeddingProvider | None:
         return ctx.doc_embedder
 
-    def _seed_texts(self, ctx: StrategyContext) -> list[str]:
+    def seed_texts(self, ctx: StrategyContext) -> list[str]:
         combined = f"{ctx.seed.title}\n{ctx.seed.abstract or ''}".strip()
         return [combined] if combined else []

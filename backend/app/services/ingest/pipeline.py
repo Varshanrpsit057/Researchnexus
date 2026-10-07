@@ -17,15 +17,18 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db import repository as repo
+from app.domain.chunk import PaperChunk
 from app.domain.paper import ParseConfidence, ParsedDocument, RawReference, Section, TableBlock
-from app.security.pdf_sanitizer import validate_upload
+from app.security.pdf_sanitizer import PdfFileMeta, validate_upload
 from app.services.ingest.chunker import build_chunks
 from app.services.ingest.cleaner import clean_pages
 from app.services.ingest.confidence import assess_confidence
+from app.services.ingest.identifiers import find_doi
 from app.services.ingest.pdf_loader import LoadedPage, load_pdf
 from app.services.ingest.reference_parser import parse_references
 from app.services.ingest.section_splitter import split_sections
 from app.services.ingest.table_extractor import extract_table_blocks
+from app.services.normalize.text import clean_abstract
 
 _TITLE_HASH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 _MIN_FALLBACK_TITLE_LEN = 8
@@ -115,6 +118,92 @@ def _fallback_title(pages: list[LoadedPage]) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class ParsedPdf:
+    meta: PdfFileMeta
+    document: ParsedDocument
+    chunks: list[PaperChunk]
+
+
+_WORD_PREFIX_RE = re.compile(r"^microsoft (?:word|powerpoint) - ", re.IGNORECASE)
+_FILE_EXT_RE = re.compile(r"\.(?:docx?|pdf|tex|odt|rtf)$", re.IGNORECASE)
+
+
+def _usable_metadata_title(title: str | None) -> str | None:
+    """The PDF's embedded title, unless it is a file name rather than a
+    title ("Experiments-in-Agentic-AI-for-ScienceV2", "Microsoft Word -
+    draft.docx" -- observed on real uploads): then the title printed on the
+    first page is used."""
+    if not title:
+        return None
+    cleaned = _FILE_EXT_RE.sub("", _WORD_PREFIX_RE.sub("", title.strip())).strip()
+    if not cleaned or " " not in cleaned:
+        return None
+    return cleaned
+
+
+def _filename_title(title: str | None) -> str | None:
+    """A file-name title made readable, when the first page offers none."""
+    if not title:
+        return None
+    readable = " ".join(re.split(r"[-_]+", _FILE_EXT_RE.sub("", _WORD_PREFIX_RE.sub("", title.strip()))))
+    return readable.strip() or None
+
+
+_MAX_ABSTRACT_CHARS = 4000
+
+
+def _abstract_of(full_text: str, sections: list[Section]) -> str | None:
+    """The text of the PDF's Abstract section, without its label."""
+    section = next((s for s in sections if s.title.strip().lower() == "abstract"), None)
+    if section is None:
+        return None
+    text = clean_abstract(" ".join(full_text[section.char_start : section.char_end].split()))
+    return text[:_MAX_ABSTRACT_CHARS] or None
+
+
+def parse_pdf(
+    paper_id: str, pdf_bytes: bytes, filename: str, settings: Settings, *, meta: PdfFileMeta | None = None
+) -> ParsedPdf:
+    """Validate and read one PDF into its document and chunks, without
+    storing anything: an upload becomes a new paper from this, and a paper
+    found by discovery gains its full text from it (services/fulltext)."""
+    meta = meta or validate_upload(pdf_bytes, filename, settings)
+    raw = load_pdf(pdf_bytes, settings)
+    _cleaned_pages, full_text, page_ranges = clean_pages([p.text for p in raw.pages])
+    sections = split_sections(full_text, page_ranges)
+    tables = extract_table_blocks(raw.pages, _cleaned_pages)
+    references = parse_references(full_text, sections)
+
+    has_text_layer = bool(full_text.strip())
+    confidence, confidence_warnings = assess_confidence(
+        page_count=raw.page_count,
+        full_text=full_text,
+        sections=sections,
+        references=references,
+        has_text_layer=has_text_layer,
+    )
+
+    title = _usable_metadata_title(raw.title) or _fallback_title(raw.pages) or _filename_title(raw.title) or filename
+    first_page = raw.pages[0].text if raw.pages else ""
+    document = ParsedDocument(
+        full_text=full_text,
+        sections=sections,
+        tables=tables,
+        references=references,
+        page_count=raw.page_count,
+        has_text_layer=has_text_layer,
+        parse_confidence=confidence,
+        title=title,
+        authors=raw.authors,
+        warnings=[*raw.warnings, *confidence_warnings],
+        doi=find_doi(first_page, raw.margin_text),
+        abstract=_abstract_of(full_text, sections),
+    )
+    chunks = build_chunks(paper_id, full_text, sections, tables, page_ranges, settings)
+    return ParsedPdf(meta=meta, document=document, chunks=chunks)
+
+
 def run_ingestion(
     db: Session,
     paper_id: str,
@@ -148,54 +237,27 @@ def run_ingestion(
     pdf_path = settings.pdf_storage_dir() / f"{paper_id}.pdf"
     pdf_path.write_bytes(pdf_bytes)
 
-    raw = load_pdf(pdf_bytes, settings)
-    _cleaned_pages, full_text, page_ranges = clean_pages([p.text for p in raw.pages])
-    sections = split_sections(full_text, page_ranges)
-    tables = extract_table_blocks(raw.pages, _cleaned_pages)
-    references = parse_references(full_text, sections)
-
-    has_text_layer = bool(full_text.strip())
-    confidence, confidence_warnings = assess_confidence(
-        page_count=raw.page_count,
-        full_text=full_text,
-        sections=sections,
-        references=references,
-        has_text_layer=has_text_layer,
-    )
-
-    title = raw.title or _fallback_title(raw.pages) or filename
-    parsed = ParsedDocument(
-        full_text=full_text,
-        sections=sections,
-        tables=tables,
-        references=references,
-        page_count=raw.page_count,
-        has_text_layer=has_text_layer,
-        parse_confidence=confidence,
-        title=title,
-        authors=raw.authors,
-        warnings=[*raw.warnings, *confidence_warnings],
-    )
-
-    chunks = build_chunks(paper_id, full_text, sections, tables, page_ranges, settings)
-
+    doc = parse_pdf(paper_id, pdf_bytes, filename, settings, meta=meta)
+    parsed = doc.document
     paper_orm = repo.paper_from_ingest(
         paper_id=paper_id,
         meta=meta,
         parsed=parsed,
         pdf_path=str(pdf_path),
-        title_hash=_title_hash(title),
+        title_hash=_title_hash(parsed.title or filename),
     )
+    if paper_orm.doi and repo.doi_holder(db, paper_orm.doi) is not None:
+        paper_orm.doi = None  # discovery already holds this article under its DOI
     repo.save_paper(db, paper_orm)
-    repo.save_chunks(db, chunks)
+    repo.save_chunks(db, doc.chunks)
 
     return IngestResult(
         paper_id=paper_id,
-        parse_confidence=confidence,
-        sections=sections,
-        tables=tables,
-        references=references,
+        parse_confidence=parsed.parse_confidence,
+        sections=parsed.sections,
+        tables=parsed.tables,
+        references=parsed.references,
         warnings=parsed.warnings,
-        chunk_count=len(chunks),
+        chunk_count=len(doc.chunks),
         deduplicated=False,
     )

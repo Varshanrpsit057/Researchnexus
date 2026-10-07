@@ -27,8 +27,12 @@ from app.domain.chat import ChatRole
 from app.domain.gap import GapEvidence
 from app.domain.workspace import ResearchWorkspace
 from app.services.citations.metadata_resolver import to_citation
+from app.services.citations.quote import quote_window
 
 USE_KINDS = ("answer", "comparison", "gap", "direction")
+
+
+QUOTE_MAX = 700  # as chat shows a passage
 
 
 def _at(value: datetime | None) -> str | None:
@@ -61,9 +65,15 @@ def _uses(db: Session, workspace: ResearchWorkspace, owner_id: str) -> dict[str,
                 chunks = repo.get_chunks_by_ids(db, list(claim.supporting_chunk_ids))
                 for pid in dict.fromkeys(claim.supporting_paper_ids):
                     chunk = next((c for c in chunks if c.paper_id == pid), None)
+                    # the part of the passage that supports the sentence, verbatim, with it marked
+                    window = quote_window(chunk.text, claim.sentence, max_chars=QUOTE_MAX) if chunk else None
                     add(pid, {
                         "kind": "answer", "artefact_id": message.message_id, "text": claim.sentence,
-                        "quote": chunk.text if chunk else None, "section": chunk.section if chunk else None,
+                        "quote": window.quote if window else None,
+                        "cut_before": window.cut_before if window else False,
+                        "cut_after": window.cut_after if window else False,
+                        "highlight": list(window.highlight) if window and window.highlight else None,
+                        "section": chunk.section if chunk else None,
                         "page": chunk.page if chunk else None, "session_id": session.session_id,
                         "created_at": _at(message.created_at),
                     })
@@ -121,6 +131,7 @@ def build_ledger(db: Session, workspace: ResearchWorkspace, *, owner_id: str) ->
             "authors": list(paper.authors or []),
             "year": paper.year,
             "venue": paper.venue,
+            "publisher": paper.publisher,
             "doi": paper.doi,
             "arxiv_id": paper.arxiv_id,
             "url": paper.url,

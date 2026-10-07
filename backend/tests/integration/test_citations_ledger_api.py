@@ -206,6 +206,8 @@ def test_every_paper_with_its_reference_its_seed_relation_and_where_the_workspac
     answer = by_kind["answer"]
     assert answer["text"] == "REALM retrieves while it pre-trains."
     assert answer["quote"] == PASSAGE and answer["section"] == "Abstract"
+    # verbatim, uncut, with the sentence it rests on marked (remediation Phase 13)
+    assert (answer["cut_before"], answer["cut_after"], answer["highlight"]) == (False, False, [0, len(PASSAGE)])
     assert answer["session_id"] == "cs_1" and answer["artefact_id"] == "msg_1"
     comparison = by_kind["comparison"]
     assert (comparison["field"], comparison["text"], comparison["quote"]) == ("method", "latent knowledge retrieval", "a latent knowledge retriever")

@@ -94,7 +94,7 @@ test.describe("Research graph", () => {
     await page.waitForURL(new RegExp(`/workspace/${workspaceId}/graph$`));
     await expect(page.getByRole("heading", { level: 1, name: "Research graph" })).toBeVisible();
     await expect(stage(page)).toHaveAttribute("data-phase", "intro", { timeout: 10_000 });
-    await expect(page.getByTestId("constellation")).toHaveAttribute("data-mode", "graph");
+    await expect(page.getByTestId("background")).toHaveAttribute("data-mode", "graph");
     await expect(stage(page)).toHaveAttribute("data-phase", "settled", { timeout: 10_000 });
     await expect(counts(page, "1 paper in the workspace · 4 connected · 4 connections · 4 to review")).toBeVisible();
     await expect(nodes(page)).toHaveCount(5);
@@ -184,7 +184,7 @@ test.describe("Research graph", () => {
     await expect(page.getByRole("article", { name: EXTENSION }).getByRole("button", { name: "Hide the evidence" })).toBeVisible();
     await expect(page.getByRole("button", { name: "To review 1", exact: true })).toHaveAttribute("aria-pressed", "true");
     // leaving the graph gave the background its full field back
-    await expect(page.getByTestId("constellation")).toHaveAttribute("data-mode", "field");
+    await expect(page.getByTestId("background")).toHaveAttribute("data-mode", "field");
 
     // 13. Everything persisted; the old graph URL forwards here.
     await page.goto(`/workspaces/${workspaceId}/graph`);

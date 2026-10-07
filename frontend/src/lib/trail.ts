@@ -131,6 +131,13 @@ export function detectionLabel(method: TrailEdge["detection_method"]): string {
   }
 }
 
+/** An edge from connecting the workspace's own papers rather than from a
+ * discovery run: those runs are named `run_wsp_<workspace>`
+ * (app/services/trail/workspace_trail.py, workspace_run_id). */
+export function fromWorkspacePapers(runId: string): boolean {
+  return runId.startsWith("run_wsp_");
+}
+
 /** The system's own reasons for the confidence band, from the basis it
  * recorded (app/services/trail/confidence.py). */
 export function confidenceReasons(edge: TrailEdge): string[] {

@@ -1,6 +1,6 @@
 import { ApiError } from "@/lib/api/client";
 import { workspaces } from "@/lib/api/endpoints";
-import type { CellStatus, ComparisonCell, ComparisonResponse } from "@/lib/api/types";
+import type { CellStatus, ComparisonCell, ComparisonResponse, ComparisonTable } from "@/lib/api/types";
 
 /** The latest comparison, or null when none has been run (the API's 404). */
 export async function latestComparisonOrNull(workspaceId: string): Promise<ComparisonResponse | null> {
@@ -47,7 +47,10 @@ export const CELL_COPY: Record<Exclude<CellStatus, "found">, { label: string; me
     label: "Unverified",
     meaning: "A value was proposed, but no passage in the paper states it word for word, so it isn't shown.",
   },
-  no_text: { label: "No text to read", meaning: "This paper has no text in the workspace, not even an abstract." },
+  no_text: {
+    label: "No text to read",
+    meaning: "When compared, this paper had no text at all: no abstract, and no full text yet. Its page can look for the full text; then compare again.",
+  },
   not_extracted: { label: "Not read", meaning: "Reading this paper failed during the comparison. Comparing again may fix it." },
   unknown: { label: "Not found", meaning: "No value was found. This comparison predates the reason being recorded." },
 };
@@ -80,4 +83,34 @@ export function notYetCompared(comparison: ComparisonResponse | null, selected: 
 /** Papers of a comparison that are no longer in the workspace. */
 export function leftWorkspace(comparison: ComparisonResponse, members: string[]): string[] {
   return comparison.paper_ids.filter((p) => !members.includes(p));
+}
+
+/** The table with only the papers shown, in the table's own order -- what
+ * the page draws and what "Export to Word" asks the server to write. */
+export function pickColumns(table: ComparisonTable, paperIds: string[]): ComparisonTable {
+  const shown = new Set(paperIds);
+  return {
+    ...table,
+    papers: table.papers.filter((p) => shown.has(p.paper_id)),
+    rows: table.rows.map((r) => ({ ...r, cells: r.cells.filter((c) => shown.has(c.paper_id)) })),
+  };
+}
+
+/** Values found in the papers' text, over every cell of the table. */
+export function tableCoverage(table: ComparisonTable): Coverage {
+  let found = 0;
+  let total = 0;
+  for (const row of table.rows) {
+    for (const cell of row.cells) {
+      total += 1;
+      if (cell.status === "found") found += 1;
+    }
+  }
+  return { found, total };
+}
+
+/** The reasons a cell can be empty that this table actually has, in the legend's order. */
+export function emptyStatusesIn(table: ComparisonTable): Exclude<CellStatus, "found">[] {
+  const present = new Set(table.rows.flatMap((r) => r.cells.map((c) => c.status)));
+  return (Object.keys(CELL_COPY) as Exclude<CellStatus, "found">[]).filter((s) => present.has(s));
 }

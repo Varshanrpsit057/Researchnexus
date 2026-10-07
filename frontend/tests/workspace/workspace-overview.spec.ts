@@ -86,8 +86,9 @@ test.describe("Research workspace", () => {
 
     // 3. Real ranked results from the real /related endpoint.
     await page.goto(`/discover/${seedId}`);
-    await expect(page.getByText(FIRST_TITLE)).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(SECOND_TITLE)).toBeVisible();
+    const list = page.getByTestId("results-list");
+    await expect(list.getByText(FIRST_TITLE)).toBeVisible({ timeout: 10_000 });
+    await expect(list.getByText(SECOND_TITLE)).toBeVisible();
 
     // 4. Select the top result and create the workspace for real.
     await page.getByRole("button", { name: `Select ${FIRST_TITLE}` }).click();
@@ -102,7 +103,10 @@ test.describe("Research workspace", () => {
     await expect(page.getByRole("link", { name: "Discovery results" })).toHaveAttribute("href", `/discover/${seedId}?run=${runId}`);
     await expect(page.getByRole("heading", { name: /^Papers\s*2$/ })).toBeVisible();
     await expect(page.getByRole("link", { name: FIRST_TITLE })).toBeVisible();
-    await expect(page.getByText("Added from discovery · ranked #1, high confidence · abstract only")).toBeVisible();
+    // what each paper is read from: the uploaded seed in full; the found paper has no text at all
+    // (this fixture has no abstract -- it used to be labelled "abstract only" all the same)
+    await expect(page.getByText("Added from discovery · ranked #1, high confidence · no text")).toBeVisible();
+    await expect(page.getByTestId("workspace-coverage")).toContainText("1 full text · 1 no text");
     // Importing the run attached both trail edges; adding the first paper
     // accepted its edge, the second is still pending review.
     await expect(station(page, "Connections")).toContainText("2 connections");

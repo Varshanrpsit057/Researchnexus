@@ -15,6 +15,7 @@ import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures";
 
 const PYTHON = String.raw`H:\Researchnexus\backend\.venv\Scripts\python.exe`;
+const BACKEND = String.raw`H:\Researchnexus\backend`;
 const HELPERS = __dirname;
 const TRAIL_FIXTURE = path.join(__dirname, "..", "trail", "seed-trail-run.py");
 
@@ -46,6 +47,40 @@ async function claimAKey(page: Page) {
     const res = await route.fetch();
     route.fulfill({ response: res, json: { ...(await res.json()), has_working_llm_key: true } });
   });
+}
+
+/** The table as the page shows it: heading row (title, meta), then each
+ * field's row (label, then each cell's lines: its text, and its note). */
+async function tableOnPage(page: Page): Promise<string[][][]> {
+  return page
+    .getByTestId("comparison-table")
+    .locator("table")
+    .evaluate((table) => {
+      const text = (el: Element | null) => el?.textContent ?? "";
+      const head = [...table.querySelectorAll("thead th")].map((th, i) =>
+        i === 0 ? [text(th)] : [text(th.querySelector('[data-testid="paper-title"]')), text(th.querySelector('[data-testid="paper-meta"]'))],
+      );
+      const rows = [...table.querySelectorAll("tbody tr")].map((tr) => [
+        [text(tr.querySelector("th"))],
+        ...[...tr.querySelectorAll("td")].map((td) => [...td.querySelectorAll("[data-cell-text], [data-cell-note]")].map((el) => text(el))),
+      ]);
+      return [head, ...rows];
+    });
+}
+
+/** "Export to Word", then the downloaded document's one table, read back by
+ * an XML reader independent of the writer (backend/tests/docx_reader.py). */
+async function exportedTable(page: Page): Promise<string[][][]> {
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export to Word" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^Comparison - .+\.docx$/);
+  const saved = test.info().outputPath(`comparison-${Date.now()}.docx`);
+  await file.saveAs(saved);
+  const doc = JSON.parse(execFileSync(PYTHON, ["-m", "tests.docx_reader", saved], { cwd: BACKEND }).toString());
+  expect(doc.tables).toHaveLength(1);
+  expect(doc.header_rows).toEqual([1]); // the heading row repeats on every page
+  return doc.tables[0];
 }
 
 test.describe("Paper comparison", () => {
@@ -122,14 +157,32 @@ test.describe("Paper comparison", () => {
     await page.keyboard.press("Escape");
     await expect(evidence).toHaveCount(0);
 
+    // 4b. Export to Word: the document's table is the page's table -- every
+    // heading in full, every row and cell, in the same order.
+    if (test.info().project.name === "chromium") {
+      const onPage = await tableOnPage(page);
+      expect(onPage[0][0]).toEqual(["Field"]);
+      expect(onPage[0].slice(1).map((h) => h[0])).toEqual(expect.arrayContaining([expect.stringMatching(/Synthetic Test Paper/), SIMILAR, COMPETING]));
+      expect(onPage).toHaveLength(1 + 4); // a heading row and the four fields
+      expect(await exportedTable(page)).toEqual(onPage);
+    }
+
     // 5. Remove a paper from the comparison, then bring it back.
     // wide screens have a remove button on each paper's column; the paper chips work everywhere
+    await page.getByRole("button", { name: /^Papers and fields/ }).click();
     const chip = page.getByRole("list", { name: "Papers to compare" }).getByRole("button", { name: new RegExp(COMPETING) });
     if (test.info().project.name === "chromium") await page.getByRole("button", { name: `Remove ${COMPETING} from the comparison` }).click();
     else await chip.click();
     await expect(chip).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByText(/2 papers side by side/)).toBeVisible();
     await expect(page.getByRole("button", { name: new RegExp(`^Method for ${COMPETING}`) })).toHaveCount(0);
+    if (test.info().project.name === "chromium") {
+      // only the columns on screen are exported
+      const onPage = await tableOnPage(page);
+      expect(onPage[0]).toHaveLength(3);
+      expect(onPage[0].map((h) => h[0])).not.toContain(COMPETING);
+      expect(await exportedTable(page)).toEqual(onPage);
+    }
     await chip.click();
     await expect(page.getByText(/3 papers side by side/)).toBeVisible();
 
@@ -147,6 +200,7 @@ test.describe("Paper comparison", () => {
       return route.fulfill({ response: latest });
     });
     await page.reload();
+    await page.getByRole("button", { name: /^Papers and fields/ }).click();
     await page.getByRole("button", { name: "Compare 3 papers again" }).click();
     await expect(page.getByText(/Reading 3 papers and checking every value/)).toBeVisible();
     await expect(page.getByText("The comparison didn't finish. Try again in a moment.")).toBeVisible({ timeout: 10_000 });

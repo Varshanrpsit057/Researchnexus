@@ -7,6 +7,7 @@ import {
   describeEvidence,
   filterTrail,
   flattenTrail,
+  fromWorkspacePapers,
   ruleReasons,
   type TrailEntry,
 } from "./trail";
@@ -136,5 +137,12 @@ describe("conclusion", () => {
   it("states the relationship as a finding about the target", () => {
     expect(conclusion("METHOD_EXTENSION")).toBe("It builds on the seed paper's method.");
     expect(conclusion("POTENTIALLY_CONTRADICTORY")).toBe("Its findings may contradict the seed paper's.");
+  });
+});
+
+describe("fromWorkspacePapers", () => {
+  it("tells an edge from the workspace's own papers from one a discovery run found", () => {
+    expect(fromWorkspacePapers("run_wsp_5d98afef0e244bf7a8a1")).toBe(true);
+    expect(fromWorkspacePapers("run_3304c6edce5c42f89d4a")).toBe(false);
   });
 });

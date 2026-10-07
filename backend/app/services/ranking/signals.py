@@ -74,6 +74,17 @@ def citation_signal(relationship: CitationRelationship, hops: int | None) -> flo
     return None  # NONE: discovery found no link -> not a penalty, just renormalise
 
 
+def publisher_signal(publisher: str | None, preferred: tuple[str, ...] | None = None) -> float:
+    """1.0 for a paper from a publisher the reader prefers (`preferred`, as
+    `publishers.preferred_set` names them; None is the default four), else
+    0.0 -- an unknown publisher counts as not preferred, never as missing, so
+    the criterion means the same for every paper."""
+    from app.services.metadata.publishers import normalize, preferred_set
+
+    chosen = preferred if preferred is not None else preferred_set(None)
+    return 1.0 if normalize(publisher) in chosen else 0.0
+
+
 def recency_signal(year: int | None, current_year: int, *, half_life_years: float) -> float | None:
     if year is None:
         return None

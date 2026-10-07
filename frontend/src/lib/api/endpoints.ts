@@ -1,4 +1,4 @@
-import { apiFetch, apiUpload } from "./client";
+import { apiDownload, apiFetch, apiUpload } from "./client";
 import type {
   ActivityResponse,
   AddPapersResponse,
@@ -11,6 +11,7 @@ import type {
   CitationLedger,
   CitationsResponse,
   ComparisonResponse,
+  ComparisonTable,
   EdgeUserState,
   DirectionsGenerateResponse,
   DiscoverJobResponse,
@@ -24,6 +25,7 @@ import type {
   GroupedTrail,
   Job,
   KeypointsResponse,
+  LibraryResponse,
   LlmProvider,
   LlmTestResult,
   MeResponse,
@@ -32,14 +34,23 @@ import type {
   ResearchGraph,
   ResearchProfile,
   ResearchDirection,
+  RankingCriteria,
   RelatedResponse,
   SessionResponse,
+  SourceCheck,
+  SourcesResponse,
+  PublishersResponse,
   StageName,
   SummaryResponse,
   TrailEdge,
   UploadResponse,
   UsageRange,
   UsageReport,
+  FullTextJob,
+  FullTextOutcome,
+  PaperTextOutcome,
+  WorkspaceTrailBuild,
+  WorkspaceCoverage,
   Workspace,
   WorkspaceListResponse,
   WorkspacePaper,
@@ -56,6 +67,11 @@ export const auth = {
 
 export const service = {
   health: () => apiFetch<HealthResponse>("/health"),
+  /** each scholarly source, what it's for and how it is set up (never a key) */
+  sources: () => apiFetch<SourcesResponse>("/api/v1/service/sources"),
+  /** ask every source one question now */
+  checkSources: () => apiFetch<{ results: SourceCheck[] }>("/api/v1/service/sources/check", { method: "POST" }),
+  publishers: () => apiFetch<PublishersResponse>("/api/v1/publishers"),
 };
 
 // --- model usage --------------------------------------------------------
@@ -89,19 +105,47 @@ export const papers = {
     form.append("file", file);
     return apiUpload<UploadResponse>("/api/v1/papers/upload", form);
   },
+  /** The reader's library: every paper they uploaded, analysed, searched from or collected. */
+  library: () => apiFetch<LibraryResponse>("/api/v1/papers"),
   get: (paperId: string) => apiFetch<Paper>(`/api/v1/papers/${paperId}`),
   getProfile: (paperId: string) => apiFetch<ResearchProfile>(`/api/v1/papers/${paperId}/profile`),
   analyze: (paperId: string) => apiFetch<AnalyzeResponse>(`/api/v1/papers/${paperId}/analyze`, { method: "POST" }),
+  /** Looks for this paper's full text now; can take tens of seconds. */
+  retrieveFullText: (paperId: string) =>
+    apiFetch<FullTextOutcome>(`/api/v1/papers/${paperId}/fulltext`, { method: "POST" }),
+  /** A PDF the reader has becomes this paper's full text (a paper whose copy can't be fetched). */
+  uploadPdf: (paperId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return apiUpload<PaperTextOutcome>(`/api/v1/papers/${paperId}/pdf`, form);
+  },
+  /** Reads an uploaded paper's PDF again with the current reader, and completes its record. */
+  reread: (paperId: string) => apiFetch<PaperTextOutcome>(`/api/v1/papers/${paperId}/reread`, { method: "POST" }),
   patchProfile: (paperId: string, patch: Record<string, unknown>) =>
     apiFetch<{ profile: ResearchProfile }>(`/api/v1/papers/${paperId}/profile`, { method: "PATCH", body: patch }),
-  discoverRelated: (paperId: string) =>
-    apiFetch<DiscoverJobResponse>(`/api/v1/papers/${paperId}/discover-related`, { method: "POST" }),
+  /** `criteria`: how the results are to be ranked; omitted, the initial weights.
+   * `preferredPublishers`: the publishers the reader prefers; omitted, the default four. */
+  discoverRelated: (paperId: string, criteria?: RankingCriteria, preferredPublishers?: string[]) =>
+    apiFetch<DiscoverJobResponse>(`/api/v1/papers/${paperId}/discover-related`, {
+      method: "POST",
+      ...(criteria || preferredPublishers
+        ? { body: { ...(criteria ? { criteria } : {}), ...(preferredPublishers ? { preferred_publishers: preferredPublishers } : {}) } }
+        : {}),
+    }),
+  /** re-weigh a saved run's ranking; returns the results as `related` does */
+  rerankRelated: (paperId: string, runId: string, criteria: RankingCriteria, preferredPublishers?: string[]) =>
+    apiFetch<RelatedResponse>(`/api/v1/papers/${paperId}/related/rerank`, {
+      method: "POST",
+      body: { run_id: runId, criteria, ...(preferredPublishers ? { preferred_publishers: preferredPublishers } : {}) },
+    }),
   related: (paperId: string, runId: string) =>
     apiFetch<RelatedResponse>(`/api/v1/papers/${paperId}/related`, { query: { run_id: runId } }),
 };
 
 export const jobs = {
   get: (jobId: string) => apiFetch<Job>(`/api/v1/jobs/${jobId}`),
+  /** stop a running discovery; one already finished is returned as it is */
+  cancel: (jobId: string) => apiFetch<Job>(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" }),
 };
 
 // --- workspaces -------------------------------------------------------
@@ -133,6 +177,15 @@ export const workspaces = {
 
   graph: (workspaceId: string) => apiFetch<ResearchGraph>(`/api/v1/workspaces/${workspaceId}/graph`),
 
+  /** What text each paper is read from, and the latest full-text run. */
+  coverage: (workspaceId: string) => apiFetch<WorkspaceCoverage>(`/api/v1/workspaces/${workspaceId}/coverage`),
+  /** Looks again for the full text of every abstract-only paper (in the background). */
+  retrieveFullText: (workspaceId: string) =>
+    apiFetch<{ job: FullTextJob | null }>(`/api/v1/workspaces/${workspaceId}/fulltext`, { method: "POST" }),
+  /** Connects the workspace's own papers to its seed: a trail without a discovery run. */
+  buildTrail: (workspaceId: string) =>
+    apiFetch<WorkspaceTrailBuild>(`/api/v1/workspaces/${workspaceId}/trail/build`, { method: "POST" }),
+
   activity: (workspaceId: string, query?: { stage?: StageName; limit?: number }) =>
     apiFetch<ActivityResponse>(`/api/v1/workspaces/${workspaceId}/activity`, { query }),
 
@@ -153,6 +206,13 @@ export const workspaces = {
     apiFetch<ComparisonResponse>(`/api/v1/workspaces/${workspaceId}/compare/${comparisonId}`),
   getLatestComparison: (workspaceId: string) =>
     apiFetch<ComparisonResponse>(`/api/v1/workspaces/${workspaceId}/compare`),
+  /** The table the page draws and the Word export writes; `paperIds` picks the columns shown. */
+  comparisonTable: (workspaceId: string, comparisonId: string, paperIds?: string[]) =>
+    apiFetch<ComparisonTable>(`/api/v1/workspaces/${workspaceId}/compare/${comparisonId}/table`, {
+      query: { papers: paperIds?.join(",") },
+    }),
+  exportComparisonDocx: (workspaceId: string, comparisonId: string, paperIds: string[]) =>
+    apiDownload(`/api/v1/workspaces/${workspaceId}/compare/${comparisonId}/export.docx`, { papers: paperIds.join(",") }),
 
   generateGaps: (workspaceId: string, body: { gap_types?: string[] | null; min_supporting_papers?: number }) =>
     apiFetch<GapsJobResponse>(`/api/v1/workspaces/${workspaceId}/gaps`, { method: "POST", body }),

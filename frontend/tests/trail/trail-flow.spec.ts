@@ -159,7 +159,9 @@ test.describe("Research trail", () => {
 
     await page.goto(`/workspace/${workspaceId}/trail`);
     await expect(page.getByRole("heading", { name: "No connections yet" })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("This one started from the seed paper alone.")).toBeVisible();
+    await expect(page.getByText("This workspace holds only its seed paper.", { exact: false })).toBeVisible();
+    // nothing to connect yet, so the only way on is discovery
+    await expect(page.getByRole("button", { name: "Connect this workspace's papers" })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Discover related papers" })).toHaveAttribute("href", `/discover/${seedId}`);
 
     // The server failing is simulated for this one response; the page's handling is what's tested.
@@ -169,6 +171,58 @@ test.describe("Research trail", () => {
     await page.reload();
     await expect(page.getByText("Could not load the research trail.")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("papers the reader added by hand are connected to the seed without running discovery", async ({ page }, testInfo) => {
+    test.setTimeout(120_000); // two real uploads and parses, then the real ranking and trail pipelines
+    // 1. A real seed and a workspace started from it alone.
+    seedId = await uploadSeed(page);
+    py([path.join(HELPERS, "seed-real-profile.py"), seedId, "Trail Own Papers Seed"]);
+    await page.reload();
+    await page.getByText("Skip discovery, start a workspace with just this paper").click();
+    await page.getByRole("dialog", { name: "Create a workspace" }).getByRole("button", { name: "Create workspace" }).click();
+    await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
+    const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
+
+    // 2. Two of the reader's own PDFs, uploaded and parsed for real.
+    const stamp = String(Date.now());
+    const out = execFileSync(PYTHON, [path.join(__dirname, "..", "workspace", "make-upload-pdfs.py"), testInfo.outputPath("uploads"), "2", stamp]);
+    const pdfs = out.toString().trim().split(/\r?\n/);
+    await page.getByRole("button", { name: "Add papers" }).click();
+    const files = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Choose PDFs" }).click();
+    await (await files).setFiles(pdfs);
+    for (const pdf of pdfs) {
+      await expect(page.getByRole("listitem").filter({ hasText: path.basename(pdf) })).toContainText("Added", { timeout: 45_000 });
+    }
+
+    // 3. The trail offers to connect them, instead of sending the reader to discovery.
+    const consoleErrors = collectConsoleErrors(page);
+    await page.goto(`/workspace/${workspaceId}/trail`);
+    await expect(page.getByRole("heading", { name: "No connections yet" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Connect the 2 papers in this workspace to the seed", { exact: false })).toBeVisible();
+    await page.getByRole("button", { name: "Connect this workspace's papers" }).click();
+
+    // 4. The real pipeline scores and types each connection (both papers share
+    //    the seed's retrieval topic); they wait for review, ranked among the
+    //    workspace's papers, not "in discovery".
+    const first = row(page, `Upload Fixture ${stamp} Paper 1`);
+    const second = row(page, `Upload Fixture ${stamp} Paper 2`);
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await expect(second).toBeVisible();
+    await expect(page.getByText("2 connections found.", { exact: true })).toBeAttached(); // announced to screen readers
+    await expect(tab(page, "To review", 2)).toHaveAttribute("aria-pressed", "true");
+    await expect(first).toContainText(/ranked #[12] of this workspace's papers/);
+    await expect(first).not.toContainText("in discovery");
+
+    // 5. A decision on one persists.
+    await page.getByRole("button", { name: `Accept the connection to Upload Fixture ${stamp} Paper 1` }).click();
+    await expect(tab(page, "Accepted", 1)).toBeVisible();
+    await page.reload();
+    await expect(tab(page, "To review", 1)).toBeVisible({ timeout: 10_000 });
+    await expect(tab(page, "Accepted", 1)).toBeVisible();
+
+    expect(consoleErrors).toEqual([]);
   });
 
   test("an unknown workspace gets an honest not-found state", async ({ page }) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
@@ -13,6 +13,10 @@ import { CINEMATIC } from "@/lib/cinematic-theme";
 import { Reveal } from "@/components/effects/Reveal";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { ProfilePanel } from "@/components/profile/ProfilePanel";
+import { COVERAGE_LABEL } from "@/lib/coverage";
+import { RankingCriteriaControls } from "@/components/discovery/RankingCriteriaControls";
+import { DEFAULT_CRITERIA, criteriaError, criteriaName, sameCriteria, useSavedCriteria, writeCriteria } from "@/lib/ranking";
+import type { RankingCriteria } from "@/lib/api/types";
 
 const C = CINEMATIC;
 
@@ -144,6 +148,7 @@ export default function SeedPaperPage() {
           <p className="mt-2 text-sm" style={{ color: C.muted }}>
             {paper.authors.length > 0 ? paper.authors.join(", ") : "Authors unknown"}
             {paper.venue && ` · ${paper.venue}`}
+            {paper.publisher && paper.publisher !== paper.venue && ` · ${paper.publisher}`}
             {paper.year != null && ` · ${paper.year}`}
           </p>
           <p className="mt-1 font-mono text-xs" style={{ color: C.muted2 }}>
@@ -193,7 +198,10 @@ export default function SeedPaperPage() {
           <Reveal delay={0.15}>
             <GlassCard title="Document status" icon={<FileText className="size-4" style={{ color: C.mint }} aria-hidden />}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm sm:grid-cols-4">
-                <StatusStat label="Full text" value={paper.has_full_text ? "extracted" : "pending"} />
+                <StatusStat
+                  label="Text"
+                  value={paper.coverage ? COVERAGE_LABEL[paper.coverage.state] : paper.has_full_text ? "Full text" : "Pending"}
+                />
                 <StatusStat label="Pages" value={paper.page_count != null ? String(paper.page_count) : "—"} />
                 <StatusStat label="Sections" value={String(paper.sections.length)} />
                 <StatusStat label="Tables" value={String(paper.tables.length)} />
@@ -252,18 +260,11 @@ export default function SeedPaperPage() {
             <GlassCard title="Discover related papers" icon={<Compass className="size-4" style={{ color: C.mint }} aria-hidden />}>
               <div className="flex flex-col items-start gap-3">
                 <p className="text-sm" style={{ color: C.muted }}>
-                  Search arXiv, OpenAlex, Semantic Scholar, and Crossref for related work, then rank it against this
+                  Search OpenAlex, Crossref, Semantic Scholar, arXiv, DBLP, CORE and Europe PMC for related work, then rank it against this
                   paper&apos;s profile.
                 </p>
                 {profile ? (
-                  <Link
-                    href={`/discover/${paperId}`}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold"
-                    style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
-                  >
-                    <Compass className="size-4" aria-hidden />
-                    Start discovery
-                  </Link>
+                  <DiscoveryStart paperId={paperId} />
                 ) : (
                   <>
                     <span
@@ -285,6 +286,66 @@ export default function SeedPaperPage() {
         </div>
       </div>
     </PageShell>
+  );
+}
+
+/** Start discovery, ranked by the criteria saved in this browser -- which
+ * can be set here first (remediation Phase 9). Criteria nobody could rank
+ * by (all off) are never saved, and discovery can't start with them. */
+function DiscoveryStart({ paperId }: { paperId: string }) {
+  const saved = useSavedCriteria();
+  const [draft, setDraft] = useState<RankingCriteria | null>(null);
+  const criteria = draft ?? saved;
+  const invalid = criteriaError(criteria) !== null;
+
+  function change(next: RankingCriteria) {
+    setDraft(next);
+    if (criteriaError(next) === null) writeCriteria(next);
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-3">
+      {invalid ? (
+        <span
+          aria-disabled
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold opacity-60"
+          style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
+        >
+          <Compass className="size-4" aria-hidden />
+          Start discovery
+        </span>
+      ) : (
+        <Link
+          href={`/discover/${paperId}`}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold"
+          style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
+        >
+          <Compass className="size-4" aria-hidden />
+          Start discovery
+        </Link>
+      )}
+      <details className="group w-full rounded-xl px-3 py-2" style={{ border: `1px solid ${C.line}` }}>
+        <summary className="cursor-pointer text-sm" style={{ color: C.muted }}>
+          Ranking criteria: {criteriaName(criteria)}
+        </summary>
+        <div className="mt-3">
+          <p className="mb-3 text-[12.5px]" style={{ color: C.muted2 }}>
+            How much each criterion counts when the papers found are ranked. Kept in this browser for every run.
+          </p>
+          <RankingCriteriaControls value={criteria} onChange={change} idPrefix="seed-criteria" />
+          {!sameCriteria(criteria, DEFAULT_CRITERIA) && (
+            <button
+              type="button"
+              onClick={() => change(DEFAULT_CRITERIA)}
+              className="mt-3 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-white/10"
+              style={{ border: `1px solid ${C.lineStrong}`, color: C.ink }}
+            >
+              Back to the default weights
+            </button>
+          )}
+        </div>
+      </details>
+    </div>
   );
 }
 

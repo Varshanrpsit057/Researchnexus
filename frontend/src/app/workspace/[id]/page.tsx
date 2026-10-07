@@ -13,8 +13,8 @@ import {
   GitBranch,
   Graph,
   Plus,
-  PushPin,
   Quotes,
+  UploadSimple,
   Warning,
   WarningCircle,
   XCircle,
@@ -28,9 +28,13 @@ import { compactTokens, featureLabel, formatTokens, plural } from "@/lib/usage";
 import { Reveal } from "@/components/effects/Reveal";
 import { Timestamp } from "@/components/ui/Timestamp";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
+import { coverageShort } from "@/lib/coverage";
 import { AddPapersPanel } from "./AddPapersPanel";
+import { CoverageSummary } from "./CoverageSummary";
+import { PaperAnnotations } from "./PaperNotes";
 import { C, InlineError, WorkspaceLoadError, focusRing, panel, primaryButton, quietButton } from "./ui";
 import {
+  STAGE_LABEL,
   buildStations,
   nextStation,
   type Loadable,
@@ -49,20 +53,6 @@ import type {
 
 // The panel surface nodes sit on -- opaque so a node hides the track behind it.
 const NODE_BG = "#0b1020";
-
-const STAGE_LABEL: Record<StageName, string> = {
-  ingest: "Parsed a PDF",
-  profile: "Extracted a research profile",
-  discovery: "Searched for related papers",
-  ranking: "Ranked candidates",
-  trail: "Classified relationships",
-  workspace: "Updated the workspace",
-  rag: "Answered a question",
-  comparison: "Compared papers",
-  gaps: "Looked for research gaps",
-  directions: "Proposed directions",
-  citations: "Formatted citations",
-};
 
 const RELATIONSHIP_LABEL: Record<RelationshipType, string> = {
   SIMILAR: "similar",
@@ -83,7 +73,7 @@ function toLoadable<T>(q: { data?: T; error?: unknown }): Loadable<T> {
 /** A workspace section's link. `base` is the legacy /workspaces/{id} root;
  * sections rebuilt in the cinematic app live under /workspace/{id}. */
 function sectionHref(base: string, slug: string): string {
-  return ["trail", "graph", "chat", "compare", "gaps", "directions", "citations"].includes(slug) ? `${base.replace("/workspaces/", "/workspace/")}/${slug}` : `${base}/${slug}`;
+  return `${base}/${slug}`;
 }
 
 function Skeleton({ className = "" }: { className?: string }) {
@@ -168,7 +158,7 @@ export default function WorkspacePage() {
     );
   }
 
-  const base = `/workspaces/${id}`;
+  const base = `/workspace/${id}`;
   const next = nextStation(stations);
 
   return (
@@ -470,6 +460,7 @@ function PapersSection({ workspace, onChanged }: { workspace: Workspace; onChang
         {opened && <AddPapersPanel key={workspace.workspace_id} workspace={workspace} onAdded={onChanged} />}
       </div>
 
+      <CoverageSummary workspaceId={workspace.workspace_id} paperCount={workspace.papers.length} />
       <ul className="overflow-hidden rounded-2xl" style={panel}>
         {sorted.map((p, i) => (
           <PaperRow key={p.paper_id} workspaceId={workspace.workspace_id} paper={p} first={i === 0} onRemoved={onChanged} />
@@ -505,8 +496,11 @@ function PaperRow({
   first: boolean;
   onRemoved: () => Promise<void>;
 }) {
-  const { data: detail, error: detailError } = useSWR(["paper", paper.paper_id], () => papersApi.get(paper.paper_id));
+  const { data: detail, error: detailError, mutate: mutateDetail } = useSWR(["paper", paper.paper_id], () => papersApi.get(paper.paper_id));
   const [confirming, setConfirming] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState<string | null>(null);
+  const pdfRef = useRef<HTMLInputElement>(null);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -539,10 +533,29 @@ function PaperRow({
     }
   }
 
+  // a paper read from its abstract only can take the reader's own PDF (2026-10-02)
+  async function uploadPdf(file: File) {
+    setUploading(true);
+    setError(null);
+    setUploaded(null);
+    try {
+      const res = await papersApi.uploadPdf(paper.paper_id, file);
+      setUploaded(`Full text read from your PDF: ${res.outcome.chunks} passages.`);
+      await mutateDetail();
+      await onRemoved(); // the workspace's coverage counts change too
+    } catch (err) {
+      setError(err instanceof ApiError ? `That PDF couldn't be used: ${err.message}.` : "The server couldn't be reached. Try again.");
+    } finally {
+      setUploading(false);
+      if (pdfRef.current) pdfRef.current.value = "";
+    }
+  }
+
   const authors = detail?.authors ?? [];
   const byline = [
     authors.length > 3 ? `${authors.slice(0, 3).join(", ")} et al.` : authors.join(", "),
     detail?.venue,
+    detail?.publisher && detail.publisher !== detail.venue ? detail.publisher : null,
     detail?.year != null ? String(detail.year) : null,
   ]
     .filter(Boolean)
@@ -551,7 +564,8 @@ function PaperRow({
   const provenance = [
     isSeed ? "Seed paper" : paper.added_by === "trail" ? "Added from discovery" : "Added manually",
     snapshot ? `ranked #${snapshot.final_rank}, ${snapshot.band} confidence` : null,
-    paper.grounding === "full_text" ? "full text" : "abstract only",
+    // the text it is read from, as the paper itself says (its full text may have been found since it joined)
+    detail?.coverage ? coverageShort(detail.coverage.state) : paper.grounding === "full_text" ? "full text" : "abstract only",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -587,28 +601,55 @@ function PaperRow({
             </p>
           )}
           <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[13px]" style={{ color: C.muted }}>
-            {paper.pinned && (
-              <span className="inline-flex items-center gap-1" style={{ color: C.ink }}>
-                <PushPin className="size-3.5" weight="fill" aria-hidden />
-                Pinned ·
-              </span>
-            )}
             {provenance}
           </p>
           {paper.note && (
-            <p className="mt-2 text-sm italic" style={{ color: C.muted }}>
-              “{paper.note}”
+            <p className="mt-2 max-w-[70ch] whitespace-pre-line text-sm leading-relaxed" style={{ color: C.ink }}>
+              {paper.note}
             </p>
           )}
+          {title !== null && <PaperAnnotations workspaceId={workspaceId} paper={paper} title={title} onSaved={onRemoved} />}
           {error && (
             <div className="mt-2">
               <InlineError message={error} />
             </div>
           )}
+          {uploaded && (
+            <p role="status" className="mt-2 text-sm" style={{ color: C.mint }}>
+              {uploaded}
+            </p>
+          )}
         </div>
 
         {!isSeed && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {detail?.coverage && detail.coverage.state !== "full_text" && !confirming && (
+              <>
+                <input
+                  ref={pdfRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void uploadPdf(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => pdfRef.current?.click()}
+                  disabled={uploading}
+                  aria-label={`Upload the PDF of ${title ?? paper.paper_id}`}
+                  className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors hover:bg-white/10 hover:text-white disabled:opacity-60 sm:min-h-0 ${focusRing}`}
+                  style={{ color: C.muted }}
+                >
+                  <UploadSimple className="size-4" aria-hidden />
+                  {uploading ? "Reading…" : "Upload PDF"}
+                </button>
+              </>
+            )}
             {confirming ? (
               <>
                 <span className="text-sm" style={{ color: C.muted }}>

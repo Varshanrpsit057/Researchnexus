@@ -12,6 +12,7 @@ from app.db.base import Base
 from app.domain.candidate import NormalizedCandidate
 from app.domain.chunk import ChunkKind, PaperChunk
 from app.retrieval.workspace_index import (
+    DbBackedWorkspaceIndex,
     FaissWorkspaceIndex,
     WorkspaceIndexCache,
     get_workspace_index,
@@ -135,3 +136,40 @@ def test_lru_cache_evicts_least_recently_used(db: Session, tmp_path: Path) -> No
 def test_factory_returns_faiss_backend_when_requested(db: Session, tmp_path: Path) -> None:
     idx = get_workspace_index(db, workspace_id="ws_1", index_dir=tmp_path, backend="faiss")
     assert isinstance(idx, FaissWorkspaceIndex)
+
+
+def test_a_paper_read_in_full_is_searched_in_full_not_by_its_abstract(db: Session, tmp_path: Path) -> None:
+    # remediation Phase 11: full text is preferred; the abstract is the fallback
+    full = _paper_with_chunks(db, "Read in full", ["dense retrieval over passages with a dual encoder"])
+    only_abstract = repo.upsert_discovered_paper(db, NormalizedCandidate(title="Only abstract", title_hash=title_hash("Only abstract")))
+    abstract = lambda pid, text: PaperChunk(  # noqa: E731
+        chunk_id=f"abs_{pid}", paper_id=pid, section="Abstract", char_start=0, char_end=len(text),
+        kind=ChunkKind.ABSTRACT, text=text, token_count=len(text.split()),
+    )
+    # the full-text paper still holds the abstract chunk it was first read from
+    repo.save_chunks(db, [abstract(full, "dense retrieval abstract"), abstract(only_abstract, "dense retrieval abstract")])
+    for idx in (
+        FaissWorkspaceIndex(db, workspace_id="ws_ft", index_dir=tmp_path),
+        DbBackedWorkspaceIndex(db, workspace_id="ws_ft_db", index_dir=tmp_path),
+    ):
+        idx.rebuild([full, only_abstract])
+        found = {h.chunk_id for h in idx.search("dense retrieval abstract", k=10)}
+        assert f"abs_{full}" not in found  # read in full: its own text answers
+        assert f"chk_{full}_0" in found
+        assert f"abs_{only_abstract}" in found  # abstract only: the abstract is all there is
+    assert repo.get_chunks_by_ids(db, [f"abs_{full}"])  # kept for the answers that cite it
+
+
+def test_a_search_limited_to_one_paper_ranks_within_that_paper(db: Session, tmp_path: Path) -> None:
+    # remediation, 2026-10-02: a short paper in a large workspace was outranked by every
+    # other paper's passages, so a search limited to it returned nothing ("no text")
+    big = _paper_with_chunks(db, "Large paper", [f"dense retrieval method results evaluation part {i}" for i in range(40)])
+    small = _paper_with_chunks(db, "Short paper", ["a note on campus buses"])
+    for idx in (
+        FaissWorkspaceIndex(db, workspace_id="ws_scope", index_dir=tmp_path),
+        DbBackedWorkspaceIndex(db, workspace_id="ws_scope_db", index_dir=tmp_path),
+    ):
+        idx.rebuild([big, small])
+        assert [h.chunk_id for h in idx.search("dense retrieval method results buses", k=1, paper_ids=[small])] == [f"chk_{small}_0"]
+        assert all(h.paper_id == big for h in idx.search("dense retrieval", k=5, paper_ids=[big]))
+        assert idx.search("anything", k=8, paper_ids=["pap_not_indexed"]) == []

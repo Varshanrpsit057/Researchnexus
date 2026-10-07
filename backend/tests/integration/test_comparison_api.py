@@ -244,3 +244,53 @@ def test_an_abstract_only_paper_joins_the_comparison_through_its_abstract(tmp_pa
     # statuses persist
     latest = c.get(f"/api/v1/workspaces/{wid}/compare", headers=_h(token)).json()
     assert next(x for x in latest["rows"] if x["paper_id"] == p3)["cells"]["method"]["status"] == "unsupported"
+
+
+def test_comparison_table_and_word_export_are_the_same_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # remediation Phase 12: the page draws `/table`; `/export.docx` writes that same table to Word
+    from tests.docx_reader import read_docx
+
+    c = _client(tmp_path)
+    token = _token(c)
+    wid, p2 = _seed_ws(c, token)
+    _save_key(c, token, monkeypatch)
+    _mock_llm(monkeypatch, {
+        "pap_seed": {"cells": [{"column": "method", "value": "dense retrieval", "chunk_id": "a0", "quote": "We use dense retrieval on the NQ dataset"}]},
+    })
+    cmp_id = c.post(f"/api/v1/workspaces/{wid}/compare", json={"paper_ids": [], "schema": ["method", "dataset"]}, headers=_h(token)).json()["comparison_id"]
+
+    table = c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/table", headers=_h(token))
+    assert table.status_code == 200, table.text
+    t = table.json()
+    assert [p["paper_id"] for p in t["papers"]] == ["pap_seed", p2]
+    assert [p["title"] for p in t["papers"]] == ["A", "B"]
+    assert t["papers"][0]["kind"] == "seed" and t["papers"][1]["kind"] == "member"
+    assert [r["label"] for r in t["rows"]] == ["Method", "Datasets"]
+    assert [c_["text"] for c_ in t["rows"][0]["cells"]] == ["dense retrieval", "Not stated"]
+
+    export = c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/export.docx", headers=_h(token))
+    assert export.status_code == 200
+    assert export.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert export.headers["content-disposition"] == 'attachment; filename="Comparison - W.docx"'
+    # the page (another origin) may read the file name
+    from_page = c.get(
+        f"/api/v1/workspaces/{wid}/compare/{cmp_id}/export.docx",
+        headers={**_h(token), "Origin": "http://localhost:3000"},
+    )
+    assert "content-disposition" in from_page.headers["access-control-expose-headers"].lower()
+    grid = read_docx(export.content).tables[0]
+    expected = [
+        [[t["corner"]], *([p["title"], p["meta"]] for p in t["papers"])],
+        *([[r["label"]], *([cell["text"]] if cell["note"] is None else [cell["text"], cell["note"]] for cell in r["cells"])] for r in t["rows"]),
+    ]
+    assert grid == expected
+
+    # the columns shown on the page are the columns exported
+    only_seed = c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/export.docx?papers=pap_seed", headers=_h(token))
+    assert [cell[0] for cell in read_docx(only_seed.content).tables[0][0]] == ["Field", "A"]
+    assert c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/table?papers=pap_nope", headers=_h(token)).status_code == 422
+    assert c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/export.docx?papers=", headers=_h(token)).status_code == 422
+    assert c.get(f"/api/v1/workspaces/{wid}/compare/cmp_missing/table", headers=_h(token)).status_code == 404
+    other = _token(c, "z@example.com")
+    assert c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/export.docx", headers=_h(other)).status_code == 404
+    assert c.get(f"/api/v1/workspaces/{wid}/compare/{cmp_id}/table").status_code == 401

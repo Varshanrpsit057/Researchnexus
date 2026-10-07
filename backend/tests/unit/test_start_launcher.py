@@ -72,6 +72,58 @@ def test_background_follows_the_best_gpu() -> None:
 ROOT_PATH = Path(r"H:\Researchnexus")
 
 
+# --- machines without NVIDIA, CUDA or any GPU tool (remediation Phase 17) ---
+
+
+def test_no_gpu_tool_at_all_starts_with_the_browsers_own_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Windows without PowerShell, a query that times out, or a malformed answer: no crash, no guess
+    import subprocess
+
+    for error in (FileNotFoundError("powershell"), subprocess.TimeoutExpired("powershell", 30), ValueError("bad json")):
+        def broken(error: Exception = error) -> list[str]:
+            raise error
+
+        monkeypatch.setattr(start, "_gpu_names", broken)
+        assert start.detect_gpus() == []
+        assert start.background_mode(start.detect_gpus()) == "auto"
+
+
+def test_linux_without_nvidia_smi_or_lspci_asks_nothing_it_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(start, "WINDOWS", False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setattr(start.shutil, "which", lambda _name: None)
+
+    def never(*_a: object, **_k: object) -> None:
+        raise AssertionError("ran a tool that isn't installed")
+
+    monkeypatch.setattr(start, "run", never)
+    assert start.detect_gpus() == []
+
+
+@pytest.mark.parametrize(
+    ("names", "background"),
+    [
+        (["Intel(R) UHD Graphics 620"], "fibers"),  # a thin laptop: integrated only
+        (["AMD Radeon(TM) Graphics"], "fibers"),  # an AMD APU laptop
+        (["Intel(R) Iris(R) Xe Graphics", "NVIDIA GeForce RTX 4060 Laptop GPU"], "neural"),  # hybrid: the dGPU decides
+        (["Microsoft Basic Display Adapter"], "static"),  # no driver: software only
+        (["VMware SVGA 3D"], "static"),  # a virtual machine
+        ([], "auto"),  # nothing reported
+    ],
+)
+def test_the_background_follows_what_the_machine_reports(
+    monkeypatch: pytest.MonkeyPatch, names: list[str], background: str
+) -> None:
+    monkeypatch.setattr(start, "_gpu_names", lambda: names)
+    assert start.background_mode(start.detect_gpus()) == background
+
+
+def test_the_frontend_is_told_the_startup_background() -> None:
+    server = start.frontend_server("npm", "fibers")
+    assert server.env["NEXT_PUBLIC_RN_BACKGROUND"] == "fibers"
+    assert server.env["PORT"] == "3000"
+
+
 @pytest.mark.parametrize(
     ("command", "ours"),
     [

@@ -315,7 +315,7 @@ export default function ChatPage() {
                         <InlineError message={live.error.message} />
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           {live.error.code === "llm_key_required" || live.error.kind === "auth" ? (
-                            <Link href="/settings" className={`rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`} style={primaryButton}>
+                            <Link href="/settings#models" className={`rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`} style={primaryButton}>
                               {live.error.kind === "auth" ? "Check the key in Settings" : "Add a key in Settings"}
                             </Link>
                           ) : (
@@ -362,7 +362,7 @@ export default function ChatPage() {
                 <Warning className="mt-px size-4 shrink-0" weight="bold" aria-hidden />
                 <span>
                   No working LLM provider key is saved, so questions can&apos;t be answered yet.{" "}
-                  <Link href="/settings" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
+                  <Link href="/settings#models" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
                     Add a key
                   </Link>
                 </span>

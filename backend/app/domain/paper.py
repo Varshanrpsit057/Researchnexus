@@ -94,3 +94,6 @@ class ParsedDocument(BaseModel):
     title: str | None = None
     authors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # read from the PDF itself: its own DOI, and its Abstract section's text
+    doi: str | None = None
+    abstract: str | None = None

@@ -35,6 +35,8 @@ class CandidateSource(str, Enum):
     SEMANTIC_SCHOLAR = "semantic_scholar"
     CROSSREF = "crossref"
     EUROPE_PMC = "europe_pmc"
+    DBLP = "dblp"
+    CORE = "core"
 
 
 class DiscoveryStrategy(str, Enum):
@@ -80,6 +82,7 @@ class RawExternalRecord(BaseModel):
     venue: str | None = None
     url: str | None = None
     is_preprint: bool = False
+    publisher: str | None = None  # as the source names it (normalised later)
     raw: dict = Field(default_factory=dict)
 
 
@@ -100,6 +103,7 @@ class NormalizedCandidate(BaseModel):
     venue: str | None = None
     url: str | None = None
     is_preprint: bool = False
+    publisher: str | None = None
     sources: list[CandidateSource] = Field(default_factory=list)
     field_provenance: list[FieldProvenance] = Field(default_factory=list)
     possible_duplicate: bool = False
@@ -157,3 +161,5 @@ class SearchRun(BaseModel):
     tokens_completion: int = 0
     started_at: datetime = Field(default_factory=_utcnow)
     finished_at: datetime | None = None
+    # how the run went (DiscoveryProgress.report()); None for runs saved before it existed
+    report: dict | None = None

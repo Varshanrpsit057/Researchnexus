@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.external.allowlist import assert_allowed
+from app.external.allowlist import assert_allowed, assert_fulltext_allowed
 
 _USER_AGENT = "ResearchNexus/0.1 (+https://example.invalid/researchnexus)"
 _RETRY_AFTER_CAP_S = 60.0
@@ -39,7 +39,14 @@ class ExternalError(Exception):
 
 
 class UpstreamUnavailable(ExternalError):
-    """A source failed (5xx / timeout / transport error) after all retries."""
+    """A source failed (5xx / timeout / transport error) after all retries.
+    `status` is the HTTP status when there was one; `retry_after` is how long
+    the source asked callers to wait, when it said."""
+
+    def __init__(self, message: str, *, status: int | None = None, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
 
 
 class UpstreamRateLimited(ExternalError):
@@ -54,8 +61,48 @@ class MalformedUpstreamResponse(ExternalError):
     """A 2xx body could not be parsed into the expected shape."""
 
 
+class NotAPdf(ExternalError):
+    """A full-text link answered with something other than a PDF -- usually a
+    publisher's landing or sign-in page."""
+
+
+class TooLarge(ExternalError):
+    """A download went past the size a paper's PDF may have."""
+
+
+_REDIRECTS = {301, 302, 303, 307, 308}
+_MAX_REDIRECTS = 5
+
+
 Sleep = Callable[[float], Awaitable[None]]
 Clock = Callable[[], float]
+# (host, outcome, seconds): outcome is "ok", "cached", "rate_limited",
+# "http_<status>" or "unreachable" -- one call per request a caller made
+OnRequest = Callable[[str, str, float], None]
+
+
+class ResponseCache:
+    """Successful GET bodies by URL, each kept until its expiry. A client
+    has its own unless it is handed one to share: discovery shares one across
+    runs, so a run started again soon after reuses every answer the last one
+    got and asks again only where a source failed."""
+
+    def __init__(self, max_entries: int = 4000) -> None:
+        self._entries: dict[str, tuple[float, str]] = {}
+        self._max_entries = max_entries
+
+    def get(self, key: str, now: float) -> str | None:
+        hit = self._entries.get(key)
+        return hit[1] if hit is not None and now < hit[0] else None
+
+    def put(self, key: str, text: str, expires_at: float) -> None:
+        self._entries.pop(key, None)
+        self._entries[key] = (expires_at, text)
+        while len(self._entries) > self._max_entries:
+            self._entries.pop(next(iter(self._entries)))  # the oldest entry
+
+    def clear(self) -> None:
+        self._entries.clear()
 
 
 class ExternalHttpClient:
@@ -72,6 +119,8 @@ class ExternalHttpClient:
         host_headers: dict[str, dict[str, str]] | None = None,
         host_min_interval_s: dict[str, float] | None = None,
         max_retry_wait_s: float = _RETRY_AFTER_CAP_S,
+        cache: ResponseCache | None = None,
+        on_request: OnRequest | None = None,
     ) -> None:
         self._transport = transport
         # e.g. {"api.semanticscholar.org": {"x-api-key": ...}}: credentials a
@@ -92,7 +141,9 @@ class ExternalHttpClient:
         self._cache_ttl_s = cache_ttl_s
         self._sleep: Sleep = sleep or asyncio.sleep
         self._clock: Clock = clock or time.monotonic
-        self._cache: dict[str, tuple[float, str]] = {}
+        self._cache = cache if cache is not None else ResponseCache()
+        # told how every request went, e.g. to show a run's progress per source
+        self._on_request = on_request
 
     # -- cache ---------------------------------------------------------------
 
@@ -111,13 +162,27 @@ class ExternalHttpClient:
     async def _request_text(self, url: str, params: dict[str, Any] | None) -> str:
         assert_allowed(url)
         key = self._cache_key(url, params)
-        cached = self._cache.get(key)
-        if cached is not None and self._clock() < cached[0]:
-            return cached[1]
+        cached = self._cache.get(key, self._clock())
+        if cached is not None:
+            self._report(url, "cached", 0.0)
+            return cached
 
-        text = await self._send_with_retry(url, params)
-        self._cache[key] = (self._clock() + self._cache_ttl_s, text)
+        started = time.monotonic()
+        try:
+            text = await self._send_with_retry(url, params)
+        except UpstreamRateLimited:
+            self._report(url, "rate_limited", time.monotonic() - started)
+            raise
+        except UpstreamUnavailable as exc:
+            self._report(url, f"http_{exc.status}" if exc.status else "unreachable", time.monotonic() - started)
+            raise
+        self._report(url, "ok", time.monotonic() - started)
+        self._cache.put(key, text, self._clock() + self._cache_ttl_s)
         return text
+
+    def _report(self, url: str, outcome: str, seconds: float) -> None:
+        if self._on_request is not None:
+            self._on_request((urlparse(url).hostname or "").lower(), outcome, seconds)
 
     async def _send_with_retry(self, url: str, params: dict[str, Any] | None) -> str:
         last_rate_limit: UpstreamRateLimited | None = None
@@ -135,7 +200,7 @@ class ExternalHttpClient:
                     continue
 
                 if resp.status_code == 429:
-                    retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"))
                     last_rate_limit = UpstreamRateLimited(f"{url}: rate limited", retry_after)
                     if attempt == self._max_retries or (retry_after or 0) > self._max_retry_wait_s:
                         break
@@ -143,13 +208,18 @@ class ExternalHttpClient:
                     continue
 
                 if resp.status_code >= 500:
-                    if attempt == self._max_retries:
-                        raise UpstreamUnavailable(f"{url}: HTTP {resp.status_code}")
-                    await self._sleep(self._backoff_base_s * (2**attempt))
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+                    # a source that asks for a longer pause than this caller can
+                    # wait is not asked again now: that would only be refused too
+                    if attempt == self._max_retries or (retry_after or 0) > self._max_retry_wait_s:
+                        raise UpstreamUnavailable(
+                            f"{url}: HTTP {resp.status_code}", status=resp.status_code, retry_after=retry_after
+                        )
+                    await self._sleep(retry_after if retry_after is not None else self._backoff_base_s * (2**attempt))
                     continue
 
                 if resp.status_code >= 400:
-                    raise UpstreamUnavailable(f"{url}: HTTP {resp.status_code}")
+                    raise UpstreamUnavailable(f"{url}: HTTP {resp.status_code}", status=resp.status_code)
 
                 return resp.text
 
@@ -203,7 +273,7 @@ class ExternalHttpClient:
                     await self._sleep(self._backoff_base_s * (2**attempt))
                     continue
                 if resp.status_code == 429 and attempt < self._max_retries:
-                    retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"))
                     if (retry_after or 0) > self._max_retry_wait_s:
                         return resp
                     await self._sleep(min(retry_after or self._backoff_base_s * (2**attempt), self._max_retry_wait_s))
@@ -217,7 +287,55 @@ class ExternalHttpClient:
         raise UpstreamUnavailable(f"{url}: retries exhausted")  # pragma: no cover
 
 
-def _parse_retry_after(value: str | None) -> float | None:
+    async def get_pdf(self, url: str, *, max_bytes: int) -> tuple[bytes, str]:
+        """A paper's PDF from an open-access source (remediation Phase 7), and
+        the URL it finally came from. Redirects are followed one hop at a
+        time, each hop checked against the full-text source list -- a DOI
+        that resolves somewhere else is refused, not followed -- and the body
+        is read no further than `max_bytes`. Not retried: the caller tries
+        its next source instead."""
+        current = url
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            timeout=self._timeout_s,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/pdf,*/*;q=0.5"},
+            follow_redirects=False,
+        ) as http:
+            for _hop in range(_MAX_REDIRECTS + 1):
+                # every hop is checked; names are resolved only when the real network is used
+                assert_fulltext_allowed(current, resolve=self._transport is None)
+                await self._throttle(current)
+                try:
+                    async with http.stream("GET", current) as resp:
+                        if resp.status_code in _REDIRECTS:
+                            location = resp.headers.get("location")
+                            if not location:
+                                raise UpstreamUnavailable(f"{current}: redirect without a location")
+                            current = str(httpx.URL(current).join(location))
+                            continue
+                        if resp.status_code == 429:
+                            raise UpstreamRateLimited(f"{current}: rate limited", parse_retry_after(resp.headers.get("Retry-After")))
+                        if resp.status_code >= 400:
+                            raise UpstreamUnavailable(f"{current}: HTTP {resp.status_code}")
+                        declared = resp.headers.get("content-length")
+                        if declared and declared.isdigit() and int(declared) > max_bytes:
+                            raise TooLarge(f"{current}: {int(declared)} bytes")
+                        body = bytearray()
+                        async for piece in resp.aiter_bytes():
+                            body += piece
+                            if len(body) > max_bytes:
+                                raise TooLarge(f"{current}: over {max_bytes} bytes")
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    raise UpstreamUnavailable(f"{current}: {type(exc).__name__}") from exc
+                data = bytes(body)
+                # a PDF may carry a few bytes of junk before its header
+                if b"%PDF-" not in data[:1024]:
+                    raise NotAPdf(f"{current}: {resp.headers.get('content-type', 'no content type')}")
+                return data, current
+        raise UpstreamUnavailable(f"{url}: more than {_MAX_REDIRECTS} redirects")
+
+
+def parse_retry_after(value: str | None) -> float | None:
     if value is None:
         return None
     try:

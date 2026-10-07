@@ -205,3 +205,13 @@ describe("ruleCopy", () => {
     expect(ruleCopy("some_new_rule")).toBe("Found by the some new rule rule.");
   });
 });
+
+describe("a method gap's evidence", () => {
+  it("leads with the paper that uses the method, then the papers that lack it", () => {
+    const base = gap();
+    const uses = { paper_id: "p1", role: "supports_gap" as const, span: { ...base.supporting_evidence[0].span, paper_id: "p1", quote: "We rerank with BM25." } };
+    const groups = evidenceByPaper({ ...base, supporting_evidence: [uses, ...base.supporting_evidence] });
+    expect(groups.map((g) => g.paperId)).toEqual(["p1", "p2", "p3"]);
+    expect(groups[0].supporting[0].role).toBe("supports_gap");
+  });
+});

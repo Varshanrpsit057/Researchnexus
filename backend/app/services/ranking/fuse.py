@@ -31,7 +31,10 @@ def fuse(signals: SignalScores, weights: RankingWeights) -> FusionResult:
     raw_weights = {name: weights.as_dict()[name] for name in available}
     total_weight = sum(raw_weights.values())
 
-    missing = [name for name in SIGNAL_NAMES if name not in available]
+    # a signal the weights give nothing can't be missing from the score
+    # (the initial weights predate the publisher signal and weigh it 0)
+    all_weights = weights.as_dict()
+    missing = [name for name in SIGNAL_NAMES if name not in available and all_weights[name] > 0]
 
     if total_weight <= 0.0:
         return FusionResult(0.0, [], list(SIGNAL_NAMES), {})

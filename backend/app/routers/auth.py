@@ -29,16 +29,24 @@ class SessionRequest(BaseModel):
 class SessionResponse(BaseModel):
     token: str
     expires_at: str
+    # a new, empty account was made for this email (the sign-in page says so)
+    created: bool
 
 
 @router.post("/api/v1/auth/session", response_model=SessionResponse)
 def create_session(body: SessionRequest, db: DbSession, settings: AppSettings) -> SessionResponse:
-    user = repo.get_user_by_email(db, body.email)
+    email = body.email.strip()
+    local, _, domain = email.partition("@")
+    if not local or not domain:
+        raise HTTPException(status_code=422, detail={"error": {"code": "invalid_email", "message": "enter an email address"}})
+    # one account per email, whatever its capitalisation (it used to be one per spelling)
+    user = repo.find_user_for_sign_in(db, email)
+    created = user is None
     if user is None:
-        user = repo.create_user(db, user_id=new_id("usr"), email=body.email)
+        user = repo.create_user(db, user_id=new_id("usr"), email=email.lower())
     token = create_access_token(user_id=user.id, email=user.email, settings=settings)
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expires_minutes)).isoformat()
-    return SessionResponse(token=token, expires_at=expires_at)
+    return SessionResponse(token=token, expires_at=expires_at, created=created)
 
 
 class MeResponse(BaseModel):

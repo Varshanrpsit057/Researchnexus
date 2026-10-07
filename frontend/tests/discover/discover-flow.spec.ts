@@ -121,23 +121,25 @@ test.describe("Discovery", () => {
     // 3. Reaching the page is the only trigger needed -- it auto-starts.
     await page.goto(`/discover/${paperId}`);
     await expect(page.getByText("Ranking candidates against the seed profile")).toBeVisible();
-    await expect(page.getByText("Dense Passage Retrieval for Open-Domain Question Answering")).toBeVisible({ timeout: 5_000 });
+    const list = page.getByTestId("results-list");
+    await expect(list.getByText("Dense Passage Retrieval for Open-Domain Question Answering")).toBeVisible({ timeout: 5_000 });
     await expect(page).toHaveURL(new RegExp(`/discover/${paperId}\\?run=run_pw_discover_001`));
 
-    // 4. Transparent ranking: real per-signal scores and the plain-language
-    //    explanation are visible without an extra click.
-    await expect(page.getByText("#1")).toBeVisible();
-    await expect(page.getByText("This paper cites the seed directly")).toBeVisible();
-    await expect(page.getByText("semantic").first()).toBeVisible();
-    await expect(page.getByText("cites seed")).toBeVisible();
-    await expect(page.getByText("A Low-Confidence Loosely Related Paper")).toBeVisible();
+    // 4. Transparent ranking: the rank in the list, and beside it the paper in
+    //    focus with the reasons its ranking was saved with (this mocked
+    //    ranking predates per-signal contributions) and how it was found.
+    await expect(list.getByText("#1")).toBeVisible();
+    const detail = page.getByTestId("result-detail");
+    await expect(detail).toContainText("cites the seed paper directly");
+    await expect(detail).toContainText("Cites the seed");
+    await expect(list.getByText("A Low-Confidence Loosely Related Paper")).toBeVisible();
 
     // 5. Filtering by confidence band actually narrows the real list.
     await page.getByRole("button", { name: "High", exact: true }).click();
-    await expect(page.getByText("Dense Passage Retrieval for Open-Domain Question Answering")).toBeVisible();
-    await expect(page.getByText("A Low-Confidence Loosely Related Paper")).not.toBeVisible();
+    await expect(list.getByText("Dense Passage Retrieval for Open-Domain Question Answering")).toBeVisible();
+    await expect(list.getByText("A Low-Confidence Loosely Related Paper")).toHaveCount(0);
     await page.getByRole("button", { name: "All", exact: true }).click();
-    await expect(page.getByText("A Low-Confidence Loosely Related Paper")).toBeVisible();
+    await expect(list.getByText("A Low-Confidence Loosely Related Paper")).toBeVisible();
 
     // 6. Selecting a result is a real, verified UI mechanic (the sticky
     //    bar's label updates for real), but the workspace-creation call

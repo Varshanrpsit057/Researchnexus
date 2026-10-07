@@ -210,6 +210,12 @@ async def _bounded(limit: int, jobs: Iterable[Awaitable[object]]) -> list[object
         raise
 
 
+def _read_from_abstract_only(db: Session, paper_id: str) -> bool:
+    profile = repo.get_profile(db, paper_id)
+    paper = repo.get_paper(db, paper_id)
+    return profile is not None and profile.grounding == "abstract" and paper is not None and paper.has_full_text
+
+
 async def _profile_missing(
     db: Session,
     workspace: ResearchWorkspace,
@@ -219,14 +225,18 @@ async def _profile_missing(
     report: ProgressHook,
     calls: _ModelCalls,
 ) -> None:
-    missing = [wp.paper_id for wp in workspace.papers if repo.get_profile(db, wp.paper_id) is None]
+    never = [wp.paper_id for wp in workspace.papers if repo.get_profile(db, wp.paper_id) is None]
+    # a profile read from the abstract of a paper whose full text has since been found is read again
+    # (if that fails, the abstract's profile stays)
+    stale = [wp.paper_id for wp in workspace.papers if wp.paper_id not in never and _read_from_abstract_only(db, wp.paper_id)]
+    missing = [*never, *stale]
     if not missing:
         return
     ensure_abstract_chunks(db, missing)
     readable = [pid for pid in missing if repo.get_chunks_for_paper(db, pid)]
-    result.unprofiled += len(missing) - len(readable)  # nothing to read: no full text, no abstract
+    result.unprofiled += len(never) - len([p for p in readable if p in never])  # nothing to read: no full text, no abstract
     if session is None:
-        result.unprofiled += len(readable)
+        result.unprofiled += len([p for p in readable if p in never])
         return
     done = 0
     report({"stage": "profiling", "done": "0", "total": str(len(readable))})

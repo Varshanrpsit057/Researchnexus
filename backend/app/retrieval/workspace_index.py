@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections import OrderedDict
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -35,8 +36,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.db.models import PaperChunkORM
-from app.retrieval.embeddings import EmbeddingProvider, FakeEmbeddingProvider
+from app.domain.chunk import ChunkKind
+from app.retrieval.embeddings import EmbeddingProvider, FakeEmbeddingProvider, discovery_embedder
 from app.retrieval.faiss_store import get_vector_index
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -84,7 +87,7 @@ class WorkspaceChunkIndex(Protocol):
     def add_paper(self, paper_id: str) -> WorkspaceIndexManifest: ...
     def remove_paper(self, paper_id: str) -> WorkspaceIndexManifest: ...
     def paper_ids(self) -> list[str]: ...
-    def search(self, query: str, k: int) -> list[WorkspaceIndexHit]: ...
+    def search(self, query: str, k: int, paper_ids: Collection[str] | None = None) -> list[WorkspaceIndexHit]: ...
     def manifest(self) -> WorkspaceIndexManifest: ...
 
 
@@ -97,6 +100,17 @@ def load_manifest(index_dir: Path, workspace_id: str) -> WorkspaceIndexManifest 
     if not path.exists():
         return None
     return WorkspaceIndexManifest.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def prefer_full_text(rows: list[PaperChunkORM]) -> list[PaperChunkORM]:
+    """A paper read in full is searched in full (remediation Phase 11): once
+    it has full-text chunks, its separate abstract chunk -- kept in the
+    database for the answers that already cite it -- is left out of search,
+    so the abstract never stands in for the paper's own text. A paper with
+    only its abstract is still searched by its abstract."""
+    abstract = ChunkKind.ABSTRACT.value
+    read_in_full = {r.paper_id for r in rows if r.kind != abstract}
+    return [r for r in rows if r.kind != abstract or r.paper_id not in read_in_full]
 
 
 class _IndexedChunk(BaseModel):
@@ -141,12 +155,15 @@ class DbBackedWorkspaceIndex:
     def paper_ids(self) -> list[str]:
         return list(self._paper_ids)
 
-    def search(self, query: str, k: int) -> list[WorkspaceIndexHit]:
+    def search(self, query: str, k: int, paper_ids: Collection[str] | None = None) -> list[WorkspaceIndexHit]:
         q = _tokens(query)
         if not q or k <= 0:
             return []
+        allow = set(paper_ids) if paper_ids is not None else None
         scored: list[WorkspaceIndexHit] = []
         for chunk in self._chunks:
+            if allow is not None and chunk.paper_id not in allow:
+                continue
             overlap = len(q & chunk.tokens)
             if overlap == 0:
                 continue
@@ -177,7 +194,8 @@ class DbBackedWorkspaceIndex:
             .all()
         )
         self._chunks = [
-            _IndexedChunk(chunk_id=r.id, paper_id=r.paper_id, text=r.text, tokens=_tokens(r.text)) for r in rows
+            _IndexedChunk(chunk_id=r.id, paper_id=r.paper_id, text=r.text, tokens=_tokens(r.text))
+            for r in prefer_full_text(list(rows))
         ]
 
     def _persist_manifest(self) -> WorkspaceIndexManifest:
@@ -225,6 +243,7 @@ class FaissWorkspaceIndex:
                 .scalars()
                 .all()
             )
+        rows = prefer_full_text(rows)
         self._meta = [{"chunk_id": r.id, "paper_id": r.paper_id, "text": r.text} for r in rows]
         if rows:
             self._vectors = _l2norm(self._embedder.embed([r.text for r in rows]))
@@ -246,9 +265,32 @@ class FaissWorkspaceIndex:
     def paper_ids(self) -> list[str]:
         return list(self._paper_ids)
 
-    def search(self, query: str, k: int) -> list[WorkspaceIndexHit]:
+    def search(self, query: str, k: int, paper_ids: Collection[str] | None = None) -> list[WorkspaceIndexHit]:
         if k <= 0 or not query.strip() or self._vectors.shape[0] == 0:
             return []
+        if paper_ids is not None:
+            # ranked among these papers' passages only: a search limited to one
+            # paper must find that paper's best passages, however the rest of
+            # the workspace would have ranked (remediation, 2026-10-02 -- taking
+            # the workspace's top hits and filtering them left a short paper in
+            # a large workspace with nothing, and its comparison said "no text")
+            allow = set(paper_ids)
+            rows = [i for i, m in enumerate(self._meta) if m["paper_id"] in allow]
+            if not rows:
+                return []
+            qv = _l2norm(self._embedder.embed([query]))[0]
+            scores = self._vectors[rows] @ qv
+            scoped = [
+                WorkspaceIndexHit(
+                    chunk_id=self._meta[i]["chunk_id"],
+                    paper_id=self._meta[i]["paper_id"],
+                    score=round(float(score), 6),
+                    text=self._meta[i]["text"],
+                )
+                for i, score in zip(rows, scores, strict=True)
+            ]
+            scoped.sort(key=lambda h: (-h.score, h.chunk_id))
+            return scoped[:k]
         index = get_vector_index(self._vector_backend, self._embedder.dimension)
         index.add([m["chunk_id"] for m in self._meta], self._vectors)
         qv = _l2norm(self._embedder.embed([query]))[0]
@@ -384,6 +426,20 @@ class WorkspaceIndexCache:
 
     def resident_ids(self) -> list[str]:
         return list(self._store.keys())
+
+
+def workspace_search_index(db: Session, *, workspace_id: str, settings: Settings) -> WorkspaceChunkIndex:
+    """The index chat and comparison search a workspace with: semantic, on
+    the process's shared real embedder (`settings.rag_embedder`, loaded
+    once); the lexical index when that embedder can't load (e.g. offline
+    before the model's first download) -- never the hash stand-in."""
+    index_dir = Path(settings.data_dir) / "workspace_index"
+    embedder = discovery_embedder(settings.rag_embedder, model_dir=Path(settings.data_dir) / "models")
+    if embedder is None:
+        return DbBackedWorkspaceIndex(db, workspace_id=workspace_id, index_dir=index_dir)
+    return FaissWorkspaceIndex(
+        db, workspace_id=workspace_id, index_dir=index_dir, embedder=embedder, vector_backend=settings.rag_vector_backend
+    )
 
 
 def get_workspace_index(

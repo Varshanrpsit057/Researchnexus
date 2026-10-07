@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import useSWR, { useSWRConfig } from "swr";
 import { ArrowLeft, MagnifyingGlass } from "@phosphor-icons/react/dist/ssr";
+import { ApiError } from "@/lib/api/client";
 import { papers as papersApi, workspaces } from "@/lib/api/endpoints";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
 import type { Confidence, EdgeUserState, GroupedTrail, RelationshipType } from "@/lib/api/types";
@@ -49,6 +50,8 @@ export default function TrailPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [building, setBuilding] = useState(false);
+  const [buildNote, setBuildNote] = useState<{ ok: boolean; text: string } | null>(null);
   const listHeadingRef = useRef<HTMLParagraphElement>(null);
 
   const entries = useMemo(() => (trailQ.data ? flattenTrail(trailQ.data) : []), [trailQ.data]);
@@ -153,6 +156,36 @@ export default function TrailPage() {
     setQuery("");
   }
 
+  async function buildFromPapers() {
+    setBuilding(true);
+    setBuildNote(null);
+    try {
+      const res = await workspaces.buildTrail(id);
+      setBuildNote(
+        res.edges > 0
+          ? { ok: true, text: `${res.connected_papers} of ${res.papers} papers connected to the seed (${res.edges} connection${res.edges === 1 ? "" : "s"} to review).` }
+          : { ok: false, text: `None of the ${res.papers} papers met a rule's threshold for a connection to the seed.` },
+      );
+      setAnnouncement(res.edges > 0 ? `${res.edges} connections found.` : "No connections found.");
+      await trailQ.mutate();
+      void mutateGlobal(["ws-trail", id]);
+      void mutateGlobal(["workspace", id]);
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : null;
+      setBuildNote({
+        ok: false,
+        text:
+          code === "seed_not_analyzed"
+            ? "Analyse the seed paper first: each paper is compared with its research profile."
+            : e instanceof ApiError
+              ? `The papers couldn't be connected: ${e.message}.`
+              : "The server couldn't be reached. Try again.",
+      });
+    } finally {
+      setBuilding(false);
+    }
+  }
+
   if (!ready) return null;
 
   if (workspaceQ.error) {
@@ -230,16 +263,32 @@ export default function TrailPage() {
         ) : entries.length === 0 ? (
           <div className="mt-8 rounded-2xl px-6 py-12 text-center" style={{ ...panel, border: `1px dashed ${C.lineStrong}` }}>
             <h2 className="text-lg font-bold">No connections yet</h2>
-            <p className="mx-auto mt-2 max-w-[56ch] text-sm leading-relaxed" style={{ color: C.muted }}>
-              {workspace.source_run_id
-                ? "No rule linked any paper from this workspace's discovery run to the seed paper, so there is nothing to review."
-                : "Connections are found when a workspace is created from discovery results. This one started from the seed paper alone."}
+            <p className="mx-auto mt-2 max-w-[60ch] text-sm leading-relaxed" style={{ color: C.muted }}>
+              {workspace.papers.length > 1
+                ? `Connect the ${workspace.papers.length - 1} paper${workspace.papers.length === 2 ? "" : "s"} in this workspace to the seed: each is compared with it the way discovery compares what it finds (topic, research problem, methods, datasets, citations and year), and each connection is typed by the same rules.`
+                : "This workspace holds only its seed paper. Add papers, or discover related ones, to trace how they connect to it."}
             </p>
-            <div className="mt-6 flex justify-center">
+            {buildNote && (
+              <p role="status" className="mx-auto mt-3 max-w-[60ch] text-sm" style={{ color: buildNote.ok ? C.mint : C.warning }}>
+                {buildNote.text}
+              </p>
+            )}
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              {workspace.papers.length > 1 && (
+                <button
+                  type="button"
+                  onClick={buildFromPapers}
+                  disabled={building}
+                  className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-[opacity,transform] active:scale-[0.97] disabled:opacity-60 ${focusRing}`}
+                  style={primaryButton}
+                >
+                  {building ? "Connecting the papers…" : "Connect this workspace's papers"}
+                </button>
+              )}
               <Link
                 href={workspace.source_run_id ? `/discover/${workspace.seed_paper_id}?run=${workspace.source_run_id}` : `/discover/${workspace.seed_paper_id}`}
                 className={`rounded-full px-5 py-2.5 text-sm font-semibold ${focusRing}`}
-                style={primaryButton}
+                style={workspace.papers.length > 1 ? quietButton : primaryButton}
               >
                 {workspace.source_run_id ? "Open the discovery results" : "Discover related papers"}
               </Link>

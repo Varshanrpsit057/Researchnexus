@@ -9,6 +9,7 @@ from app.external.allowlist import DisallowedHost
 from app.external.http import (
     ExternalHttpClient,
     MalformedUpstreamResponse,
+    ResponseCache,
     UpstreamRateLimited,
     UpstreamUnavailable,
 )
@@ -215,3 +216,77 @@ def test_requests_to_a_throttled_host_are_spaced_out() -> None:
     # an unthrottled host never waits
     asyncio.run(client.get_json(_URL, params={"x": 1}))
     assert sleeps == [0.75, 0.75]
+
+
+# --- remediation Phase 8: a run on a deadline never waits out a long pause ---------
+
+
+def test_a_5xx_asking_to_wait_longer_than_allowed_fails_at_once() -> None:
+    # Found live: OpenAlex paused anonymous search with 503 + Retry-After: 60,
+    # and every search was retried twice regardless -- 22 s of backoff per run.
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, headers={"Retry-After": "60"}, json={"error": "Search temporarily unavailable"})
+
+    client = ExternalHttpClient(transport=httpx.MockTransport(handler), max_retries=2, max_retry_wait_s=5.0)
+    with pytest.raises(UpstreamUnavailable) as excinfo:
+        asyncio.run(client.get_json(_URL, params={"search": "q"}))
+    assert calls["n"] == 1  # asked once, not three times
+    assert excinfo.value.status == 503
+    assert excinfo.value.retry_after == 60.0
+
+
+def test_a_5xx_retry_after_within_the_limit_is_waited_out() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(503, headers={"Retry-After": "2"}, text="busy")
+        return httpx.Response(200, json={"ok": True})
+
+    client = _client(httpx.MockTransport(handler))
+    assert asyncio.run(client.get_json(_URL)) == {"ok": True}
+    assert client._test_sleeps == [2.0]  # type: ignore[attr-defined]
+
+
+def test_every_request_outcome_is_reported() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("search") == "down":
+            return httpx.Response(503, headers={"Retry-After": "60"}, text="paused")
+        return httpx.Response(200, json={})
+
+    client = ExternalHttpClient(
+        transport=httpx.MockTransport(handler), max_retry_wait_s=5.0,
+        on_request=lambda host, outcome, _seconds: seen.append((host, outcome)),
+    )
+
+    async def calls() -> None:
+        await client.get_json(_URL, params={"search": "up"})
+        await client.get_json(_URL, params={"search": "up"})  # answered from the cache
+        with pytest.raises(UpstreamUnavailable):
+            await client.get_json(_URL, params={"search": "down"})
+
+    asyncio.run(calls())
+    assert seen == [("api.openalex.org", "ok"), ("api.openalex.org", "cached"), ("api.openalex.org", "http_503")]
+
+
+def test_clients_sharing_a_cache_reuse_each_others_answers() -> None:
+    # a discovery run asked again reuses what the last run was told, and asks
+    # again only where it failed
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"n": calls["n"]})
+
+    shared = ResponseCache()
+    first = ExternalHttpClient(transport=httpx.MockTransport(handler), cache=shared)
+    second = ExternalHttpClient(transport=httpx.MockTransport(handler), cache=shared)
+    assert asyncio.run(first.get_json(_URL, params={"search": "rag"})) == {"n": 1}
+    assert asyncio.run(second.get_json(_URL, params={"search": "rag"})) == {"n": 1}
+    assert calls["n"] == 1

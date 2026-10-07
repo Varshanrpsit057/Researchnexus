@@ -57,6 +57,28 @@ class Settings(BaseSettings):
     # Optional free Semantic Scholar API key (sent as x-api-key, never
     # logged): raises S2's rate limit. Everything works without one.
     semantic_scholar_api_key: str | None = None
+    # Optional free OpenAlex API key (sent as "Authorization: Bearer", never
+    # logged or put in a URL). Without one, OpenAlex draws on a daily budget
+    # shared by everyone on this network's IP address -- a search costs 10
+    # credits -- and answers 429 once it is spent (measured 2026-10-01).
+    openalex_api_key: str | None = None
+    # An address the scholarly sources may contact about this app's traffic:
+    # sent to OpenAlex and Crossref in the User-Agent (their faster "polite"
+    # access) and, as its API requires, to Unpaywall. Unset: those work
+    # anonymously and Unpaywall is skipped.
+    contact_email: str | None = None
+    # CORE (core.ac.uk), the aggregator of open-access repositories: a free
+    # key turns on its search and its full-text copies
+    core_api_key: str | None = None
+    # look an uploaded paper's record up by its DOI or title (off in tests)
+    metadata_lookup: bool = True
+    # Full-text retrieval (remediation Phase 7): the time one source may take
+    # to answer or start sending a PDF, and how many papers a workspace run
+    # reads at once (each source still spaces its own requests).
+    fulltext_timeout_s: float = 30.0
+    fulltext_concurrency: int = 3
+    # look for it by itself when papers join a workspace (off in tests)
+    fulltext_auto: bool = True
 
     # Discovery relevance: the bi-encoder behind the semantic ranking
     # signals. "fastembed" = BAAI/bge-small-en-v1.5 on ONNX (no torch);
@@ -89,9 +111,12 @@ class Settings(BaseSettings):
 
     # RAG + citations (Roadmap Phase 9 / Architecture §3 S13). Retrieval /
     # rerank widths and the faithfulness floor are fixed "w0" values
-    # (calibration is Phase 16). The real MiniLM embedder, a faiss vector
-    # backend and the cross-encoder reranker are opt-in -- the defaults are
-    # the deterministic, dependency-free stand-ins so tests stay hermetic.
+    # (calibration is Phase 16). Chat and comparison search a workspace with
+    # the same real embedder as discovery ("fastembed": bge-small on ONNX;
+    # the lexical index if it can't load) -- never the hash stand-in, which
+    # only tests use (tests/conftest.py). A cross-encoder reranker is opt-in
+    # ("cross-encoder", needs sentence-transformers); "none" keeps the
+    # retrieval order.
     rag_retrieve_k: int = 8
     rag_rerank_top_n: int = 5
     # One relevant passage is enough to answer from: the contextual filter
@@ -102,9 +127,9 @@ class Settings(BaseSettings):
     rag_faithfulness_min: float = 0.6
     rag_drop_unsupported: bool = True
     rag_index_cache_size: int = 8
-    rag_embedder: str = "fake"
+    rag_embedder: str = "fastembed"
     rag_vector_backend: str = "numpy"
-    rag_reranker: str = "fake"
+    rag_reranker: str = "none"
 
     # Model per provider, overriding the adapter's default, e.g.
     # RESEARCHNEXUS_LLM_MODELS='{"deepseek": "deepseek-v4-pro"}'.
@@ -115,6 +140,8 @@ class Settings(BaseSettings):
     # (async threshold not wired -- see the Phase 10 report).
     compare_retrieve_k: int = 6
     compare_max_sync_papers: int = 4
+    # papers a comparison reads at once (each is one model call)
+    compare_llm_concurrency: int = 4
 
     # Research gaps (Roadmap Phase 11 / Architecture §4 GapAnalyzer). The
     # >= 2-supporting-papers bar and the temporal-staleness window are

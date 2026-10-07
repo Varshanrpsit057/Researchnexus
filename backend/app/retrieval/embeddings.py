@@ -133,17 +133,21 @@ class FastEmbedEmbeddingProvider:
 
     Vectors are L2-normalised. Recently seen texts are cached, so ranking a
     run whose candidates were already embedded during discovery costs
-    nothing extra."""
+    nothing extra -- and discovery embeds candidates ahead, while it waits on
+    its sources (`caches` says doing so is worthwhile). One instance serves
+    every discovery job, each on its own thread, so embedding is serialised."""
 
     name = "fastembed-bge-small"
     dimension = 384
     MODEL = "BAAI/bge-small-en-v1.5"
-    _CACHE_MAX = 5000
+    caches = True
+    _CACHE_MAX = 20000  # ~30 MB of vectors: discovery runs and workspace passages
 
     def __init__(self, cache_dir: str | Path | None = None) -> None:
         self._cache_dir = str(cache_dir) if cache_dir is not None else None
         self._model: object | None = None
         self._vectors: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._lock = threading.Lock()
 
     def _load(self) -> object:
         if self._model is None:
@@ -155,6 +159,10 @@ class FastEmbedEmbeddingProvider:
         return self._model
 
     def embed(self, texts: list[str]) -> np.ndarray:
+        with self._lock:
+            return self._embed(texts)
+
+    def _embed(self, texts: list[str]) -> np.ndarray:
         missing = list(dict.fromkeys(t for t in texts if t not in self._vectors))
         if missing:
             model = self._load()

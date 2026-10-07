@@ -63,6 +63,18 @@ class OpenAlexClient:
         )
         return self._records_from_results(body)
 
+    async def works_by_dois(self, dois: list[str], *, per_page: int = 50) -> list[RawExternalRecord]:
+        """Several works by DOI in one request (OpenAlex ORs up to 50 values
+        with `|`), where a lookup per DOI took seconds each. A DOI holding
+        the filter's own separators can't be put in one and is left out."""
+        usable = [d for d in dois if d and not any(c in d for c in ",|")][:50]
+        if not usable:
+            return []
+        body = await self._http.get_json(
+            _BASE_URL, params={"filter": f"doi:{'|'.join(usable)}", "per_page": per_page, "select": _SELECT}
+        )
+        return self._records_from_results(body)
+
     async def works_citing(self, openalex_id: str, *, per_page: int = 25) -> list[RawExternalRecord]:
         short = openalex_id.rstrip("/").rsplit("/", 1)[-1]
         body = await self._http.get_json(
@@ -96,6 +108,7 @@ class OpenAlexClient:
             venue=source.get("display_name"),
             url=work.get("id"),
             is_preprint=is_preprint,
+            publisher=source.get("host_organization_name"),
         )
 
 

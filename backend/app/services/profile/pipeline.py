@@ -22,7 +22,7 @@ from app.jobs.runner import new_id
 from app.llm.session import LlmSession, metered, model_for
 from app.llm.usage import usage_scope_default
 from app.security.key_vault import KeyVault
-from app.services.ingest.abstract_chunks import ensure_abstract_chunks
+from app.services.ingest.abstract_chunks import ensure_abstract_chunks, for_reading
 from app.services.profile.extractor import ProfileExtractionFailed, extract_profile
 from app.services.profile.validator import build_fallback_profile, build_profile
 
@@ -44,7 +44,7 @@ async def run_profile_extraction(
     # a paper found by discovery has only its abstract: it is read from that, and says so
     grounding = "full_text" if paper.has_full_text else "abstract"
     ensure_abstract_chunks(db, [paper.id])
-    chunks = repo.get_chunks_for_paper(db, paper.id)
+    chunks = for_reading(paper.id, repo.get_chunks_for_paper(db, paper.id))
     sections = [Section(**s) for s in paper.sections]
 
     working_key = repo.pick_working_key(db, current_user.id, current_user.default_provider)
@@ -81,7 +81,7 @@ async def run_profile_extraction(
             chunks=chunks,
             grounding=grounding,
         )
-        stored = repo.upsert_profile(db, profile)
+        stored = repo.upsert_profile(db, profile, owner_id=current_user.id)
         return AnalyzeResult(profile=stored, warnings=["profile_extraction_failed"])
 
     profile, warnings = build_profile(
@@ -100,7 +100,7 @@ async def run_profile_extraction(
         tokens=tokens,
         grounding=grounding,
     )
-    stored = repo.upsert_profile(db, profile)
+    stored = repo.upsert_profile(db, profile, owner_id=current_user.id)
     return AnalyzeResult(profile=stored, warnings=warnings)
 
 
@@ -120,7 +120,7 @@ async def profile_with_session(
     which fail every paper -- from a paper whose reply was unusable."""
     grounding = "full_text" if paper.has_full_text else "abstract"
     ensure_abstract_chunks(db, [paper.id])
-    chunks = repo.get_chunks_for_paper(db, paper.id)
+    chunks = for_reading(paper.id, repo.get_chunks_for_paper(db, paper.id))
     if not chunks:
         return None
     try:

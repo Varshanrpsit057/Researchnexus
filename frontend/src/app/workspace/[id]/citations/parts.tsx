@@ -8,6 +8,7 @@ import { location } from "@/lib/chat";
 import { NOT_AVAILABLE, RESOLVED_COPY, STYLE_LABEL, USE_COPY, USE_KINDS, relationOf, totalUses, useHref, useLinkLabel } from "@/lib/citations";
 import { fieldLabel } from "@/lib/compare";
 import { RELATIONSHIP_COPY } from "@/lib/trail";
+import { VerbatimQuote } from "@/components/evidence/VerbatimQuote";
 import { NodeGlyph } from "../graph/GraphPanel";
 import { usePaper, type PaperKind } from "../compare/parts";
 import { C, focusRing, quietButton } from "../ui";
@@ -135,8 +136,8 @@ function UseItem({ use, workspaceId }: { use: CitationUse; workspaceId: string }
           <p className="mt-2 text-[12.5px]" style={{ color: C.muted }}>
             The passage it rests on{where ? ` · ${where}` : ""}
           </p>
-          <blockquote className="mt-1 line-clamp-6 border-l pl-3 text-[14.5px] leading-relaxed [overflow-wrap:anywhere]" style={{ borderColor: "rgba(93,240,168,.5)" }}>
-            &ldquo;{use.quote}&rdquo;
+          <blockquote className="mt-1 border-l pl-3 text-[14.5px] leading-relaxed [overflow-wrap:anywhere]" style={{ borderColor: "rgba(93,240,168,.5)", color: C.muted }}>
+            <VerbatimQuote quote={use.quote} cutBefore={use.cut_before} cutAfter={use.cut_after} highlight={use.highlight} />
           </blockquote>
         </>
       )}
@@ -324,7 +325,9 @@ export const PaperDossier = forwardRef<
             )
           ) : (
             <p className="px-4 py-3 text-[14px]" style={{ color: C.muted }}>
-              Not available: the paper has no title to cite. A reference is never guessed.
+              {paper.title
+                ? "Not available: only its title is known, with no authors, year, DOI or arXiv id to cite it by. A reference is never guessed."
+                : "Not available: the paper has no title to cite. A reference is never guessed."}
             </p>
           )}
           <p className="border-t px-4 py-2 text-[12.5px]" style={{ borderColor: C.line, color: C.muted }}>

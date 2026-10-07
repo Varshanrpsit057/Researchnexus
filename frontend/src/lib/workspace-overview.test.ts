@@ -8,7 +8,7 @@ import type {
   TrailGroupEntry,
   WorkspacePaper,
 } from "@/lib/api/types";
-import { addableFromRun, buildStations, nextStation, type Loadable } from "./workspace-overview";
+import { addableFromRun, buildStations, nextStation, parseTags, type Loadable } from "./workspace-overview";
 
 function paper(id: string, role: "seed" | "related"): WorkspacePaper {
   return {
@@ -125,5 +125,14 @@ describe("addableFromRun", () => {
     const result = (id: string) => ({ paper: { id } }) as RelatedResult;
     const addable = addableFromRun([result("pap_seed"), result("pap_2"), result("pap_3")], [paper("pap_seed", "seed"), paper("pap_2", "related")]);
     expect(addable.map((r) => r.paper.id)).toEqual(["pap_3"]);
+  });
+});
+
+describe("parseTags", () => {
+  it("splits on commas, trims, keeps each tag once whatever its case, and bounds the list", () => {
+    expect(parseTags(" baseline, Method ,method,, transit ")).toEqual(["baseline", "Method", "transit"]);
+    expect(parseTags("")).toEqual([]);
+    expect(parseTags("x".repeat(80))).toEqual(["x".repeat(60)]);
+    expect(parseTags(Array.from({ length: 40 }, (_, i) => `t${i}`).join(","))).toHaveLength(30);
   });
 });

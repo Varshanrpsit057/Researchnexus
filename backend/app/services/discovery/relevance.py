@@ -13,6 +13,7 @@ similarity to apply it to.
 from __future__ import annotations
 
 from app.config import Settings
+from app.domain.ranking import RankingWeights
 from app.retrieval.embeddings import EmbeddingProvider, discovery_embedder
 from app.services.discovery.pipeline import DiscoveryOptions
 from app.services.ranking.pipeline import RankOptions
@@ -32,9 +33,10 @@ def discovery_options(embedder: EmbeddingProvider | None) -> DiscoveryOptions:
     return DiscoveryOptions(chunk_embedder=embedder, doc_embedder=embedder)
 
 
-def rank_options(settings: Settings, embedder: EmbeddingProvider | None) -> RankOptions:
+def rank_options(settings: Settings, embedder: EmbeddingProvider | None, weights: RankingWeights | None = None) -> RankOptions:
     semantic = embedder is not None and embedder.name != "fake"
     return RankOptions(
+        weights=weights,
         chunk_embedder=embedder,
         doc_embedder=embedder,
         min_relevance=settings.rank_min_relevance if semantic else None,

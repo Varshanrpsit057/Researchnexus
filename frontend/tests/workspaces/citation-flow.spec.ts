@@ -130,6 +130,8 @@ test.describe("Citations", () => {
     await list.getByRole("button", { name: SEED_TITLE }).click();
     await expect(detail).toContainText("An answer in chat cites it");
     await expect(detail).toContainText(turn.claims[0].sentence);
+    // the passage is shown verbatim, with the sentence the answer rests on marked
+    await expect(detail.getByTestId("supporting-sentence").first()).toBeVisible();
     await expect(detail.getByRole("link", { name: "Open the chat" }).first()).toHaveAttribute("href", `/workspace/${workspaceId}/chat?session=${turn.session_id}`);
     // the seed's own references, matched to the papers the trail resolved
     await expect(detail).toContainText("5 listed; the trail matched 1 to a paper");

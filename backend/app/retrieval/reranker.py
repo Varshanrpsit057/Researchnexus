@@ -81,7 +81,23 @@ class SentenceTransformersCrossEncoder:
         return [round(1.0 / (1.0 + math.exp(-float(x))), 6) for x in raw]
 
 
-_BACKENDS: dict[str, type] = {"fake": FakeCrossEncoder, "cross-encoder": SentenceTransformersCrossEncoder}
+class NoReranker:
+    """No cross-encoder: the retriever's own (semantic) order stands. The
+    production default while `sentence-transformers` is not installed -- a
+    token-overlap stand-in would demote passages the embedder found
+    relevant for using different words."""
+
+    name = "none"
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        return [0.0] * len(passages)  # unused: rerank() keeps the retrieval order for "none"
+
+
+_BACKENDS: dict[str, type] = {
+    "fake": FakeCrossEncoder,
+    "cross-encoder": SentenceTransformersCrossEncoder,
+    "none": NoReranker,
+}
 
 
 def get_reranker(name: str) -> CrossEncoderReranker:

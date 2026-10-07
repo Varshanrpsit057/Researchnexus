@@ -59,6 +59,17 @@ _CANONICAL_HEADINGS = {
 _NUMBERED_HEADING_RE = re.compile(r"^(?:\d+(?:\.\d+)*\.?|[IVXLCDM]+\.)\s+[A-Z][A-Za-z0-9,&/'\- ]{1,78}$")
 
 
+# IEEE (and others) run the label into the paragraph: "Abstract—Public
+# transportation...", "Index Terms—GPS, ...". The dash is often lost in
+# extraction (U+FFFD) or set as a hyphen, colon or full stop. Such a line
+# opens that section; the rest of the line is its first text.
+_INLINE_HEADING_RE = re.compile(
+    r"^(?P<title>abstract|keywords|key words|index terms)\s*[:.\-\u2013\u2014\ufffd]\s*\S",
+    re.IGNORECASE,
+)
+_INLINE_TITLE = {"abstract": "Abstract", "keywords": "Keywords", "key words": "Keywords", "index terms": "Keywords"}
+
+
 def _iter_stripped_lines_with_offsets(text: str) -> list[tuple[int, int, str]]:
     """Yield (start, end, stripped_line) for every line, where start/end are
     the offsets of the *stripped* content within `text`."""
@@ -104,11 +115,20 @@ def _fallback_body_section(full_text: str, page_ranges: list[tuple[int, int]]) -
     ]
 
 
+def _heading_title(line: str) -> str | None:
+    if _is_heading(line):
+        return line.rstrip(":").strip()
+    inline = _INLINE_HEADING_RE.match(line)
+    if inline:
+        return _INLINE_TITLE[inline.group("title").lower()]
+    return None
+
+
 def split_sections(full_text: str, page_ranges: list[tuple[int, int]]) -> list[Section]:
     candidates = [
-        (start, line.rstrip(":").strip())
+        (start, title)
         for start, _end, line in _iter_stripped_lines_with_offsets(full_text)
-        if _is_heading(line)
+        if (title := _heading_title(line)) is not None
     ]
 
     if len(candidates) < 2:

@@ -25,7 +25,10 @@ def _grounded(span_has_section: bool, span_has_offset: bool) -> bool:
 def assemble(
     candidate: GapCandidate, *, min_papers: int, abstract_only: Collection[str] = ()
 ) -> GapCandidate | None:
-    supporting_papers = sorted({e.paper_id for e in candidate.supporting_evidence})
+    # the rule names the gap's papers; evidence from any other paper is context (a method gap
+    # quotes the paper that uses the method, which is not one of the papers lacking it)
+    named = set(candidate.supporting_papers)
+    supporting_papers = sorted({e.paper_id for e in candidate.supporting_evidence if not named or e.paper_id in named})
     if len(supporting_papers) < min_papers:
         return None
     if candidate.gap_type is GapType.CONTRADICTION:

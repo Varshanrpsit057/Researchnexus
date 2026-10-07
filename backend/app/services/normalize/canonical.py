@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timezone
 
 from app.domain.candidate import CandidateSource, NormalizedCandidate, RawExternalRecord
+from app.services.metadata.publishers import publisher_of
 from app.services.normalize.text import clean_abstract
 
 _TITLE_HASH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
@@ -119,5 +120,7 @@ def to_normalized(rec: RawExternalRecord) -> NormalizedCandidate:
         venue=(rec.venue or None),
         url=(rec.url or None),
         is_preprint=rec.is_preprint,
+        # who published it: as the source names it, else the publisher its DOI is registered to
+        publisher=publisher_of(rec.publisher, doi),
         sources=[rec.source],
     )

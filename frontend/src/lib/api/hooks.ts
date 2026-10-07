@@ -19,7 +19,8 @@ export function useProfile(paperId: string | null) {
   });
 }
 
-const TERMINAL_STATUSES = new Set<Job["status"]>(["succeeded", "failed", "partial"]);
+const TERMINAL_STATUSES = new Set<Job["status"]>(["succeeded", "failed", "partial", "cancelled"]);
+const POLL_MS = 1500;
 
 /** Polls GET /api/v1/jobs/{id} every 1.5s until the job reaches a terminal
  * status (the only mechanism the API offers for async work -- discovery,
@@ -36,7 +37,10 @@ export function useJobPolling(jobId: string | null | undefined) {
     jobId ? ["job", jobId] : null,
     () => jobs.get(jobId as string),
     {
-      refreshInterval: (latest) => (latest && TERMINAL_STATUSES.has(latest.status) ? 0 : 1500),
+      refreshInterval: (latest) => (latest && TERMINAL_STATUSES.has(latest.status) ? 0 : POLL_MS),
+      // SWR's default 2 s deduping swallowed every other tick, so a job was
+      // really polled every 3 s (measured, remediation Phase 8)
+      dedupingInterval: POLL_MS / 2,
       revalidateOnFocus: true,
     }
   );

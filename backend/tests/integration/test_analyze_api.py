@@ -157,6 +157,10 @@ def test_analyze_succeeds_and_persists_provenance_checked_profile(
     second = client.post(f"/api/v1/papers/{paper_id}/analyze", headers=_auth_headers(token))
     assert second.json()["profile"]["profile_id"] == body["profile"]["profile_id"]
 
+    # the analysed paper is in the reader's library, marked as analysed by them
+    [entry] = [p for p in client.get("/api/v1/papers", headers=_auth_headers(token)).json()["papers"] if p["id"] == paper_id]
+    assert entry["analyzed"] is True and "analyzed" in entry["roles"]
+
 
 def test_analyze_with_malformed_llm_output_returns_degraded_profile_not_500(
     tmp_path: Path, normal_paper_pdf_bytes: bytes, monkeypatch: pytest.MonkeyPatch

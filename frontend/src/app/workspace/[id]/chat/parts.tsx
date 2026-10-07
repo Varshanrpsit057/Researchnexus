@@ -6,6 +6,7 @@ import { ArrowClockwise, ArrowSquareOut, CaretLeft, CaretRight, Graph, X } from 
 import type { RagStage } from "@/lib/api/types";
 import { STAGES, STAGE_COPY, citationsIn, location, outcomeNotes, sourcesByPaper, type Citation, type Segment } from "@/lib/chat";
 import { truncate } from "@/lib/graph/labels";
+import { VerbatimQuote } from "@/components/evidence/VerbatimQuote";
 import { NodeGlyph } from "../graph/GraphPanel";
 import { C, focusRing, quietButton } from "../ui";
 import styles from "./chat.module.css";
@@ -184,8 +185,8 @@ export function OutcomeNotes(props: Parameters<typeof outcomeNotes>[0] & { faith
       ))}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         {faithfulness != null && (
-          <span className="text-[12.5px]" style={{ color: C.muted }} title="How much of the answer's wording is found in the passages it cites">
-            Faithfulness <span className="font-mono tabular-nums">{faithfulness.toFixed(2)}</span>
+          <span className="text-[12.5px]" style={{ color: C.muted }} title="The share of the answer's words that also appear in the passages it cites">
+            <span className="tabular-nums">{Math.round(faithfulness * 100)}%</span> of its wording is in its sources
           </span>
         )}
         {onRegenerate && (
@@ -274,9 +275,8 @@ export function EvidencePanel({
                     {location(s)}
                   </p>
                 )}
-                <blockquote className="mt-2 border-l pl-3 text-[14px] leading-relaxed" style={{ borderColor: "rgba(93,240,168,.5)", color: C.ink }}>
-                  &ldquo;{s.quote}
-                  {s.truncated ? "…" : ""}&rdquo;
+                <blockquote className="mt-2 border-l pl-3 text-[14px] leading-relaxed" style={{ borderColor: "rgba(93,240,168,.5)", color: C.muted }}>
+                  <VerbatimQuote quote={s.quote} cutBefore={s.cut_before} cutAfter={s.truncated} highlight={s.highlight} />
                 </blockquote>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Link

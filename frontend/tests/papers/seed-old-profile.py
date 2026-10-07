@@ -7,6 +7,7 @@ Everything the page then shows comes from the real backend reading it.
 Usage:
   python seed-old-profile.py seed <paper_id>     # the paper and its profile
   python seed-old-profile.py paper <paper_id>    # the paper only, not analysed
+  python seed-old-profile.py failed <paper_id>   # the paper, its full text refused (HTTP 403)
   python seed-old-profile.py clean <paper_id>
 """
 
@@ -47,6 +48,11 @@ repo.save_paper(
         abstract=ABSTRACT, has_full_text=False, source="discovery",
     ),
 )
+if mode == "failed":
+    # remediation Phase 7: its full text was found, but the source refused the download
+    repo.record_fulltext_attempt(
+        db, paper_id, status="failed", source="openalex", url="https://www.mdpi.com/x/pdf", error="http_403"
+    )
 if mode == "seed":
 
     def verified(value: str, quote: str) -> ProfileField:

@@ -29,6 +29,8 @@ _SOURCE_AUTHORITY = {
     CandidateSource.OPENALEX: 2,
     CandidateSource.SEMANTIC_SCHOLAR: 1,
     CandidateSource.EUROPE_PMC: 1,
+    CandidateSource.DBLP: 2,  # curated bibliographic records
+    CandidateSource.CORE: 1,
     CandidateSource.ARXIV: 0,
 }
 
@@ -94,6 +96,7 @@ def merge_pair(a: NormalizedCandidate, b: NormalizedCandidate) -> NormalizedCand
         venue=venue,
         url=url,
         is_preprint=a.is_preprint and b.is_preprint,
+        publisher=a.publisher or b.publisher,
         sources=merged_sources,
         field_provenance=provenance,
         possible_duplicate=a.possible_duplicate or b.possible_duplicate,

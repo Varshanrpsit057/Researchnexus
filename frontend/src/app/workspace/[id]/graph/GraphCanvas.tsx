@@ -252,7 +252,8 @@ export function GraphCanvas({
         r: NODE_RADIUS[n.kind] * zs,
         text: n.title,
         priority: (n.kind === "seed" ? 60 : n.kind === "member" ? 30 : 10) + (emphasised ? 100 : 0),
-        maxChars: n.kind === "seed" || n.id === selectedNode ? 46 : k > 1.15 ? 40 : 30,
+        // the seed and the paper in focus read in full; members before papers only connected
+        maxChars: n.kind === "seed" || n.id === selectedNode ? 56 : n.kind === "member" ? (k > 1.15 ? 48 : 38) : k > 1.15 ? 40 : 28,
       };
     }),
     nodes.map((n) => ({ ...screen(n.id), r: NODE_RADIUS[n.kind] * zs })),
@@ -296,7 +297,8 @@ export function GraphCanvas({
     );
     const lit = highlight?.edges.has(e.key) || e.key === selectedEdge || e.key === hoverEdge;
     const width = (style.width * (lit ? 1.55 : e.state === "pending" ? 0.85 : 1)) / k;
-    const opacity = dimEdge(e.key) ? 0.1 : lit ? 1 : e.state === "pending" ? 0.42 : 0.85;
+    // at rest the connections recede so their types read; pointing at a paper lights its own
+    const opacity = dimEdge(e.key) ? 0.08 : lit ? 1 : e.state === "pending" ? 0.26 : 0.6;
     const dash = style.dash
       ?.split(" ")
       .map((v) => (Number(v) / k).toFixed(2))

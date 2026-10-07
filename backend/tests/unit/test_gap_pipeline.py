@@ -241,6 +241,29 @@ def test_a_paper_that_cannot_be_profiled_is_counted_and_nothing_is_stored(db, wo
     assert res.gap_count >= 1  # the profiled papers' gaps still come through
 
 
+def test_a_paper_read_from_its_abstract_is_read_again_once_its_full_text_is_found(db, workspace, settings) -> None:
+    # remediation Phase 7: the gap engine prefers full text as soon as there is some
+    from app.domain.chunk import ChunkKind, PaperChunk
+
+    ws = _abstract_only_member(db, workspace, "p4", "We study dense retrieval for English only corpora.")
+    _run(db, ws, settings, _session())
+    assert repo.get_profile(db, "p4").grounding == "abstract"  # type: ignore[union-attr]
+
+    body = "3 Method\nWe study dense retrieval at scale, on English only corpora, with hard negatives."
+    repo.attach_full_text(
+        db, "p4", pdf_path=None, sha256=None, page_count=9, parse_confidence="high", sections=[], tables=[], references=[],
+        warnings=[], source="arxiv", url="https://arxiv.org/pdf/1",
+        chunks=[PaperChunk(chunk_id="chk_p4_1", paper_id="p4", section="3 Method", page=4, char_start=0, char_end=len(body), kind=ChunkKind.BODY, text=body, token_count=20)],
+    )
+    ws = repo.get_workspace(db, "ws_1", "usr_1")  # type: ignore[assignment]
+    res = _run(db, ws, settings, _session())
+
+    assert res.profiled == 1
+    profile = repo.get_profile(db, "p4")
+    assert profile is not None and profile.grounding == "full_text"
+    assert profile.research_problem.source_span is not None and profile.research_problem.source_span.section == "3 Method"
+
+
 # --- remediation Phase 3: a run that finishes, says why, and keeps decisions ---
 
 

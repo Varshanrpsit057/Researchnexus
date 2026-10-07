@@ -8,6 +8,7 @@ import { papers } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
 import type { Paper, ResearchProfile } from "@/lib/api/types";
 import { CINEMATIC as C } from "@/lib/cinematic-theme";
+import { CoverageNote } from "./CoverageNote";
 import { ResearchProfileView } from "./ResearchProfileView";
 
 /** What an analysis warning means, in words (unknown codes pass through). */
@@ -24,21 +25,28 @@ export function analysisSource(paper: Pick<Paper, "has_full_text" | "source" | "
   return paper.source === "upload" || paper.source === undefined ? "pending" : "none";
 }
 
-/**
- * A paper's research profile, or the way to get one. Shared by the seed
- * analysis page and the paper page, so a profile reads the same everywhere.
- */
-export function ProfilePanel({
-  paper,
-  profile,
-  loading,
-  mutate,
-}: {
+interface PanelProps {
   paper: Paper;
   profile: ResearchProfile | null | undefined;
   loading: boolean;
   mutate: KeyedMutator<ResearchProfile | null>;
-}) {
+}
+
+/**
+ * A paper's research profile, or the way to get one. Shared by the seed
+ * analysis page and the paper page, so a profile reads the same everywhere.
+ * What text the paper is read from comes first: the profile rests on it.
+ */
+export function ProfilePanel(props: PanelProps) {
+  return (
+    <div className="space-y-5">
+      <CoverageNote paper={props.paper} />
+      <ProfileBody {...props} />
+    </div>
+  );
+}
+
+function ProfileBody({ paper, profile, loading, mutate }: PanelProps) {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<{ text: string; settings?: boolean } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -84,7 +92,37 @@ export function ProfilePanel({
     </ul>
   );
 
-  if (profile) return <ResearchProfileView profile={profile} notice={notices || undefined} />;
+  // its full text was found after the profile was read from its abstract
+  const stale = profile && profile.grounding === "abstract" && paper.has_full_text && (
+    <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13.5px]" style={{ color: C.ink }} data-testid="profile-stale">
+      <span>This profile was read from the abstract; the full text is now available.</span>
+      <button
+        type="button"
+        onClick={analyze}
+        disabled={analyzing}
+        className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5df0a8]"
+        style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
+      >
+        <Sparkle className="size-3.5" aria-hidden />
+        {analyzing ? "Reading the full text…" : "Read the full text"}
+      </button>
+      {error && (
+        <span role="alert" className="w-full" style={{ color: C.danger }}>
+          {error.text}
+        </span>
+      )}
+    </div>
+  );
+
+  if (profile) {
+    const notice = stale || notices ? (
+      <>
+        {stale}
+        {notices}
+      </>
+    ) : undefined;
+    return <ResearchProfileView profile={profile} notice={notice} />;
+  }
 
   if (source === "pending" || source === "none") {
     return (

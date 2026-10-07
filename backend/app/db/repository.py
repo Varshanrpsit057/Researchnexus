@@ -14,8 +14,9 @@ import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnElement, Select, and_, case, func, select
+from sqlalchemy import ColumnElement, Select, and_, case, delete, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.db.models import (
@@ -73,6 +74,9 @@ from app.domain.workspace import (
 from app.security.pdf_sanitizer import PdfFileMeta
 from app.services.profile.refine import refine_profile
 
+if TYPE_CHECKING:  # the ingest pipeline imports this module
+    from app.services.ingest.pipeline import ParsedPdf
+
 # ---------------------------------------------------------------------------
 # User
 # ---------------------------------------------------------------------------
@@ -104,6 +108,22 @@ def get_user(db: Session, user_id: str) -> User | None:
 
 def get_user_by_email(db: Session, email: str) -> User | None:
     row = db.execute(select(UserORM).where(UserORM.email == email)).scalar_one_or_none()
+    return _user_domain_from_orm(row) if row else None
+
+
+def find_user_for_sign_in(db: Session, email: str) -> User | None:
+    """The account an email signs in to: the one saved with exactly this
+    spelling, else the oldest saved with any capitalisation of it. Accounts
+    created before sign-in ignored case (remediation, 2026-10-06) keep their
+    exact spelling, so none becomes unreachable."""
+    exact = get_user_by_email(db, email)
+    if exact is not None:
+        return exact
+    row = (
+        db.execute(select(UserORM).where(func.lower(UserORM.email) == email.lower()).order_by(UserORM.created_at, UserORM.id))
+        .scalars()
+        .first()
+    )
     return _user_domain_from_orm(row) if row else None
 
 
@@ -235,6 +255,8 @@ def paper_from_ingest(
         title=parsed.title or "(untitled)",
         title_hash=title_hash,
         authors=parsed.authors,
+        doi=parsed.doi,
+        abstract=parsed.abstract,
         has_full_text=True,
         pdf_path=pdf_path,
         pdf_sha256=meta.sha256,
@@ -257,6 +279,12 @@ def save_paper(db: Session, paper: PaperORM) -> PaperORM:
 
 def get_paper(db: Session, paper_id: str) -> PaperORM | None:
     return db.get(PaperORM, paper_id)
+
+
+def doi_holder(db: Session, doi: str) -> str | None:
+    """The paper that already has this DOI, if any (DOIs are unique: an
+    upload and a discovered record of the same article can't both hold it)."""
+    return db.execute(select(PaperORM.id).where(PaperORM.doi == doi)).scalar_one_or_none()
 
 
 def find_paper_by_sha256(db: Session, sha256: str) -> PaperORM | None:
@@ -306,6 +334,89 @@ def save_chunks(db: Session, chunks: list[PaperChunk]) -> None:
     if not chunks:
         return
     db.add_all([_chunk_orm_from_domain(c) for c in chunks])
+    db.commit()
+
+
+def attach_full_text(
+    db: Session,
+    paper_id: str,
+    *,
+    pdf_path: str | None,
+    sha256: str | None,
+    page_count: int | None,
+    parse_confidence: str,
+    sections: list[dict],
+    tables: list[dict],
+    references: list[dict],
+    warnings: list[str],
+    chunks: list[PaperChunk],
+    source: str,
+    url: str,
+) -> None:
+    """A paper found by discovery gains its full text (remediation Phase 7):
+    its text, sections and chunks become the parsed document's, and every
+    workspace holding it reads it from full text from now on. Its title,
+    authors and year stay the discovery record's (richer than a PDF's
+    metadata), and its abstract chunk stays: past answers cite it."""
+    paper = db.get(PaperORM, paper_id)
+    if paper is None:
+        raise ValueError(f"no paper {paper_id}")
+    if sha256 and (holder := find_paper_by_sha256(db, sha256)) is not None and holder.id != paper_id:
+        sha256 = None  # the same PDF was uploaded as its own paper: the hash stays unique to that one
+    abstract_chunk = f"chk_{paper_id}_abstract"
+    db.execute(delete(PaperChunkORM).where(PaperChunkORM.paper_id == paper_id, PaperChunkORM.id != abstract_chunk))
+    paper.has_full_text = True
+    paper.pdf_path = pdf_path
+    paper.pdf_sha256 = sha256
+    paper.page_count = page_count
+    paper.parse_confidence = parse_confidence
+    paper.sections = sections
+    paper.tables = tables
+    paper.references = references
+    paper.warnings = warnings
+    paper.fulltext_status = "retrieved"
+    paper.fulltext_source = source
+    paper.fulltext_url = url[:1024]
+    paper.fulltext_error = None
+    paper.fulltext_checked_at = datetime.now(timezone.utc)
+    db.add_all([_chunk_orm_from_domain(c) for c in chunks if c.chunk_id != abstract_chunk])
+    for member in db.execute(select(WorkspacePaperORM).where(WorkspacePaperORM.paper_id == paper_id)).scalars():
+        member.grounding = Grounding.FULL_TEXT.value
+    db.commit()
+
+
+def replace_text(db: Session, paper_id: str, parsed: ParsedPdf) -> None:
+    """An uploaded paper's PDF read again (remediation, 2026-10-02): its
+    text, sections and chunks become the new read's. Its record (title,
+    authors, year) stays; past answers keep their claims, which now resolve
+    to the corrected passages."""
+    paper = db.get(PaperORM, paper_id)
+    if paper is None:
+        raise ValueError(f"no paper {paper_id}")
+    doc = parsed.document
+    db.execute(delete(PaperChunkORM).where(PaperChunkORM.paper_id == paper_id))
+    paper.page_count = doc.page_count
+    paper.parse_confidence = doc.parse_confidence.value
+    paper.sections = [s.model_dump(mode="json") for s in doc.sections]
+    paper.tables = [t.model_dump(mode="json") for t in doc.tables]
+    paper.references = [r.model_dump(mode="json") for r in doc.references]
+    paper.warnings = list(doc.warnings)
+    db.add_all([_chunk_orm_from_domain(c) for c in parsed.chunks])
+    db.commit()
+
+
+def record_fulltext_attempt(
+    db: Session, paper_id: str, *, status: str, source: str | None = None, url: str | None = None, error: str | None = None
+) -> None:
+    """What came of looking for a paper's full text, when it wasn't retrieved."""
+    paper = db.get(PaperORM, paper_id)
+    if paper is None:
+        return
+    paper.fulltext_status = status
+    paper.fulltext_source = source
+    paper.fulltext_url = url[:1024] if url else None
+    paper.fulltext_error = error[:255] if error else None
+    paper.fulltext_checked_at = datetime.now(timezone.utc)
     db.commit()
 
 
@@ -370,18 +481,34 @@ def get_job(db: Session, job_id: str) -> Job | None:
     return _job_domain_from_orm(row) if row else None
 
 
+def latest_job(db: Session, workspace_id: str, kind: JobKind) -> Job | None:
+    """A workspace's most recent job of one kind (to resume showing it, or not start a second)."""
+    row = db.execute(
+        select(JobORM)
+        .where(JobORM.workspace_id == workspace_id, JobORM.kind == kind.value)
+        .order_by(JobORM.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return _job_domain_from_orm(row) if row else None
+
+
 def update_job(
     db: Session,
     job_id: str,
     *,
     status: JobStatus | None = None,
-    progress: dict[str, str] | None = None,
+    progress: dict[str, Any] | None = None,
     result_ref: str | None = None,
     error: str | None = None,
 ) -> Job | None:
+    """A cancelled job is final: once the owner has cancelled it, whatever
+    its worker still writes is ignored (remediation Phase 8)."""
     row = db.get(JobORM, job_id)
     if row is None:
         return None
+    db.refresh(row)  # the owner may have cancelled it from another session since
+    if row.status == JobStatus.CANCELLED.value:
+        return _job_domain_from_orm(row)
     if status is not None:
         row.status = status.value
     if progress is not None:
@@ -393,6 +520,55 @@ def update_job(
     db.commit()
     db.refresh(row)
     return _job_domain_from_orm(row)
+
+
+_ACTIVE_JOB_STATES = (JobStatus.QUEUED.value, JobStatus.RUNNING.value)
+
+
+def cancel_job(db: Session, job_id: str) -> Job | None:
+    """Stop a queued or running job at its owner's request. Its worker sees
+    the new status and stops; a job already finished keeps its outcome."""
+    row = db.get(JobORM, job_id)
+    if row is None:
+        return None
+    db.refresh(row)
+    if row.status in _ACTIVE_JOB_STATES:
+        row.status = JobStatus.CANCELLED.value
+        row.progress = {**(row.progress or {}), "stage": "cancelled"}
+        db.commit()
+        db.refresh(row)
+    return _job_domain_from_orm(row)
+
+
+def fail_interrupted_jobs(db: Session) -> int:
+    """At server start, mark every job still queued or running as failed:
+    jobs run inside the server process, so none of them can still be going
+    -- left alone, a page watching one would wait forever."""
+    rows = db.execute(select(JobORM).where(JobORM.status.in_(_ACTIVE_JOB_STATES))).scalars().all()
+    for row in rows:
+        row.status = JobStatus.FAILED.value
+        row.error = "The server restarted before this finished."
+        row.progress = {**(row.progress or {}), "stage": "interrupted"}
+    db.commit()
+    return len(rows)
+
+
+def active_discover_job(db: Session, owner_id: str, seed_paper_id: str, *, fresh_since: datetime) -> Job | None:
+    """The owner's discovery run for this seed that is still going (heard
+    from since `fresh_since`), so starting discovery again -- a refresh, a
+    second tab, a double click -- follows it instead of starting a second."""
+    rows = db.execute(
+        select(JobORM)
+        .where(
+            JobORM.owner_id == owner_id,
+            JobORM.kind == JobKind.DISCOVER.value,
+            JobORM.status.in_(_ACTIVE_JOB_STATES),
+            JobORM.updated_at >= fresh_since,
+        )
+        .order_by(JobORM.created_at.desc())
+    ).scalars().all()
+    row = next((r for r in rows if (r.progress or {}).get("seed_paper_id") == seed_paper_id), None)
+    return _job_domain_from_orm(row) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +594,16 @@ def _profile_domain_from_orm(db: Session, row: ResearchProfileORM) -> ResearchPr
     abstract, a summary, metric values from their evidence, one name per
     thing -- including profiles extracted before that existed."""
     profile = ResearchProfile.model_validate(row.profile_json)
+    # the paper's own abstract, verbatim (its PDF's Abstract section, or its
+    # source's), is the profile's: a profile extracted before the paper was
+    # read correctly kept a stand-in from its first lines (remediation, 2026-10-02)
+    paper = db.get(PaperORM, row.paper_id)
+    if paper is not None and (paper.abstract or "").strip() and paper.abstract != profile.abstract:
+        profile = profile.model_copy(update={"abstract": paper.abstract})
     return refine_profile(profile, abstract_found=_abstract_found(db, row.paper_id))
 
 
-def upsert_profile(db: Session, profile: ResearchProfile) -> ResearchProfile:
+def upsert_profile(db: Session, profile: ResearchProfile, *, owner_id: str | None = None) -> ResearchProfile:
     """One profile per (paper_id, workspace_id) -- Data Model §13
     `UNIQUE(paper_id, workspace_id)`. Re-running `analyze` updates the
     existing canonical (workspace_id=None) row rather than creating a
@@ -451,6 +633,8 @@ def upsert_profile(db: Session, profile: ResearchProfile) -> ResearchProfile:
     row.profile_json = payload
     row.extraction_confidence = profile.extraction_confidence.value
     row.extraction_model = profile.extraction_model
+    if owner_id is not None:
+        row.owner_id = owner_id  # who analysed it last: the paper is in their library
     db.commit()
     db.refresh(row)
     return _profile_domain_from_orm(db, row)
@@ -475,12 +659,13 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:20]}"
 
 
-def upsert_discovered_paper(db: Session, cand: NormalizedCandidate) -> str:
+def upsert_discovered_paper(db: Session, cand: NormalizedCandidate, *, commit: bool = True) -> str:
     """Link a normalised candidate to the global `papers` table, deduping by
     DOI -> versionless arXiv id -> normalised-title hash (Architecture §2).
     A new row is `source="discovery"`, `has_full_text=False`; an existing
     row only has its *empty* fields filled, never its richer data
-    overwritten."""
+    overwritten. `commit=False` leaves the commit to the caller (a discovery
+    run saves its candidates in one transaction)."""
     doi = cand.external_ids.get("doi")
     arxiv_id = cand.external_ids.get("arxiv")
 
@@ -504,6 +689,7 @@ def upsert_discovered_paper(db: Session, cand: NormalizedCandidate) -> str:
             venue=cand.venue,
             abstract=cand.abstract,
             url=cand.url,
+            publisher=cand.publisher,
             has_full_text=False,
             source="discovery",
         )
@@ -523,8 +709,13 @@ def upsert_discovered_paper(db: Session, cand: NormalizedCandidate) -> str:
             row.abstract = cand.abstract
         if row.url is None and cand.url:
             row.url = cand.url
-    db.commit()
-    db.refresh(row)
+        if not row.publisher and cand.publisher:
+            row.publisher = cand.publisher
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()  # later lookups in the same transaction see this row
     return row.id
 
 
@@ -548,10 +739,11 @@ def _search_run_domain_from_orm(row: SearchRunORM) -> SearchRun:
         tokens_completion=row.tokens_completion,
         started_at=row.started_at,
         finished_at=row.finished_at,
+        report=row.report,
     )
 
 
-def create_search_run(db: Session, run: SearchRun) -> SearchRun:
+def create_search_run(db: Session, run: SearchRun, *, commit: bool = True) -> SearchRun:
     db.add(
         SearchRunORM(
             id=run.run_id,
@@ -572,15 +764,36 @@ def create_search_run(db: Session, run: SearchRun) -> SearchRun:
             tokens_completion=run.tokens_completion,
             started_at=run.started_at,
             finished_at=run.finished_at,
+            report=run.report,
         )
     )
-    db.commit()
+    if commit:
+        db.commit()
     return run
 
 
 def get_search_run(db: Session, run_id: str) -> SearchRun | None:
     row = db.get(SearchRunORM, run_id)
     return _search_run_domain_from_orm(row) if row else None
+
+
+def set_run_preferred_publishers(db: Session, run_id: str, publishers: Collection[str]) -> None:
+    """Record the publishers a run's ranking preferred, with its filters (a
+    JSON column, so no migration): the results page names them."""
+    row = db.get(SearchRunORM, run_id)
+    if row is None:
+        return
+    row.filters = {**(row.filters or {}), "preferred_publishers": list(publishers)}
+    db.commit()
+
+
+def run_preferred_publishers(run: SearchRun) -> list[str]:
+    """The publishers a run's ranking preferred; runs ranked before the reader
+    could choose (remediation, 2026-10-06) preferred the default four."""
+    from app.services.metadata.publishers import TRUSTED_PUBLISHERS
+
+    saved = (run.filters or {}).get("preferred_publishers")
+    return list(saved) if isinstance(saved, list) else list(TRUSTED_PUBLISHERS)
 
 
 def mark_candidates_off_topic(db: Session, run_id: str, candidate_ids: list[str]) -> None:
@@ -628,6 +841,7 @@ def add_search_candidate(
     citation_relationship: CitationRelationship = CitationRelationship.NONE,
     citation_hops: int | None = None,
     filter_reasons: list[str] | None = None,
+    commit: bool = True,
 ) -> None:
     db.add(
         SearchCandidateORM(
@@ -644,7 +858,8 @@ def add_search_candidate(
             provenance=provenance,
         )
     )
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def _paper_external_ids(paper: PaperORM | None) -> dict[str, str]:
@@ -731,6 +946,14 @@ def _ranked_paper_domain_from_orm(row: RankedPaperORM) -> RankedPaper:
         band=Confidence(row.band),
         explanation=RankingExplanation(**(row.explanation or {"bullet_reasons": [], "prose": ""})),
     )
+
+
+def reset_run_candidates(db: Session, run_id: str) -> None:
+    """Clear a run's candidates and ranking before they are rebuilt (a
+    workspace's own-papers trail run is rebuilt in place)."""
+    db.query(RankedPaperORM).filter(RankedPaperORM.run_id == run_id).delete()
+    db.query(SearchCandidateORM).filter(SearchCandidateORM.run_id == run_id).delete()
+    db.commit()
 
 
 def save_ranked_papers(

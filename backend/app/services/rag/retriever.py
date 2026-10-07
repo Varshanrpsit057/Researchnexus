@@ -22,12 +22,8 @@ def retrieve(
 ) -> list[RetrievedChunk]:
     if k <= 0 or not query.strip():
         return []
-    # over-fetch when a scope filter will discard some hits
-    raw = index.search(query, k * 4 if scope_paper_ids is not None else k)
-    if scope_paper_ids is not None:
-        allow = set(scope_paper_ids)
-        raw = [h for h in raw if h.paper_id in allow]
-    raw = raw[:k]
+    # a scope is searched within: its papers' passages ranked among themselves
+    raw = index.search(query, k, paper_ids=scope_paper_ids)[:k]
 
     meta = {c.chunk_id: c for c in repo.get_chunks_by_ids(db, [h.chunk_id for h in raw])}
     out: list[RetrievedChunk] = []

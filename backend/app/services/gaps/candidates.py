@@ -91,18 +91,23 @@ def _method_coverage(matrix: GapMatrix) -> list[GapCandidate]:
             continue
         raw = next((e.raw for u in users for e in matrix.entries(u, "method") if e.value == value), value)
         # the using paper's own words: what shows the method exists at all
-        use = next((e for u in users for e in matrix.entries(u, "method") if e.value == value and e.span), None)
+        use = next(((u, e) for u in users for e in matrix.entries(u, "method") if e.value == value and e.span), None)
         facts = {
             "facet": "method", "value": raw, "used_by": users,
             "missing_from": [e.paper_id for e in ev], "shared_context": sorted(user_context)[:5],
         }
-        if use is not None and use.span is not None:
-            facts["method_quote"] = use.span.quote
+        missing_from = [e.paper_id for e in ev]
+        if use is not None and use[1].span is not None:
+            facts["method_quote"] = use[1].span.quote
+            # shown with the gap (remediation Phase 16): without it a method gap's evidence was only
+            # the other papers' problem statements, and nothing a reader saw named the method at all.
+            # The gap's papers stay the ones that lack it (counts, confidence and ids are theirs).
+            ev = [GapEvidence(paper_id=use[0], span=use[1].span, role=EvidenceRole.SUPPORTS_GAP.value), *ev]
         out.append(
             GapCandidate(
                 gap_type=GapType.METHOD_GAP,
                 detection_rule="method_coverage",
-                supporting_papers=[e.paper_id for e in ev],
+                supporting_papers=missing_from,
                 supporting_evidence=ev,
                 affected_methods=[raw],
                 facts=facts,

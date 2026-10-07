@@ -100,7 +100,8 @@
   --danger-wash: #3a1f1f;
 
   --shadow-color: 0 0 0;
-  --focus-ring: #78ccc1;
+  /* the cinematic world's mint, so a control without its own ring still matches */
+  --focus-ring: #5df0a8;
 
   color-scheme: dark;
 }
@@ -163,6 +164,24 @@
     font-family: var(--font-mono), ui-monospace, monospace;
   }
 
+  /* A native dropdown's list is drawn by the browser in its own window, painted
+     with the select's background -- the translucent fills these dark pages use
+     come out white there, under the page's near-white text. The options carry
+     an opaque dark surface of their own, so the list reads on every page. */
+  select {
+    color-scheme: dark;
+  }
+
+  select option,
+  select optgroup {
+    background-color: #0c1226;
+    color: #f3f6ff;
+  }
+
+  select option:disabled {
+    color: #8f9bb8;
+  }
+
   /* Every numeric reading (scores, ids, timestamps, counts) is set in the
      mono face with tabular figures, as if struck on the same typewriter
      that typed the rest of the card -- a measurement does not jiggle in
@@ -185,8 +204,18 @@
   }
 
   ::selection {
-    background: var(--accent);
-    color: var(--accent-foreground);
+    background: rgba(93, 240, 168, 0.28);
+    color: #ffffff;
+  }
+
+  ::placeholder {
+    color: #6b7796;
+    opacity: 1;
+  }
+
+  input,
+  textarea {
+    caret-color: #5df0a8;
   }
 
   :focus-visible {
@@ -203,18 +232,21 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
+    background: rgba(150, 175, 230, 0.22);
     border-radius: 999px;
-    border: 2px solid var(--surface);
+    border: 2px solid #04060f;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(150, 175, 230, 0.36);
   }
   * {
-    scrollbar-color: var(--border-strong) transparent;
+    scrollbar-color: rgba(150, 175, 230, 0.22) transparent;
     scrollbar-width: thin;
   }
 
   ::-moz-selection {
-    background: var(--accent);
-    color: var(--accent-foreground);
+    background: rgba(93, 240, 168, 0.28);
+    color: #ffffff;
   }
 }
 
@@ -318,4 +350,56 @@ dialog[open]::backdrop {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Ranking-criteria sliders (remediation Phase 9): a thin track filled in the
+   criterion's colour up to the thumb, a solid thumb, a visible focus ring. */
+.rn-range {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 1.25rem;
+  background: transparent;
+  cursor: pointer;
+  accent-color: var(--rn-range-color, #5df0a8);
+}
+.rn-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(150, 175, 230, 0.18);
+}
+.rn-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(150, 175, 230, 0.18);
+}
+.rn-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--rn-range-color, #5df0a8);
+}
+.rn-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 999px;
+  background: var(--rn-range-color, #5df0a8);
+  border: 2px solid #04060f;
+  transition: transform 120ms ease-out;
+}
+.rn-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--rn-range-color, #5df0a8);
+  border: 2px solid #04060f;
+}
+.rn-range:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+.rn-range:focus-visible {
+  outline: 2px solid var(--rn-range-color, #5df0a8);
+  outline-offset: 3px;
+  border-radius: 6px;
 }

@@ -61,3 +61,27 @@ def test_contradiction_needs_conflicting_spans_from_two_papers() -> None:
         _ev("p2", role=EvidenceRole.CONFLICTS_WITH_GAP.value),
     ]
     assert assemble(_cand(supporting, gap_type=GapType.CONTRADICTION, conflicting=both), min_papers=2) is not None
+
+
+def test_evidence_from_outside_the_gaps_papers_is_context_not_support() -> None:
+    # a method gap quotes the paper that uses the method; the gap's papers are the ones lacking it
+    from app.domain.gap import EvidenceRole, GapEvidence, GapType
+    from app.domain.profile import SourceSpan
+    from app.services.gaps.candidates import GapCandidate
+    from app.services.gaps.evidence import assemble
+
+    def ev(pid: str, role: str) -> GapEvidence:
+        return GapEvidence(paper_id=pid, span=SourceSpan(paper_id=pid, section="Methods", quote=f"{pid} quote"), role=role)
+
+    cand = GapCandidate(
+        gap_type=GapType.METHOD_GAP,
+        detection_rule="method_coverage",
+        supporting_papers=["b", "c"],
+        supporting_evidence=[ev("a", EvidenceRole.SUPPORTS_GAP.value), ev("b", EvidenceRole.SHARED_CONTEXT.value), ev("c", EvidenceRole.SHARED_CONTEXT.value)],
+    )
+    out = assemble(cand, min_papers=2)
+    assert out is not None and out.supporting_papers == ["b", "c"]
+    assert [e.paper_id for e in out.supporting_evidence] == ["a", "b", "c"]  # still shown
+    lone = GapCandidate(gap_type=GapType.METHOD_GAP, detection_rule="method_coverage", supporting_papers=["b"],
+                        supporting_evidence=[ev("a", EvidenceRole.SUPPORTS_GAP.value), ev("b", EvidenceRole.SHARED_CONTEXT.value)])
+    assert assemble(lone, min_papers=2) is None  # the using paper never makes up the two

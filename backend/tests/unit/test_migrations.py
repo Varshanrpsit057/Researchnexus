@@ -287,3 +287,82 @@ def test_0018_remembers_a_gap_by_what_it_says(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert "match_key" not in cols and still == ("accepted",)
+
+
+def test_0019_records_what_came_of_looking_for_a_papers_full_text(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_fulltext.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "0018")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO papers (id, title, title_hash, has_full_text, source, abstract, created_at) "
+            "VALUES ('p1', 'P', 'h', 0, 'discovery', 'An abstract.', '2026-01-01')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
+        kept = conn.execute("SELECT abstract, fulltext_status, fulltext_checked_at FROM papers WHERE id = 'p1'").fetchone()
+    finally:
+        conn.close()
+    assert {"fulltext_status", "fulltext_source", "fulltext_url", "fulltext_error", "fulltext_checked_at"} <= cols
+    assert kept == ("An abstract.", None, None)  # an existing paper: never looked for
+
+    command.downgrade(cfg, "0018")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
+        still = conn.execute("SELECT abstract FROM papers WHERE id = 'p1'").fetchone()
+    finally:
+        conn.close()
+    assert "fulltext_status" not in cols and still == ("An abstract.",)
+
+
+def test_0020_keeps_how_a_discovery_run_went(tmp_path: Path) -> None:
+    db_path = tmp_path / "alembic_run_report.db"
+    cfg = Config(str(_BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+
+    command.upgrade(cfg, "0019")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO papers (id, title, title_hash, has_full_text, source, created_at) "
+            "VALUES ('p1', 'P', 'h', 1, 'upload', '2026-01-01')"
+        )
+        conn.execute(
+            "INSERT INTO search_runs (id, seed_paper_id, strategies_requested, strategies_succeeded, strategies_failed, "
+            "filters, extra_citation_hop_used, counts, tokens_prompt, tokens_completion, started_at) "
+            "VALUES ('run_old', 'p1', '[]', '[\"keyword\"]', '[]', '{}', 0, '{\"raw\": 3}', 0, 0, '2026-09-27')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(cfg, "head")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(search_runs)")}
+        old = conn.execute("SELECT counts, report FROM search_runs WHERE id = 'run_old'").fetchone()
+    finally:
+        conn.close()
+    assert "report" in cols
+    assert old == ('{"raw": 3}', None)  # a run saved before: no report, nothing else touched
+
+    command.downgrade(cfg, "0019")
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(search_runs)")}
+        still = conn.execute("SELECT counts FROM search_runs WHERE id = 'run_old'").fetchone()
+    finally:
+        conn.close()
+    assert "report" not in cols and still == ('{"raw": 3}',)

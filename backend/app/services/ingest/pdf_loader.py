@@ -29,6 +29,14 @@ _LINE_TOLERANCE_PT = 3.0
 _MIN_WORDS_FOR_COLUMN_DETECTION = 20
 _MIN_WORDS_PER_COLUMN = 10
 _MIN_GUTTER_FRACTION_OF_WIDTH = 0.03
+# A gap counts as a word break when it is wider than this share of the font
+# size (pdfplumber's fixed 3 pt default glued the words of tightly set LaTeX
+# papers together -- "CurrentadvancesinAImodels" -- measured on 129 stored
+# PDFs: 301 glued words at 3 pt, 1 at this ratio, and no word split apart).
+_WORD_GAP_RATIO = 0.15
+# A line whose two halves are this close across the gutter runs across it
+# (a centred title, an author block), wider than any word space.
+_SPANNING_GAP_PT = 8.0
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,9 @@ class RawPdfData:
     title: str | None
     authors: list[str]
     warnings: list[str] = field(default_factory=list)
+    # text set sideways (a publisher's margin stamp: DOI, licence), kept out
+    # of the body and read only for identifiers
+    margin_text: str = ""
 
 
 def _group_words_into_lines(words: list[dict]) -> list[list[dict]]:
@@ -70,34 +81,128 @@ def _group_words_into_lines(words: list[dict]) -> list[list[dict]]:
 def _detect_column_split(words: list[dict], page_width: float) -> float | None:
     """Return the x-coordinate of a column gutter, or None for single-column.
 
-    Looks for the largest horizontal gap between adjacent word x-centers
-    that (a) sits roughly in the middle third of the page and (b) is wide
-    enough to plausibly be a column gutter rather than normal word spacing.
-    Requires a healthy number of words on both sides to avoid mis-splitting
-    a sparse single-column page (e.g. a title page).
+    The gutter is the x in the middle of the page that the fewest lines run
+    across: body lines of a two-column page never do, while a full-width
+    title or author block above them does -- which is why the earlier
+    "largest gap between word centres" test failed on the first page of a
+    real IEEE paper (its centred title and author block filled the gutter,
+    so the page was read straight across both columns). Requires most lines
+    to keep clear of the gutter and enough words on each side, so a
+    single-column page is never split.
     """
     if len(words) < _MIN_WORDS_FOR_COLUMN_DETECTION:
         return None
-
-    centers = sorted((w["x0"] + w["x1"]) / 2 for w in words)
-    best_gap = 0.0
-    best_mid: float | None = None
-    for a, b in zip(centers, centers[1:], strict=False):
-        mid = (a + b) / 2
-        if page_width * 0.3 <= mid <= page_width * 0.7:
-            gap = b - a
-            if gap > best_gap:
-                best_gap = gap
-                best_mid = mid
-
-    if best_mid is None or best_gap < page_width * _MIN_GUTTER_FRACTION_OF_WIDTH:
+    lines = _group_words_into_lines(words)
+    if len(lines) < 6:
         return None
 
-    left = sum(1 for c in centers if c < best_mid)
-    right = len(centers) - left
+    lo, hi = page_width * 0.3, page_width * 0.7
+    best_x: float | None = None
+    best_cover = len(lines) + 1
+    x = lo
+    while x <= hi:
+        cover = sum(1 for line in lines if any(w["x0"] <= x <= w["x1"] for w in line))
+        if cover < best_cover:
+            best_cover, best_x = cover, x
+        x += 1.0
+    if best_x is None or best_cover > len(lines) * 0.25:
+        return None
+
+    # the gap around it must be a gutter, not one ragged line end
+    left_edge = max((w["x1"] for w in words if w["x1"] <= best_x), default=None)
+    right_edge = min((w["x0"] for w in words if w["x0"] >= best_x), default=None)
+    if left_edge is None or right_edge is None:
+        return None
+    clear = [w for w in words if not (w["x0"] < best_x < w["x1"])]
+    left = sum(1 for w in clear if (w["x0"] + w["x1"]) / 2 < best_x)
+    right = len(clear) - left
     if left < _MIN_WORDS_PER_COLUMN or right < _MIN_WORDS_PER_COLUMN:
         return None
-    return best_mid
+    two_sided = sum(
+        1
+        for line in lines
+        if any(w["x1"] <= best_x for w in line) and any(w["x0"] >= best_x for w in line)
+    )
+    if two_sided < len(lines) * 0.2:  # most lines have text on both sides of a real gutter
+        return None
+    return best_x
+
+
+def _join(line: list[dict]) -> str:
+    return " ".join(w["text"] for w in line)
+
+
+def _reading_order_lines(words: list[dict], page_width: float) -> list[str]:
+    """The page's lines in reading order. On a two-column page, a line that
+    runs across the gutter (a title, an author block, a full-width figure
+    caption) is read where it stands; between such lines, the left column is
+    read before the right one."""
+    lines = _group_words_into_lines(words)
+    split_x = _detect_column_split(words, page_width)
+    if split_x is None:
+        return [_join(line) for line in lines]
+
+    out: list[str] = []
+    left: list[list[dict]] = []
+    right: list[list[dict]] = []
+
+    def flush() -> None:
+        out.extend(_join(line) for line in left)
+        out.extend(_join(line) for line in right)
+        left.clear()
+        right.clear()
+
+    for line in lines:
+        lhs = [w for w in line if (w["x0"] + w["x1"]) / 2 < split_x]
+        rhs = [w for w in line if (w["x0"] + w["x1"]) / 2 >= split_x]
+        crosses = any(w["x0"] < split_x < w["x1"] for w in line)
+        joined_across = bool(lhs and rhs) and min(w["x0"] for w in rhs) - max(w["x1"] for w in lhs) < _SPANNING_GAP_PT
+        if crosses or joined_across:
+            flush()
+            out.append(_join(line))
+            continue
+        if lhs:
+            left.append(lhs)
+        if rhs:
+            right.append(rhs)
+    flush()
+    return out
+
+
+def _page_words(page: pdfplumber.page.Page) -> tuple[list[dict], str]:
+    """The page's upright words, and its sideways text (a margin stamp)."""
+    words = page.extract_words(use_text_flow=False, keep_blank_chars=False, x_tolerance_ratio=_WORD_GAP_RATIO)
+    upright = [w for w in words if w.get("upright", True)]
+    sideways = " ".join(w["text"] for w in words if not w.get("upright", True))
+    return upright, sideways
+
+
+def _page_text(page: pdfplumber.page.Page, max_chars: int) -> tuple[str, bool, str]:
+    try:
+        words, sideways = _page_words(page)
+    except Exception:  # noqa: BLE001 - a single malformed page must not abort the document
+        return "", False, ""
+    if not words:
+        return "", False, sideways
+
+    parts: list[str] = []
+    for joined in _reading_order_lines(words, float(page.width)):
+        # Some publisher typesetting pipelines embed a whole text block
+        # twice, offset by roughly half a line height (observed live: a
+        # ScienceDirect PDF whose abstract repeated every line verbatim
+        # -- pdfplumber's own word extraction has no opinion on this and
+        # faithfully returns both copies as separate lines, since the
+        # vertical offset is well outside normal word-spacing jitter).
+        # A real line of running prose repeating itself verbatim,
+        # immediately after itself, does not otherwise happen.
+        if parts and parts[-1] == joined:
+            continue
+        parts.append(joined)
+    text = "\n".join(parts)
+
+    if len(text) > max_chars:
+        return text[:max_chars], True, sideways
+    return text, False, sideways
 
 
 def reading_order_text(page: pdfplumber.page.Page, max_chars: int) -> tuple[str, bool]:
@@ -108,43 +213,8 @@ def reading_order_text(page: pdfplumber.page.Page, max_chars: int) -> tuple[str,
     guard from Architecture §3 S2 ("a single page yielding more raw
     characters than this is treated as suspicious").
     """
-    try:
-        words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
-    except Exception:  # noqa: BLE001 - a single malformed page must not abort the document
-        return "", False
-    if not words:
-        return "", False
-
-    split_x = _detect_column_split(words, float(page.width))
-    columns = (
-        [words]
-        if split_x is None
-        else [
-            [w for w in words if (w["x0"] + w["x1"]) / 2 < split_x],
-            [w for w in words if (w["x0"] + w["x1"]) / 2 >= split_x],
-        ]
-    )
-
-    parts: list[str] = []
-    for column_words in columns:
-        for line in _group_words_into_lines(column_words):
-            joined = " ".join(w["text"] for w in line)
-            # Some publisher typesetting pipelines embed a whole text block
-            # twice, offset by roughly half a line height (observed live: a
-            # ScienceDirect PDF whose abstract repeated every line verbatim
-            # -- pdfplumber's own word extraction has no opinion on this and
-            # faithfully returns both copies as separate lines, since the
-            # vertical offset is well outside normal word-spacing jitter).
-            # A real line of running prose repeating itself verbatim,
-            # immediately after itself, does not otherwise happen.
-            if parts and parts[-1] == joined:
-                continue
-            parts.append(joined)
-    text = "\n".join(parts)
-
-    if len(text) > max_chars:
-        return text[:max_chars], True
-    return text, False
+    text, truncated, _sideways = _page_text(page, max_chars)
+    return text, truncated
 
 
 def _extract_authors(raw_author: str) -> list[str]:
@@ -173,9 +243,12 @@ def load_pdf(pdf_bytes: bytes, settings: Settings) -> RawPdfData:
         warnings.append(f"metadata extraction failed: {e}")
 
     pages: list[LoadedPage] = []
+    margins: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            text, truncated = reading_order_text(page, settings.max_page_chars)
+            text, truncated, sideways = _page_text(page, settings.max_page_chars)
+            if sideways and i <= 2:
+                margins.append(sideways)
             if truncated:
                 warnings.append(
                     f"page {i}: text truncated at {settings.max_page_chars} chars "
@@ -188,4 +261,11 @@ def load_pdf(pdf_bytes: bytes, settings: Settings) -> RawPdfData:
                 warnings.append(f"page {i}: table extraction failed: {e}")
             pages.append(LoadedPage(number=i, text=text, tables=raw_tables))
 
-    return RawPdfData(page_count=len(pages), pages=pages, title=title, authors=authors, warnings=warnings)
+    return RawPdfData(
+        page_count=len(pages),
+        pages=pages,
+        title=title,
+        authors=authors,
+        warnings=warnings,
+        margin_text=" ".join(margins),
+    )

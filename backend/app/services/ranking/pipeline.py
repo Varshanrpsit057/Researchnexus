@@ -25,6 +25,7 @@ from app.domain.profile import Confidence
 from app.domain.ranking import RankedPaper, RankingWeights, SignalScores
 from app.retrieval.embeddings import EmbeddingProvider
 from app.retrieval.reranker import CrossEncoderReranker
+from app.services.metadata.publishers import preferred_set, publisher_of
 from app.services.ranking.explain import add_llm_prose, build_explanation
 from app.services.ranking.fuse import fuse
 from app.services.ranking.rerank import rerank_scores
@@ -33,6 +34,7 @@ from app.services.ranking.signals import (
     dataset_overlap_signal,
     method_sim_signal,
     problem_sim_signal,
+    publisher_signal,
     recency_signal,
     semantic_chunk_signal,
     semantic_doc_signal,
@@ -68,6 +70,9 @@ class RankOptions:
     # similarities mean nothing.
     min_relevance: float | None = None
     session: object | None = None  # LlmSession | None -- optional prose rephrase
+    # the publishers the reader prefers, as `publishers.preferred_set` names
+    # them; None ranks with the default four (remediation, 2026-10-06)
+    preferred_publishers: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -88,6 +93,13 @@ class _Scored:
     signals: SignalScores
     fused_score: float
     rerank_score: float | None = None
+
+    @property
+    def tie_key(self) -> tuple[str, str]:
+        """Equal scores are ordered by the paper itself (title, then id) --
+        never by candidate id, which says nothing about the paper -- so the
+        same candidates always rank the same (remediation Phase 8)."""
+        return (self.text.casefold(), self.paper_id)
 
 
 def _dedupe_by_paper_id(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -120,6 +132,13 @@ def _embed_aligned(embedder: EmbeddingProvider | None, texts: list[str]) -> np.n
     if embedder is None or not texts:
         return None
     return np.asarray(embedder.embed(texts), dtype="float32")
+
+
+def _publisher_of(db: Session, paper_id: str) -> str | None:
+    paper = repo.get_paper(db, paper_id)
+    if paper is None:
+        return None
+    return paper.publisher or publisher_of(None, paper.doi)
 
 
 def _band(score: float, settings: Settings) -> Confidence:
@@ -155,6 +174,8 @@ async def rank_search_run(
 
     weights = options.weights or RankingWeights()
     current_year = run.started_at.year
+    preferred = preferred_set(options.preferred_publishers)
+    repo.set_run_preferred_publishers(db, run_id, preferred)
 
     # the parser often misses a PDF's abstract; the profile then holds it
     seed_text = f"{seed.title}\n{seed.abstract or profile.abstract or ''}"
@@ -183,6 +204,7 @@ async def rank_search_run(
             dataset_overlap=dataset_overlap_signal(dataset_names, cand_text),
             citation=citation_signal(cand.citation_relationship, cand.citation_hops),
             recency=recency_signal(cand.year, current_year, half_life_years=settings.rank_recency_half_life_years),
+            publisher=publisher_signal(_publisher_of(db, paper_ids[cand.candidate_id]), preferred),
         )
         if options.min_relevance is not None and signals.semantic_doc is not None and signals.semantic_doc < options.min_relevance:
             off_topic.append(cand.candidate_id)
@@ -192,7 +214,7 @@ async def rank_search_run(
             _Scored(cand.candidate_id, paper_ids[cand.candidate_id], cand_text, signals, fused)
         )
 
-    scored.sort(key=lambda s: (-s.fused_score, s.candidate_id))
+    scored.sort(key=lambda s: (-s.fused_score, s.tie_key))
 
     rr: dict[str, float] = {}
     if options.reranker is not None:
@@ -200,23 +222,43 @@ async def rank_search_run(
     for s in scored:
         s.rerank_score = rr.get(s.candidate_id)
 
+    ranked = await _order_and_explain(scored, weights, settings, session=options.session)
+    repo.save_ranked_papers(db, run_id, ranked, {s.candidate_id: s.paper_id for s in scored})
+    repo.mark_candidates_off_topic(db, run_id, off_topic)
+    return RankResult(
+        run_id=run_id,
+        weights_version=weights.version,
+        ranked_count=len(ranked),
+        reranked_count=len(rr),
+        off_topic_count=len(off_topic),
+    )
+
+
+async def _order_and_explain(
+    scored: list[_Scored], weights: RankingWeights, settings: Settings, *, session: object | None = None
+) -> list[RankedPaper]:
+    """The final order -- by fused score, the reranked head first when a
+    reranker scored it, ties broken by the paper itself -- each paper banded
+    and explained by what its signals contributed. Shared by a full ranking
+    and a re-rank of a saved one, so the two can never order differently."""
+    scored = sorted(scored, key=lambda s: (-s.fused_score, s.tie_key))
     top_n = settings.rank_rerank_top_n
     head, tail = scored[:top_n], scored[top_n:]
     head.sort(
         key=lambda s: (
             -(s.rerank_score if s.rerank_score is not None else -1.0),
             -s.fused_score,
-            s.candidate_id,
+            s.tie_key,
         )
     )
-    ordered = head + tail
-
     ranked: list[RankedPaper] = []
-    for position, s in enumerate(ordered, start=1):
+    for position, s in enumerate(head + tail, start=1):
         final_score = s.rerank_score if s.rerank_score is not None else s.fused_score
-        explanation = build_explanation(s.signals, threshold=settings.rank_explanation_threshold)
-        if options.session is not None and position <= settings.rank_llm_prose_top_k:
-            explanation = await add_llm_prose(explanation, session=options.session)  # type: ignore[arg-type]
+        explanation = build_explanation(
+            s.signals, threshold=settings.rank_explanation_threshold, fusion=fuse(s.signals, weights)
+        )
+        if session is not None and position <= settings.rank_llm_prose_top_k:
+            explanation = await add_llm_prose(explanation, session=session)  # type: ignore[arg-type]
         ranked.append(
             RankedPaper(
                 candidate_id=s.candidate_id,
@@ -229,13 +271,66 @@ async def rank_search_run(
                 explanation=explanation,
             )
         )
+    return ranked
 
-    repo.save_ranked_papers(db, run_id, ranked, {s.candidate_id: s.paper_id for s in ordered})
-    repo.mark_candidates_off_topic(db, run_id, off_topic)
+
+class RankingRequired(Exception):
+    """The run has no ranking to re-weigh yet."""
+
+
+async def rerank_with_weights(
+    db: Session,
+    *,
+    run_id: str,
+    weights: RankingWeights,
+    settings: Settings,
+    preferred_publishers: tuple[str, ...] | None = None,
+) -> RankResult:
+    """Re-weigh a saved ranking (remediation Phase 9). A paper's signals don't
+    depend on the weights, so its saved signals are fused again -- no search,
+    no embedding, nothing recomputed but the arithmetic -- and the papers are
+    ordered exactly as a full ranking with these weights would order them.
+    Papers set aside as off-topic stay aside: the relevance floor isn't a weight.
+    Given `preferred_publishers`, the publisher signal is read again from each
+    paper's record against them (a lookup, not a search); without it, the
+    run keeps the publishers it was ranked with."""
+    if repo.get_search_run(db, run_id) is None:
+        raise SearchRunNotFound(run_id)
+    saved = repo.get_ranked_papers(db, run_id)
+    if not saved:
+        raise RankingRequired(run_id)
+    candidates = {c.candidate_id: c for c in repo.get_search_candidates(db, run_id)}
+    paper_ids = repo.get_search_candidate_paper_ids(db, run_id)
+    if preferred_publishers is not None:
+        repo.set_run_preferred_publishers(db, run_id, preferred_publishers)
+    scored = []
+    for rp in saved:
+        if rp.candidate_id not in candidates:
+            continue
+        # new preferred publishers, or a ranking saved before the publisher
+        # signal existed: the signal comes from the paper's record
+        signals = (
+            rp.signals
+            if preferred_publishers is None and rp.signals.publisher is not None
+            else rp.signals.model_copy(
+                update={"publisher": publisher_signal(_publisher_of(db, paper_ids[rp.candidate_id]), preferred_publishers)}
+            )
+        )
+        scored.append(
+            _Scored(
+                rp.candidate_id,
+                paper_ids[rp.candidate_id],
+                f"{candidates[rp.candidate_id].title}\n{candidates[rp.candidate_id].abstract or ''}",
+                signals,
+                fuse(signals, weights).fused_score,
+                rp.rerank_score,
+            )
+        )
+    ranked = await _order_and_explain(scored, weights, settings)
+    repo.save_ranked_papers(db, run_id, ranked, {s.candidate_id: s.paper_id for s in scored})
     return RankResult(
         run_id=run_id,
         weights_version=weights.version,
         ranked_count=len(ranked),
-        reranked_count=len(rr),
-        off_topic_count=len(off_topic),
+        reranked_count=sum(1 for s in scored if s.rerank_score is not None),
     )

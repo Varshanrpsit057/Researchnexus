@@ -53,6 +53,26 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def get_optional_user(
+    db: DbSession,
+    settings: AppSettings,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)] = None,
+) -> User | None:
+    """The signed-in reader when the request says who it is, else None -- for
+    routes open to anyone that still credit the reader (an upload lands in
+    their library). A stale or unknown token reads as nobody, not an error."""
+    if credentials is None:
+        return None
+    try:
+        payload = decode_access_token(credentials.credentials, settings)
+    except InvalidToken:
+        return None
+    return repo.get_user(db, payload.sub)
+
+
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
+
+
 def get_llm_client(provider: LlmProvider) -> LLMClient:
     if provider == LlmProvider.GEMINI:
         return GeminiClient()

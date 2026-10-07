@@ -11,6 +11,7 @@ import {
   confidenceReasons,
   describeEvidence,
   detectionLabel,
+  fromWorkspacePapers,
   ruleReasons,
   type TrailEntry,
 } from "@/lib/trail";
@@ -106,7 +107,9 @@ export function TrailRow({ entry, seed, selected, defaultOpen = false, onSelect,
                   {entry.ranking && (
                     <>
                       <span aria-hidden>·</span>
-                      <span className="tabular-nums">ranked #{entry.ranking.final_rank} in discovery</span>
+                      <span className="tabular-nums">
+                        ranked #{entry.ranking.final_rank} {fromWorkspacePapers(entry.edge.run_id) ? "of this workspace's papers" : "in discovery"}
+                      </span>
                     </>
                   )}
                 </p>

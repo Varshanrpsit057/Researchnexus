@@ -66,6 +66,7 @@ from app.jobs.runner import new_id
 from app.llm.client import LlmProviderError, describe_provider_error
 from app.llm.session import LlmSession, resolve_llm_session
 from app.llm.usage import usage_scope
+from app.services.citations.quote import quote_window
 from app.services.rag.pipeline import (
     RagRequest,
     RagStage,
@@ -252,7 +253,8 @@ def _persist(db: Session, turn: _Turn, answer: RagAnswer) -> tuple[str, str, lis
 
 
 def _sources(db: Session, claims: list[Claim]) -> dict[str, list[dict]]:
-    """claim id -> the passages that support it: paper, section, page, quote."""
+    """claim id -> the passages that support it: paper, section, page, and
+    the part of the passage that supports the claim's sentence."""
     chunk_ids = sorted({cid for c in claims for cid in c.supporting_chunk_ids})
     chunks = {c.chunk_id: c for c in repo.get_chunks_by_ids(db, chunk_ids)}
     titles: dict[str, str | None] = {}
@@ -266,7 +268,8 @@ def _sources(db: Session, claims: list[Claim]) -> dict[str, list[dict]]:
             if chunk.paper_id not in titles:
                 paper = repo.get_paper(db, chunk.paper_id)
                 titles[chunk.paper_id] = paper.title if paper is not None else None
-            text = chunk.text.strip()
+            # the part of the passage that supports this sentence, verbatim, with that sentence marked
+            window = quote_window(chunk.text, claim.sentence, max_chars=QUOTE_MAX)
             sources.append(
                 {
                     "chunk_id": cid,
@@ -274,8 +277,10 @@ def _sources(db: Session, claims: list[Claim]) -> dict[str, list[dict]]:
                     "paper_title": titles[chunk.paper_id],
                     "section": chunk.section,
                     "page": chunk.page,
-                    "quote": text[:QUOTE_MAX],
-                    "truncated": len(text) > QUOTE_MAX,
+                    "quote": window.quote,
+                    "cut_before": window.cut_before,
+                    "truncated": window.cut_after,
+                    "highlight": list(window.highlight) if window.highlight else None,
                 }
             )
         out[claim.claim_id] = sources

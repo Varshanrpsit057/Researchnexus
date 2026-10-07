@@ -125,6 +125,18 @@ def test_workspace_times_read_back_as_utc(tmp_path: Path) -> None:
         assert body["updated_at"].endswith(("Z", "+00:00")), body["updated_at"]
 
 
+def test_the_workspace_list_names_each_seed_and_counts_its_work(tmp_path: Path) -> None:
+    # remediation 2026-10-06: the list page shows what each workspace holds, not only ids
+    client = _make_client(tmp_path)
+    token = _token(client)
+    _seed_analysed_paper()
+    ws = _create_ws(client, token)
+    [listed] = client.get("/api/v1/workspaces", headers=_headers(token)).json()["workspaces"]
+    assert listed["workspace_id"] == ws["workspace_id"]
+    assert listed["seed_title"] == "Retrieval-Augmented Generation"
+    assert listed["counts"] == {"papers": 1, "edges": 0, "gaps": 0, "directions": 0, "comparisons": 0}
+
+
 def test_create_with_unanalysed_seed_is_409(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)
@@ -224,6 +236,10 @@ def test_add_pin_tag_annotate_and_remove_paper(tmp_path: Path) -> None:
     assert wp["tags"] == ["method", "baseline"]
     assert wp["note"] == "key ref"
     assert wp["order"] == 1
+
+    # bounded: a runaway note or tag list is refused, not stored
+    for body in ({"note": "x" * 4001}, {"tags": [f"t{i}" for i in range(31)]}, {"tags": ["y" * 61]}):
+        assert client.patch(f"/api/v1/workspaces/{wid}/papers/{p1}", json=body, headers=_headers(token)).status_code == 422
 
     removed = client.delete(f"/api/v1/workspaces/{wid}/papers/{p1}", headers=_headers(token))
     assert removed.status_code == 200

@@ -6,7 +6,6 @@ import { startEngine } from "./constellation/engine";
 import type { FromWorker, ToWorker } from "./constellation/constellation.worker";
 import type { MorphTarget } from "./constellation/field";
 import { onBackgroundCommand } from "@/lib/background-bus";
-import { usePreference } from "@/lib/preferences";
 
 interface ConstellationProps {
   className?: string;
@@ -57,15 +56,13 @@ function makeCanvas(): HTMLCanvasElement {
  * - it draws at most ~60 fps, even on high-refresh displays, and steps down
  *   to ~30 fps rather than thinning the field when a device falls behind;
  * - it stops entirely while the tab is hidden.
- * Under prefers-reduced-motion -- or the "still background" preference set
- * in Settings -- it draws one still frame and never animates.
+ * Under prefers-reduced-motion it draws one still frame and never animates
+ * (the Static background setting is a separate, canvas-free effect).
  * The research graph page can morph it (lib/background-bus.ts): the field
  * condenses onto the graph's nodes, then stays calmer until released.
  * The active path is exposed as data-renderer / data-thread on the canvas. */
 export default function Constellation({ className }: ConstellationProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  // changing the preference restarts the engine in the new mode
-  const still = usePreference("backgroundMotion") === "still";
 
   useEffect(() => {
     const host = hostRef.current;
@@ -76,7 +73,7 @@ export default function Constellation({ className }: ConstellationProps) {
       width: window.innerWidth,
       height: window.innerHeight,
       dpr,
-      reduceMotion: still || window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      reduceMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
       renderer: debug.renderer ?? "auto",
       seed: debug.seed,
       stillAfterMs: debug.stillAfterMs,
@@ -183,7 +180,7 @@ export default function Constellation({ className }: ConstellationProps) {
       document.removeEventListener("visibilitychange", onVisibility);
       canvas.remove();
     };
-  }, [still]);
+  }, []);
 
   return <div ref={hostRef} className={className} data-mode="field" data-testid="constellation" aria-hidden />;
 }

@@ -464,7 +464,7 @@ export default function DirectionsPage() {
                         <Warning className="mt-px size-4 shrink-0" weight="bold" aria-hidden />
                         <span>
                           No working LLM provider key is saved, so directions can&apos;t be proposed yet.{" "}
-                          <Link href="/settings" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
+                          <Link href="/settings#models" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
                             Add a key
                           </Link>
                         </span>

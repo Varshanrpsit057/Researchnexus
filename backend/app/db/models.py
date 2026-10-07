@@ -89,6 +89,15 @@ class PaperORM(Base):
     references: Mapped[list[dict]] = mapped_column(JSON, default=list)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    # ADD COLUMN in migration 0019 appends -> keep these last. What came of
+    # looking for the full text (remediation Phase 7): null = never looked
+    # for, "retrieved", "unavailable" (no open-access copy from a source we
+    # retrieve from), "failed" (found, but couldn't be downloaded or read).
+    fulltext_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fulltext_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fulltext_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    fulltext_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fulltext_checked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class PaperChunkORM(Base):
@@ -156,6 +165,9 @@ class SearchRunORM(Base):
     tokens_completion: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     finished_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # how the run went, step by step, strategy by strategy, source by source
+    # (remediation Phase 8, migration 0020); None for runs saved before
+    report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SearchCandidateORM(Base):

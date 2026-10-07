@@ -41,7 +41,12 @@ def test_method_gap_fires_when_two_plus_papers_omit_a_method_used_elsewhere() ->
     cands = generate_candidates(m, gap_types=None)
     method = [c for c in cands if c.gap_type is GapType.METHOD_GAP and "contrastive pretraining" in c.affected_methods]
     assert method
-    assert set(method[0].supporting_papers) == {"b", "c"}  # the papers that omit it, sharing the problem
+    assert method[0].facts["missing_from"] == ["b", "c"]  # the papers that omit it, sharing the problem
+    # the evidence shows both sides: the paper that uses it, in its own words, and the ones that don't
+    roles = [(e.paper_id, e.role, e.span.quote) for e in method[0].supporting_evidence]
+    assert roles[0] == ("a", "supports_gap", "contrastive pretraining")
+    assert {(pid, role) for pid, role, _ in roles[1:]} == {("b", "shared_context"), ("c", "shared_context")}
+    assert set(method[0].supporting_papers) == {"b", "c"}  # the gap's papers: the ones lacking it
 
 
 def test_method_gap_does_not_fire_when_only_one_paper_omits_the_method() -> None:

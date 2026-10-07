@@ -46,9 +46,9 @@ describe("preferences", () => {
   beforeEach(() => window.localStorage.clear());
 
   it("round-trips an allowed value and ignores anything else", () => {
-    expect(readPreference("backgroundMotion")).toBe("moving");
-    writePreference("backgroundMotion", "still");
-    expect(readPreference("backgroundMotion")).toBe("still");
+    expect(readPreference("referenceStyle")).toBe("apa");
+    writePreference("referenceStyle", "ieee");
+    expect(readPreference("referenceStyle")).toBe("ieee");
     window.localStorage.setItem("researchnexus.pref.referenceStyle", "chicago");
     expect(readPreference("referenceStyle")).toBe("apa");
   });

@@ -56,6 +56,12 @@ class SemanticScholarClient:
         body = await self._get_or_none(f"{_PAPER_URL}/{ref}", {"fields": "title,externalIds"})
         return body if isinstance(body, dict) and body.get("paperId") else None
 
+    async def open_access(self, ref: str) -> dict[str, Any] | None:
+        """A paper's open-access PDF (`openAccessPdf`: url, status, license)
+        and its other ids, by a prefixed id such as `DOI:10.1/x`."""
+        body = await self._get_or_none(f"{_PAPER_URL}/{ref}", {"fields": "externalIds,openAccessPdf"})
+        return body if isinstance(body, dict) and body.get("paperId") else None
+
     async def recommendations(self, paper_id: str, *, limit: int = 50) -> list[RawExternalRecord]:
         body = await self._http.get_json(f"{_RECOMMEND_URL}/{paper_id}", params={"limit": limit, "fields": _FIELDS})
         if not isinstance(body, dict) or not isinstance(body.get("recommendedPapers"), list):

@@ -22,6 +22,17 @@ def abstract_chunk_id(paper_id: str) -> str:
     return f"chk_{paper_id}_abstract"
 
 
+def for_reading(paper_id: str, chunks: list[PaperChunk]) -> list[PaperChunk]:
+    """A paper's chunks for reading it whole (its profile). Once its full
+    text is found, the abstract chunk it had from search stays for the
+    answers that cite it -- but where the PDF has its own abstract, reading
+    both would read the abstract twice, so the search one is left out."""
+    search_abstract = abstract_chunk_id(paper_id)
+    if any(c.kind is ChunkKind.ABSTRACT and c.chunk_id != search_abstract for c in chunks):
+        return [c for c in chunks if c.chunk_id != search_abstract]
+    return chunks
+
+
 def ensure_abstract_chunks(db: Session, paper_ids: list[str]) -> int:
     """Chunk the abstract of every abstract-only paper that has no chunks
     yet. Idempotent; papers with full text are left to the PDF chunker.

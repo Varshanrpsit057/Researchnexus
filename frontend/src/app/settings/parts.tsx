@@ -8,7 +8,7 @@ import { llmKeys, workspaces as workspacesApi } from "@/lib/api/endpoints";
 import type { LlmProvider, Workspace } from "@/lib/api/types";
 import { Timestamp } from "@/components/ui/Timestamp";
 import { PROVIDERS, STATUS_COPY, describeTest, maskedKey, type ProviderRow } from "@/lib/settings";
-import { C, InlineError, focusRing, primaryButton, quietButton } from "../workspace/[id]/ui";
+import { C, InlineError, focusRing, primaryButton, quietButton } from "@/components/cinematic/ui";
 
 export function Section({ id, title, lead, children }: { id: string; title: string; lead: ReactNode; children: ReactNode }) {
   return (
@@ -320,7 +320,7 @@ export function KeyForm({
 }
 
 /** A workspace's name, editable in place. */
-export function WorkspaceRow({ ws, onSaved }: { ws: Workspace; onSaved: () => void }) {
+export function WorkspaceRow({ ws, onSaved, extra }: { ws: Workspace; onSaved: () => void; extra?: ReactNode }) {
   const [title, setTitle] = useState(ws.title);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
@@ -375,14 +375,17 @@ export function WorkspaceRow({ ws, onSaved }: { ws: Workspace; onSaved: () => vo
         <span style={{ color: C.muted }}>
           <span className="tabular-nums">{ws.papers.length}</span> paper{ws.papers.length === 1 ? "" : "s"} · created <Timestamp at={ws.created_at} style="date" />
         </span>
-        <Link
-          href={`/workspace/${ws.workspace_id}`}
-          className={`inline-flex min-h-11 items-center gap-1 rounded-sm text-[13px] hover:text-white sm:min-h-0 ${focusRing}`}
-          style={{ color: C.muted }}
-        >
-          Open workspace
-          <ArrowSquareOut className="size-3.5" aria-hidden />
-        </Link>
+        <span className="flex items-center gap-3">
+          <Link
+            href={`/workspace/${ws.workspace_id}`}
+            className={`inline-flex min-h-11 items-center gap-1 rounded-sm text-[13px] hover:text-white sm:min-h-0 ${focusRing}`}
+            style={{ color: C.muted }}
+          >
+            Open workspace
+            <ArrowSquareOut className="size-3.5" aria-hidden />
+          </Link>
+          {extra}
+        </span>
       </div>
       {note && (
         <p className="mt-2 text-[13px]" style={{ color: note.ok ? C.mint : C.danger }} role="status">

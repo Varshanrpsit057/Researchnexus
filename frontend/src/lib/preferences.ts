@@ -3,22 +3,19 @@
 import { useSyncExternalStore } from "react";
 import type { CitationFormat } from "@/lib/api/types";
 
-/** Preferences kept in this browser only: how the app looks and reads here. */
+/** Preferences kept in this browser only: how the app looks and reads here.
+ * (The background has its own setting: lib/background-mode.ts.) */
 export interface Preferences {
-  /** The global neural background: moving, or one still frame. */
-  backgroundMotion: "moving" | "still";
   /** The reference style the citations page opens in. */
   referenceStyle: CitationFormat;
 }
 
-export const DEFAULT_PREFERENCES: Preferences = { backgroundMotion: "moving", referenceStyle: "apa" };
+export const DEFAULT_PREFERENCES: Preferences = { referenceStyle: "apa" };
 
 const KEY: Record<keyof Preferences, string> = {
-  backgroundMotion: "researchnexus.pref.backgroundMotion",
   referenceStyle: "researchnexus.pref.referenceStyle",
 };
 const ALLOWED: { [K in keyof Preferences]: readonly Preferences[K][] } = {
-  backgroundMotion: ["moving", "still"],
   referenceStyle: ["apa", "ieee", "bibtex"],
 };
 const EVENT = "researchnexus:preferences";

@@ -29,6 +29,8 @@ export interface TokenUsage {
 export interface SessionResponse {
   token: string;
   expires_at: string;
+  /** a new, empty account was made for this email (absent from older servers) */
+  created?: boolean;
 }
 
 export interface MeResponse {
@@ -101,23 +103,114 @@ export interface PaperTable {
   page: number;
 }
 
+// --- full-text coverage (remediation Phase 7) -------------------------------
+
+/** The text a paper is read from. */
+export type CoverageState = "full_text" | "abstract_only" | "retrieval_failed" | "no_text";
+
+export interface PaperCoverage {
+  state: CoverageState;
+  /** Where the full text came from: arxiv, europepmc, openalex, semantic_scholar, or upload. */
+  source: string | null;
+  /** retrieved | unavailable | failed; null when its full text was never looked for. */
+  status: "retrieved" | "unavailable" | "failed" | null;
+  /** Why it isn't full text: a code (no_open_access_copy, elsewhere:<host>, not_a_pdf, http_403, ...). */
+  reason: string | null;
+  checked_at: string | null;
+  has_abstract: boolean;
+  /** Whether looking for its full text can help (a paper found by discovery). */
+  retrievable: boolean;
+}
+
+export interface FullTextJob {
+  job_id: string;
+  kind: "fulltext";
+  status: JobStatus;
+  progress: Record<string, string>;
+  error: string | null;
+  poll_url: string;
+}
+
+export interface WorkspaceCoverage {
+  papers: { paper_id: string; title: string; role: WorkspacePaperRole; coverage: PaperCoverage }[];
+  summary: Record<CoverageState, number>;
+  job: FullTextJob | null;
+}
+
+/** A trail built from a workspace's own papers (POST /workspaces/{id}/trail/build). */
+export interface WorkspaceTrailBuild {
+  run_id: string;
+  papers: number;
+  edges: number;
+  connected_papers: number;
+  unconnected_papers: number;
+}
+
+/** What a PDF given to a paper produced (POST /papers/{id}/pdf | /reread). */
+export interface PaperTextOutcome {
+  outcome: { chunks: number; sections: number; abstract_found: boolean; doi: string | null };
+  /** the record lookup that followed a re-read: found | not_found | failed | timed_out */
+  metadata: { metadata?: string; filled?: string[] };
+  coverage: PaperCoverage;
+}
+
+export interface FullTextOutcome {
+  outcome: { status: "retrieved" | "already" | "unavailable" | "failed" | "cached"; source: string | null; reason: string | null; chunks: number };
+  coverage: PaperCoverage;
+}
+
 export interface Paper {
   id: string;
   title: string;
   authors: string[];
   year: number | null;
   venue: string | null;
+  /** who published it, as readers know them ("IEEE", "Springer") */
+  publisher?: string | null;
+  url?: string | null;
   doi: string | null;
   arxiv_id: string | null;
   has_full_text: boolean;
   /** An uploaded PDF, or a paper found by discovery (at most its abstract). */
   source?: "upload" | "discovery";
   has_abstract?: boolean;
+  /** Absent from papers served before remediation Phase 7. */
+  coverage?: PaperCoverage;
   parse_confidence: ParseConfidence | null;
   page_count: number | null;
   sections: PaperSection[];
   tables: PaperTable[];
   warnings: string[];
+}
+
+/** How a paper got into the reader's library. */
+export type LibraryRole = "uploaded" | "seed" | "searched" | "analyzed" | "collected";
+
+/** One paper in the reader's library (GET /api/v1/papers). */
+export interface LibraryPaper {
+  id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  publisher: string | null;
+  doi: string | null;
+  source: "upload" | "discovery";
+  has_abstract: boolean;
+  has_full_text: boolean;
+  coverage: PaperCoverage;
+  /** it has a research profile */
+  analyzed: boolean;
+  roles: LibraryRole[];
+  workspaces: { workspace_id: string; title: string }[];
+  /** the latest discovery run started from it, if the reader ran one */
+  last_run_id: string | null;
+  last_active_at: string;
+}
+
+export interface LibraryResponse {
+  papers: LibraryPaper[];
+  counts: { papers: number; uploaded: number; analyzed: number; in_workspaces: number; discovery_runs: number; workspaces: number };
 }
 
 export interface UploadJobRef {
@@ -214,7 +307,8 @@ export type JobKind =
   | "index_rebuild"
   | "pipeline";
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "partial";
+// cancelled: stopped by its owner (discovery only)
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
 
 export interface Job {
   job_id: string;
@@ -235,11 +329,37 @@ export type WorkspacePaperRole = "seed" | "related";
 export type AddedBy = "trail" | "manual";
 export type Grounding = "full_text" | "abstract";
 
+export type SignalName = keyof SignalScores;
+
+/** One signal's part in a paper's score: weight x value (remediation Phase 9). */
+export interface SignalContribution {
+  signal: SignalName;
+  value: number;
+  /** renormalised over the signals that could be computed for this paper */
+  weight: number;
+  contribution: number;
+}
+
 export interface RankingExplanation {
   bullet_reasons: string[];
   prose: string;
   signals_used: string[];
   template_only: boolean;
+  /** largest first; they sum to the fused score (absent on older rankings) */
+  contributions?: SignalContribution[];
+  missing_signals?: SignalName[];
+}
+
+/** How much each criterion counts, 0-100; only the proportions matter. */
+export interface RankingCriteria {
+  topic: number;
+  problem: number;
+  methods: number;
+  datasets: number;
+  citations: number;
+  recency: number;
+  /** papers from IEEE, Springer, ACM or Elsevier (absent from criteria saved before it existed) */
+  publisher: number;
 }
 
 export interface SignalScores {
@@ -250,6 +370,8 @@ export interface SignalScores {
   dataset_overlap: number | null;
   citation: number | null;
   recency: number | null;
+  /** 1 from a preferred publisher, else 0; absent from rankings made before it existed */
+  publisher?: number | null;
 }
 
 export interface RankedPaperSnapshot {
@@ -300,6 +422,8 @@ export interface Workspace {
   created_at: string;
   updated_at: string;
   counts?: WorkspaceCounts;
+  /** the seed paper's title (in the list only) */
+  seed_title?: string | null;
 }
 
 export interface WorkspaceListResponse {
@@ -331,12 +455,79 @@ export type CitationRelationship = "cited_by_seed" | "cites_seed" | "co_cited" |
 export interface DiscoverJobRef {
   job_id: string;
   kind: "discover";
-  status: "queued";
+  status: JobStatus;
   poll_url: string;
 }
 
 export interface DiscoverJobResponse {
   job: DiscoverJobRef;
+  /** a run of this seed was already going (a refresh, a second tab): this is it */
+  resumed?: boolean;
+}
+
+// A discover job's progress, and -- once saved -- its run's report
+// (backend app/services/discovery/progress.py). Only measured times, real
+// counts, and the limits the run enforces.
+export type DiscoveryStep = "plan" | "resolve" | "search" | "score" | "save" | "rank" | "trail";
+export type DiscoveryStepState = "pending" | "running" | "done" | "failed" | "skipped";
+
+export interface DiscoveryStepEntry {
+  state: DiscoveryStepState;
+  /** seconds into the run it began */
+  started_s?: number;
+  seconds?: number;
+  /** the most it is allowed to take */
+  limit_s?: number;
+  total?: number;
+  note?: string;
+  found?: number;
+  ranked?: number;
+  off_topic?: number;
+  edges?: number;
+}
+
+export interface DiscoveryStrategyEntry {
+  /** timed_out: stopped by its limit, what it had found kept */
+  state: "running" | "done" | "timed_out" | "failed";
+  found: number;
+  seconds?: number;
+  notes?: string[];
+}
+
+export interface DiscoverySourceEntry {
+  answered: number;
+  failed: number;
+  cached: number;
+  seconds?: number;
+  /** rate_limited, http_503, unreachable ... */
+  last_failure?: string;
+}
+
+export interface DiscoveryReport {
+  started_at: string;
+  elapsed_s: number;
+  steps: Partial<Record<DiscoveryStep, DiscoveryStepEntry>>;
+  strategies: Partial<Record<DiscoveryStrategy, DiscoveryStrategyEntry>>;
+  sources: Record<string, DiscoverySourceEntry>;
+  warnings: string[];
+  status?: "succeeded" | "partial" | "failed";
+  strategies_timed_out?: DiscoveryStrategy[];
+}
+
+export interface DiscoveryPreviewPaper {
+  title: string;
+  year: number | null;
+  source: string;
+}
+
+export interface DiscoveryProgress extends DiscoveryReport {
+  /** discovery | ranking | trail | done | failed | cancelled | interrupted */
+  stage: string;
+  step: DiscoveryStep | "";
+  /** distinct papers the sources have returned so far */
+  found: number;
+  /** the first few that arrived: not ranked */
+  preview: DiscoveryPreviewPaper[];
 }
 
 export interface RelatedRunSummary {
@@ -349,6 +540,16 @@ export interface RelatedRunSummary {
   counts: { raw: number; after_dedupe: number; after_filter: number; off_topic?: number };
   extra_citation_hop_used: boolean;
   weights_version: string | null;
+  /** how the run went; null for runs saved before it was kept */
+  report?: DiscoveryReport | null;
+  /** what the ranking was weighted by; null when its version doesn't say */
+  ranking_criteria?: RankingCriteria | null;
+  /** the publishers its ranking preferred (absent from older servers) */
+  preferred_publishers?: string[] | null;
+  /** the fused score each band starts at */
+  bands?: { high: number; medium: number };
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface RelatedPaperSummary {
@@ -357,8 +558,10 @@ export interface RelatedPaperSummary {
   authors: string[];
   year: number | null;
   venue: string | null;
+  publisher?: string | null;
   doi: string | null;
   url: string | null;
+  abstract?: string | null;
 }
 
 export interface RelatedResult {
@@ -488,8 +691,13 @@ export interface CitationUse {
   artefact_id: string;
   /** The workspace's own words: an answer's sentence, a cell's value, a gap's statement, a direction's proposal. */
   text: string;
-  /** The passage of this paper it rests on. */
+  /** The part of this paper's passage the workspace's words rest on, verbatim. */
   quote: string | null;
+  /** The passage goes on before / after the quote (answers only). */
+  cut_before?: boolean;
+  cut_after?: boolean;
+  /** The sentence that best supports the words, as [start, end) offsets into `quote`. */
+  highlight?: [number, number] | null;
   section: string | null;
   page: number | null;
   created_at: string | null;
@@ -514,6 +722,7 @@ export interface LedgerPaper {
   authors: string[];
   year: number | null;
   venue: string | null;
+  publisher?: string | null;
   doi: string | null;
   arxiv_id: string | null;
   url: string | null;
@@ -567,9 +776,14 @@ export interface ChatSource {
   paper_title: string | null;
   section: string | null;
   page: number | null;
+  /** The part of the passage that supports the sentence, verbatim. */
   quote: string;
-  /** The quote was cut to a readable length. */
+  /** The passage goes on after the quote. */
   truncated: boolean;
+  /** The passage starts before the quote (absent from older answers). */
+  cut_before?: boolean;
+  /** The sentence that best supports the claim, as [start, end) offsets into `quote`. */
+  highlight?: [number, number] | null;
 }
 
 export interface ChatClaim extends Claim {
@@ -718,6 +932,46 @@ export interface ComparisonResponse {
   warnings?: string[];
   /** When it was made (UTC); absent from comparisons served before remediation Phase 4. */
   created_at?: string;
+}
+
+/** One column of the comparison table: a paper, named in full. */
+export interface ComparisonTablePaper {
+  paper_id: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  publisher?: string | null;
+  kind: "seed" | "member" | "connected";
+  /** what the paper was read from when compared */
+  read_from: "full_text" | "abstract" | "none";
+  in_workspace: boolean;
+  /** the heading's second line: authors · year · what it was read from */
+  meta: string;
+}
+
+export interface ComparisonTableCell {
+  paper_id: string;
+  status: CellStatus;
+  /** the quoted value, or the label of why the cell is empty */
+  text: string;
+  /** other values the same passage states */
+  note: string | null;
+}
+
+export interface ComparisonTableRow {
+  field: string;
+  label: string;
+  cells: ComparisonTableCell[];
+}
+
+/** The comparison as a table: what the page draws and the Word export writes
+ * (GET /workspaces/{id}/compare/{comparison_id}/table). */
+export interface ComparisonTable {
+  comparison_id: string;
+  created_at: string;
+  corner: string;
+  papers: ComparisonTablePaper[];
+  rows: ComparisonTableRow[];
 }
 
 // --- research gaps ------------------------------------------------------
@@ -967,4 +1221,40 @@ export interface ApiErrorBody {
       request_id?: string;
     };
   };
+}
+
+// --- scholarly sources (Settings > Sources & full text, 2026-10-06) ------
+
+export type SourceUse = "discovery" | "records" | "full_text";
+
+export interface ScholarlySource {
+  id: string;
+  name: string;
+  used_for: SourceUse[];
+  /** "configured" / "not_set": a key this source accepts; "none": it has no key */
+  key: "configured" | "not_set" | "none";
+  /** the backend/.env setting that holds its key */
+  key_setting: string | null;
+  /** what using it without a key means */
+  keyless: string;
+  /** false when it can't be asked as set up (Unpaywall without a contact email) */
+  available: boolean;
+}
+
+export interface SourcesResponse {
+  contact_email_set: boolean;
+  sources: ScholarlySource[];
+}
+
+export interface SourceCheck {
+  id: string;
+  status: "ok" | "limited" | "refused" | "unreachable" | "error" | "not_set_up";
+  http_status?: number | null;
+  latency_ms?: number;
+  detail?: string;
+}
+
+export interface PublishersResponse {
+  default: string[];
+  known: string[];
 }

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -28,12 +28,19 @@ from app.domain.rag import FilteredChunk
 from app.jobs.runner import new_id, run_gaps_job
 from app.llm.session import resolve_llm_session
 from app.llm.usage import usage_scope
-from app.retrieval.workspace_index import FaissWorkspaceIndex
+from app.retrieval.workspace_index import workspace_search_index
 from app.services.citations.ledger import build_ledger
 from app.services.citations.metadata_resolver import to_citation
 from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 from app.services.orchestrator.orchestrator import ResearchOrchestrator
 from app.services.synthesis.compare import build_comparison, build_schema
+from app.services.synthesis.comparison_table import (
+    ComparisonTable,
+    PaperRecord,
+    UnknownPapers,
+    build_table,
+)
+from app.services.synthesis.docx_export import comparison_docx, docx_filename
 from app.services.synthesis.keypoints import extract_keypoints
 from app.services.synthesis.summary import summarize
 from app.services.workspace import pipeline as ws_pipeline
@@ -210,12 +217,7 @@ async def compare(
     profiles = [pr for pr in (repo.get_profile(db, pid) for pid in targets) if pr is not None]
     column_schema: ComparisonSchema = build_schema(profiles, explicit=body.schema_)
 
-    index = FaissWorkspaceIndex(
-        db,
-        workspace_id=workspace_id,
-        index_dir=settings.data_dir / "workspace_index",
-        vector_backend=settings.rag_vector_backend,
-    )
+    index = workspace_search_index(db, workspace_id=workspace_id, settings=settings)
     ensure_abstract_chunks(db, [p.paper_id for p in workspace.papers])
     index.rebuild([p.paper_id for p in workspace.papers])
 
@@ -249,6 +251,65 @@ def get_comparison(
     if comparison is None:
         raise _err(404, "not_found", "comparison not found")
     return comparison.api_dict()
+
+
+def _comparison_table(
+    db: Session, workspace, comparison_id: str, papers: str | None  # noqa: ANN001
+) -> ComparisonTable:
+    comparison = repo.get_comparison(db, comparison_id, workspace_id=workspace.workspace_id)
+    if comparison is None:
+        raise _err(404, "not_found", "comparison not found")
+    records = {}
+    for pid in comparison.paper_ids:
+        paper = repo.get_paper(db, pid)
+        if paper is not None:
+            records[pid] = PaperRecord(
+                title=paper.title, authors=list(paper.authors or []), year=paper.year, publisher=paper.publisher
+            )
+    shown = [p for p in (papers or "").split(",") if p] if papers is not None else None
+    if shown is not None and not shown:
+        raise _err(422, "invalid_parameter", "papers must name at least one compared paper")
+    try:
+        return build_table(
+            comparison,
+            records=records,
+            members=[p.paper_id for p in workspace.papers],
+            seed_paper_id=workspace.seed_paper_id,
+            paper_ids=shown,
+        )
+    except UnknownPapers as e:
+        raise _err(422, "invalid_parameter", str(e)) from e
+
+
+@router.get("/{workspace_id}/compare/{comparison_id}/table")
+def get_comparison_table(
+    workspace_id: str,
+    comparison_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    papers: Annotated[str | None, Query(description="comma-separated paper ids: the columns shown")] = None,
+) -> dict:
+    # The table the page draws and the Word export writes: one model, so
+    # the two can't drift apart (remediation Phase 12).
+    workspace = _require_ws(db, current_user, workspace_id)
+    return _comparison_table(db, workspace, comparison_id, papers).api_dict()
+
+
+@router.get("/{workspace_id}/compare/{comparison_id}/export.docx")
+def export_comparison_docx(
+    workspace_id: str,
+    comparison_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    papers: Annotated[str | None, Query(description="comma-separated paper ids: the columns shown")] = None,
+) -> Response:
+    workspace = _require_ws(db, current_user, workspace_id)
+    table = _comparison_table(db, workspace, comparison_id, papers)
+    return Response(
+        content=comparison_docx(table, workspace_title=workspace.title),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{docx_filename(workspace.title)}"'},
+    )
 
 
 @router.get("/{workspace_id}/compare")

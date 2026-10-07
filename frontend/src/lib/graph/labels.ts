@@ -38,7 +38,9 @@ export function truncate(text: string, max: number): string {
 
 /** Greedy label placement: highest priority first, each label tries the
  * right of its node, then the left, then below, and is dropped (left to
- * hover) when every spot would collide with a placed label or a node. */
+ * hover) when every spot would collide with a placed label or a node.
+ * Labels keep `pad` px of clear space from each other: flush labels read
+ * as one run-on title. */
 export function placeLabels(
   candidates: LabelCandidate[],
   nodes: { x: number; y: number; r: number }[],
@@ -46,7 +48,9 @@ export function placeLabels(
   /** Rendered width of a label; defaults to an average-glyph estimate. */
   measure: (text: string, id: string) => number = (text) => text.length * 6.7,
   lineHeight = 16,
+  pad = { x: 10, y: 3 },
 ): PlacedLabel[] {
+  const padded = (b: Box): Box => ({ x0: b.x0 - pad.x, y0: b.y0 - pad.y, x1: b.x1 + pad.x, y1: b.y1 + pad.y });
   const placed: PlacedLabel[] = [];
   const boxes: Box[] = [];
   const circles: Box[] = nodes.map((n) => ({ x0: n.x - n.r, y0: n.y - n.r, x1: n.x + n.r, y1: n.y + n.r }));
@@ -70,7 +74,7 @@ export function placeLabels(
           opt.box.x0 >= 4 &&
           opt.box.x1 <= viewport.width - 4 &&
           opt.box.y1 <= viewport.height &&
-          !boxes.some((b) => overlaps(b, opt.box)) &&
+          !boxes.some((b) => overlaps(b, padded(opt.box))) &&
           !circles.some((b, i) => !(Math.abs(nodes[i].x - c.x) < 0.5 && Math.abs(nodes[i].y - c.y) < 0.5) && overlaps(b, opt.box)),
       );
       if (fit) {

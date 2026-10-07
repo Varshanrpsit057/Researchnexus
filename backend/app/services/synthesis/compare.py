@@ -18,6 +18,7 @@ Two stages:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 
@@ -35,6 +36,7 @@ from app.domain.comparison import (
     SchemaOrigin,
 )
 from app.domain.profile import ResearchProfile, SourceSpan
+from app.domain.rag import RetrievedChunk
 from app.domain.workspace import Grounding, ResearchWorkspace
 from app.llm.session import LlmSession
 from app.retrieval.workspace_index import WorkspaceChunkIndex
@@ -121,6 +123,35 @@ _SYSTEM = (
 )
 
 
+# what each field is called in a paper's own words, so each finds its passages
+_FIELD_QUERY = {
+    "problem": "research problem motivation objective challenge this paper addresses",
+    "method": "proposed method approach model architecture technique algorithm",
+    "dataset": "dataset data corpus benchmark collected samples participants",
+    "metric": "evaluation metric measure accuracy precision recall F1 score",
+    "result": "results findings performance achieved improvement outperforms",
+    "limitation": "limitations future work drawbacks shortcomings remaining challenges",
+}
+_MAX_PASSAGES = 12
+
+
+def _passages_for(db: Session, index: WorkspaceChunkIndex, paper_id: str, columns: list[str], k: int) -> list[RetrievedChunk]:
+    """A paper's passages for a comparison: the best few for each field, each
+    field searched in its own words within this paper only. One query of all
+    the field names together found the passages most like a list of headings
+    (remediation, 2026-10-02) -- a full text's method and results sections
+    were often missed."""
+    per_field = max(2, -(-k // max(len(columns), 1)))
+    seen: set[str] = set()
+    out: list[RetrievedChunk] = []
+    for column in columns:
+        for chunk in retrieve(db, index, _FIELD_QUERY.get(column, column), k=per_field, scope_paper_ids=[paper_id]):
+            if chunk.chunk_id not in seen:
+                seen.add(chunk.chunk_id)
+                out.append(chunk)
+    return out[: max(k, min(_MAX_PASSAGES, per_field * len(columns)))]
+
+
 @dataclass
 class ComparisonResult:
     comparison: Comparison
@@ -158,6 +189,10 @@ def _grounded_cell(proposal: _CellProposal, column: str, by_id: dict, grounding:
     )
 
 
+async def _none() -> None:
+    return None
+
+
 async def build_comparison(
     db: Session,
     *,
@@ -184,32 +219,49 @@ async def build_comparison(
     )
     total_cells = len(paper_ids) * len(columns)
     grounded = 0
-    query = " ".join(columns)
 
     if session is None:
         result.warnings.append("comparison_unavailable_no_session")
 
-    for p_idx, pid in enumerate(paper_ids):
+    # each paper's passages first; then every paper is read at once (bounded),
+    # and the rows are assembled in the papers' order -- the same result as
+    # reading them one after another (remediation, 2026-10-02: 4 papers took 60 s)
+    passages = [_passages_for(db, index, pid, columns, settings.compare_retrieve_k) for pid in paper_ids]
+    gate = asyncio.Semaphore(max(1, settings.compare_llm_concurrency))
+
+    async def read(pid: str, retrieved: list[RetrievedChunk]) -> tuple[_PaperCells | None, int, int]:
+        user = (
+            f"PAPER: {pid}\nCOLUMNS: {', '.join(columns)}\n\nCHUNKS:\n"
+            + "\n\n".join(f"[{c.chunk_id}] {c.text}" for c in retrieved)
+        )
+        async with gate:
+            parsed, pt, ct = await chat_json(session, _SYSTEM, user, _PaperCells)
+        return (parsed if isinstance(parsed, _PaperCells) else None), pt, ct
+
+    readings: list[tuple[_PaperCells | None, int, int] | None] = list(
+        await asyncio.gather(
+            *(
+                read(pid, retrieved) if session is not None and retrieved else _none()
+                for pid, retrieved in zip(paper_ids, passages, strict=True)
+            )
+        )
+    )
+
+    for p_idx, (pid, retrieved, reading) in enumerate(zip(paper_ids, passages, readings, strict=True)):
         grounding = grounding_by_paper.get(pid, Grounding.FULL_TEXT.value)
-        retrieved = retrieve(db, index, query, k=settings.compare_retrieve_k, scope_paper_ids=[pid])
         # until the paper is read, nothing about it is concluded
         row = _empty_row(pid, columns, grounding, CellStatus.NOT_EXTRACTED if retrieved else CellStatus.NO_TEXT)
         if not retrieved:
             result.warnings.append(f"no_text:{pid}")
 
-        if session is not None and retrieved:
+        if reading is not None:
+            parsed, pt, ct = reading
             by_id = {c.chunk_id: c for c in retrieved}
-            user = (
-                f"PAPER: {pid}\nCOLUMNS: {', '.join(columns)}\n\nCHUNKS:\n"
-                + "\n\n".join(f"[{c.chunk_id}] {c.text}" for c in retrieved)
-            )
-            parsed, pt, ct = await chat_json(session, _SYSTEM, user, _PaperCells)
             result.prompt_tokens += pt
             result.completion_tokens += ct
             if parsed is None:
                 result.warnings.append(f"cell_extraction_failed:{pid}")
             else:
-                assert isinstance(parsed, _PaperCells)
                 # the text was read: a column it returns nothing for is not stated
                 for unread in row.cells.values():
                     unread.status = CellStatus.NOT_STATED

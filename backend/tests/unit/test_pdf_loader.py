@@ -76,3 +76,28 @@ def test_reading_order_text_drops_a_duplicated_overlapping_text_block(duplicate_
     assert text.count("duplicate text block.") == 1
     assert text.count("Every line below is drawn twice") == 1
     assert text.count("must not repeat this content") == 1
+
+
+# --- an IEEE first page (remediation, 2026-10-02) ---------------------------
+
+
+def test_tightly_set_words_keep_their_spaces(ieee_style_pdf_bytes: bytes) -> None:
+    # words 1.8 pt apart at 9 pt: a fixed 3 pt tolerance glued them ("Publictransportation")
+    text = "\n".join(p.text for p in load_pdf(ieee_style_pdf_bytes, _settings()).pages)
+    assert "Public transportation within university campuses" in text
+    assert "Publictransportation" not in text
+
+
+def test_a_full_width_header_does_not_hide_the_two_columns_below_it(ieee_style_pdf_bytes: bytes) -> None:
+    text = load_pdf(ieee_style_pdf_bytes, _settings()).pages[0].text
+    # title first, then the whole left column (abstract, keywords, introduction), then the right column
+    assert text.index("OnBoard: A Real-Time Bus Tracking Mobile") < text.index("Abstract")
+    assert text.index("tracks university") < text.index("Keywords") < text.index("I. INTRODUCTION") < text.index("RIGHTCOLUMN")
+    abstract_block = text[text.index("Abstract") : text.index("Keywords")]
+    assert "RIGHTCOLUMN" not in abstract_block and "satisfaction" not in abstract_block
+
+
+def test_sideways_margin_text_stays_out_of_the_body(ieee_style_pdf_bytes: bytes) -> None:
+    data = load_pdf(ieee_style_pdf_bytes, _settings())
+    assert "IEEE Conference" not in data.pages[0].text
+    assert "10.1109" in data.margin_text or "10.1109" in data.margin_text[::-1]

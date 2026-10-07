@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Libre_Franklin, Courier_Prime } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
-import Constellation from "@/components/effects/Constellation";
+import BackgroundHost from "@/components/effects/BackgroundHost";
 
 const libreFranklin = Libre_Franklin({
   variable: "--font-sans",
@@ -30,12 +30,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
+      data-theme="dark"
       className={`${libreFranklin.variable} ${courierPrime.variable}`}
       suppressHydrationWarning
     >
-      <body className="min-h-dvh bg-surface text-ink antialiased">
-        {/* The one, globally-mounted constellation instance: living in the
-            root layout (not a page) means it survives every route
+      {/* every page sits in the one dark world: the ground is navy even
+          before the background layer paints, and past it on overscroll */}
+      <body className="min-h-dvh bg-[#04060f] text-[#f3f6ff] antialiased">
+        {/* The one, globally-mounted background (BackgroundHost: the neural
+            network, GhostFibers or a still ground, by device and setting):
+            living in the root layout (not a page) means it survives every route
             navigation without remounting or restarting its animation loop.
             Negative z-index so it always paints behind normal document
             flow, whatever a given page's own stacking looks like -- an
@@ -44,7 +48,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             paints no opaque background of its own and lets this layer's
             dark ground and constellation show through. */}
         <div className="pointer-events-none fixed inset-0 -z-10" style={{ background: "#04060f" }}>
-          <Constellation className="h-full w-full" />
+          <BackgroundHost />
         </div>
         <a href="#main" className="skip-link">
           Skip to content

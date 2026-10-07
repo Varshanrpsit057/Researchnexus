@@ -105,6 +105,27 @@ def test_a_failed_call_is_recorded_with_its_kind_and_still_raised() -> None:
     assert [(c.ok, c.error_kind, c.prompt_tokens) for c in calls] == [(False, "insufficient_balance", 0)]
 
 
+def test_a_call_cut_off_by_a_time_limit_or_a_cancel_is_still_recorded() -> None:
+    # remediation Phase 8: a discovery run stops its search-plan call after
+    # 20 s, and its owner can cancel it; the provider may bill a call cut off
+    # mid-flight, so it is recorded -- as failed, its tokens unknown (0)
+    calls: list[LlmCall] = []
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return _ok(request)
+
+    client = MeteredClient(_adapter(slow), owner_id="usr_1", provider=LlmProvider.DEEPSEEK, recorder=calls.append)
+
+    async def ask() -> None:
+        with usage_scope("discovery", job_id="job_1"):
+            await asyncio.wait_for(client.chat(api_key="sk-x", model="deepseek-flash", messages=PING), timeout=0.1)
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(ask())
+    assert [(c.ok, c.error_kind, c.prompt_tokens, c.feature, c.job_id) for c in calls] == [(False, "cancelled", 0, "discovery", "job_1")]
+
+
 def test_structured_output_records_the_first_reply_and_its_repair() -> None:
     class Out(BaseModel):
         ok: bool

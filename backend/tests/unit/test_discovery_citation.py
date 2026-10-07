@@ -41,8 +41,11 @@ def _handler() -> httpx.MockTransport:
             return httpx.Response(200, json=_REFERENCED)
         if "filter=cites" in url:
             return httpx.Response(200, json=_CITING)
-        if "/works/" in url and "doi.org/10.1/anchor" in url:
-            return httpx.Response(200, json={"id": "https://openalex.org/W_ANCHOR", "doi": "https://doi.org/10.1/anchor", "title": "Anchor Ref", "publication_year": 2017})
+        if "filter=doi" in url:  # the reference-list DOIs, looked up together
+            return httpx.Response(
+                200,
+                json={"results": [{"id": "https://openalex.org/W_ANCHOR", "doi": "https://doi.org/10.1/anchor", "title": "Anchor Ref", "publication_year": 2017}]},
+            )
         raise AssertionError(f"unexpected url: {url}")
 
     return httpx.MockTransport(h)

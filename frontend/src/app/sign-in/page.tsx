@@ -1,12 +1,13 @@
 "use client";
 
-import { Suspense, useId, useState, type FormEvent, type InputHTMLAttributes } from "react";
+import { Suspense, useId, useRef, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { WarningCircle } from "@phosphor-icons/react/dist/ssr";
+import { FlaskIcon, UserCircle, WarningCircle, X } from "@phosphor-icons/react/dist/ssr";
 import { motion } from "motion/react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { ApiError } from "@/lib/api/client";
+import { forgetAccount, isKnownAccount, useRecentAccounts } from "@/lib/recent-accounts";
 
 // Same fixed cinematic palette as the landing page -- sign-in is the last
 // step of that public, Persuade-mode experience before the visitor crosses
@@ -23,9 +24,16 @@ const GLASS_2 = "rgba(16,24,48,.65)";
 const LINE_STRONG = "rgba(150,175,230,.22)";
 const DANGER = "#ff9b9b";
 
-function CinematicField({ label, id, ...props }: { label: string } & InputHTMLAttributes<HTMLInputElement>) {
+function CinematicField({
+  label,
+  id,
+  hint,
+  inputRef,
+  ...props
+}: { label: string; hint?: ReactNode; inputRef?: React.Ref<HTMLInputElement> } & InputHTMLAttributes<HTMLInputElement>) {
   const autoId = useId();
   const inputId = id ?? autoId;
+  const hintId = `${inputId}-hint`;
   return (
     <div className="flex flex-col gap-1.5 text-left">
       <label htmlFor={inputId} className="text-sm font-medium" style={{ color: INK }}>
@@ -33,12 +41,19 @@ function CinematicField({ label, id, ...props }: { label: string } & InputHTMLAt
       </label>
       <input
         id={inputId}
+        ref={inputRef}
+        aria-describedby={hint ? hintId : undefined}
         className="h-11 rounded-xl px-3.5 text-sm outline-none transition-colors duration-150"
         style={{ background: "rgba(255,255,255,.04)", border: `1px solid ${LINE_STRONG}`, color: INK }}
         onFocus={(e) => (e.currentTarget.style.borderColor = MINT)}
         onBlur={(e) => (e.currentTarget.style.borderColor = LINE_STRONG)}
         {...props}
       />
+      {hint && (
+        <p id={hintId} className="text-[12.5px] leading-snug" style={{ color: MUTED }}>
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
@@ -59,6 +74,10 @@ function SignInForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const recents = useRecentAccounts();
+  const passwordRef = useRef<HTMLInputElement>(null);
+  // a new email makes a new, empty account: say so before it happens
+  const newHere = recents.length > 0 && email.includes("@") && !isKnownAccount(recents, email);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -90,16 +109,50 @@ function SignInForm() {
       >
         <div className="mb-7 flex flex-col items-center gap-2">
           <span
-            className="flex size-10 items-center justify-center rounded-full text-lg font-bold"
+            className="flex size-10 items-center justify-center rounded-full"
             style={{ background: `linear-gradient(180deg, ${MINT}, ${MINT_2})`, color: MINT_INK }}
           >
-            ▲
+            <FlaskIcon className="size-5" weight="duotone" aria-hidden />
           </span>
           <h1 className="text-lg font-bold tracking-tight">Sign in to ResearchNexus</h1>
           <p className="text-sm" style={{ color: MUTED }}>
-            Any email works in this development build. There is no password check yet.
+            Your email is your account on this server. Any password is accepted in this local build.
           </p>
         </div>
+        {recents.length > 0 && (
+          <div className="mb-5 text-left">
+            <p className="mb-2 text-[12.5px] font-semibold" style={{ color: MUTED }}>
+              Used in this browser
+            </p>
+            <ul className="space-y-1.5">
+              {recents.map((a) => (
+                <li key={a.email} className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEmail(a.email);
+                      passwordRef.current?.focus();
+                    }}
+                    className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left text-sm transition-colors hover:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5df0a8]"
+                    style={{ border: `1px solid ${email.trim().toLowerCase() === a.email ? MINT : LINE_STRONG}` }}
+                  >
+                    <UserCircle className="size-4 shrink-0" style={{ color: MINT }} aria-hidden />
+                    <span className="truncate">{a.email}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => forgetAccount(a.email)}
+                    aria-label={`Forget ${a.email} in this browser`}
+                    className="grid size-9 shrink-0 place-items-center rounded-full transition-colors hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5df0a8]"
+                    style={{ color: MUTED_2 }}
+                  >
+                    <X className="size-3.5" aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <CinematicField
             label="Email"
@@ -109,6 +162,7 @@ function SignInForm() {
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            hint={newHere ? "Not used in this browser before. If no account has this email yet, a new, empty one is made for it." : undefined}
           />
           <CinematicField
             label="Password"
@@ -118,6 +172,7 @@ function SignInForm() {
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            inputRef={passwordRef}
           />
           {error && (
             <p role="alert" className="flex items-center gap-1.5 text-left text-sm" style={{ color: DANGER }}>

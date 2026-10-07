@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,7 @@ class JobKind(str, Enum):
     DIRECTIONS = "directions"
     INDEX_REBUILD = "index_rebuild"
     PIPELINE = "pipeline"
+    FULLTEXT = "fulltext"  # retrieving members' full text (remediation Phase 7)
 
 
 class JobStatus(str, Enum):
@@ -36,6 +38,7 @@ class JobStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     PARTIAL = "partial"
+    CANCELLED = "cancelled"  # stopped by its owner (remediation Phase 8)
 
 
 def _utcnow() -> datetime:
@@ -48,7 +51,9 @@ class Job(BaseModel):
     workspace_id: str | None = None
     kind: JobKind
     status: JobStatus = JobStatus.QUEUED
-    progress: dict[str, str] = Field(default_factory=dict)
+    # what the job is doing: flat strings for most kinds; a discover job's is
+    # structured (app/services/discovery/progress.py)
+    progress: dict[str, Any] = Field(default_factory=dict)
     result_ref: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)

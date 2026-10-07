@@ -151,7 +151,7 @@ test.describe("Research chat", () => {
     await expect(answer.getByRole("button", { name: /^Source 1: / })).toBeVisible();
     await expect(answer.getByRole("button", { name: /^Source 2: / })).toBeVisible();
     await expect(answer.getByText("1 sentence was left out: no passage in this workspace supported it.")).toBeVisible();
-    await expect(answer.getByText("0.93")).toBeVisible();
+    await expect(answer.getByText("93% of its wording is in its sources")).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Conversations" }).or(page.getByRole("button", { name: /^Conversations/ })).first()).toBeVisible();
     expect(bodies[0]).toMatchObject({ message: turn.question, session_id: null, regenerate: false });
 

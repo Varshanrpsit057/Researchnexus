@@ -5,10 +5,8 @@ import Link from "next/link";
 import useSWR from "swr";
 import { ArrowSquareOut, Graph, X } from "@phosphor-icons/react/dist/ssr";
 import { papers as papersApi } from "@/lib/api/endpoints";
-import type { CellStatus, ComparisonCell } from "@/lib/api/types";
-import { CELL_COPY, cellStatus, fieldLabel } from "@/lib/compare";
-import { shortAuthors } from "@/lib/graph/model";
-import { truncate } from "@/lib/graph/labels";
+import type { CellStatus, ComparisonCell, ComparisonTableCell, ComparisonTablePaper } from "@/lib/api/types";
+import { CELL_COPY, fieldLabel } from "@/lib/compare";
 import { location } from "@/lib/chat";
 import { NodeGlyph } from "../graph/GraphPanel";
 import { C, focusRing, quietButton } from "../ui";
@@ -55,106 +53,116 @@ export function StatusGlyph({ status }: { status: Exclude<CellStatus, "found"> }
   }
 }
 
-/** One value of the comparison: quoted and inspectable, or an honest reason it is empty. */
+/** One value of the comparison: quoted and inspectable, or an honest reason it is empty.
+ * Its text is the table model's -- the same words the Word export writes. */
 export function CellContent({
   cell,
-  field,
-  paperId,
+  label,
+  paperTitle,
   active,
   onOpen,
 }: {
-  cell: ComparisonCell | undefined;
-  field: string;
-  paperId: string;
+  cell: ComparisonTableCell;
+  label: string;
+  paperTitle: string;
   active: boolean;
-  onOpen: () => void;
+  /** absent when there is no passage to open */
+  onOpen?: () => void;
 }) {
-  const paperTitle = usePaper(paperId)?.title ?? "this paper";
-  const status = cellStatus(cell);
-  if (status === "found" && cell) {
+  if (cell.status === "found") {
+    const value = (
+      <span className="min-w-0 flex-1 whitespace-pre-line text-pretty font-medium" data-cell-text>
+        {cell.text}
+      </span>
+    );
     return (
       <div>
-        <button
-          type="button"
-          onClick={onOpen}
-          aria-pressed={active}
-          aria-label={`${fieldLabel(field)} for ${paperTitle}: ${cell.text}. Show the passage it is quoted from.`}
-          className={`group -mx-1.5 flex w-[calc(100%+12px)] items-start gap-2 rounded-lg px-1.5 py-1 text-left text-[14.5px] leading-snug transition-colors hover:bg-white/[0.05] ${focusRing}`}
-          style={active ? { background: "rgba(93,240,168,.1)" } : undefined}
-        >
-          <span className="min-w-0 flex-1 font-medium">{cell.text}</span>
-          <span
-            aria-hidden
-            className="mt-[3px] block size-[11px] shrink-0 rounded-full transition-colors"
-            style={{ border: `1.5px solid ${C.mint}`, background: active ? C.mint : "rgba(93,240,168,.14)" }}
-          />
-        </button>
-        {cell.conflicting.length > 0 && (
-          <p className="mt-1 text-[12.5px] leading-snug" style={{ color: C.muted }}>
-            The same passage also says: {cell.conflicting.join(", ")}
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            aria-pressed={active}
+            aria-label={`${label} for ${paperTitle}: ${cell.text}. Show the passage it is quoted from.`}
+            className={`group -mx-2 flex w-[calc(100%+16px)] items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-[14.5px] leading-[1.45] transition-colors hover:bg-white/[0.06] ${focusRing}`}
+            style={active ? { background: "rgba(93,240,168,.12)", boxShadow: "inset 0 0 0 1px rgba(93,240,168,.4)" } : undefined}
+          >
+            {value}
+            <span
+              aria-hidden
+              className="mt-[5px] block size-[9px] shrink-0 rounded-full transition-colors"
+              style={{ border: `1.5px solid ${C.mint}`, background: active ? C.mint : "rgba(93,240,168,.14)" }}
+            />
+          </button>
+        ) : (
+          <p className="flex py-1.5 text-[14.5px] leading-[1.45]">{value}</p>
+        )}
+        {cell.note && (
+          <p className="mt-0.5 text-[12.5px] leading-snug" style={{ color: C.muted }} data-cell-note>
+            {cell.note}
           </p>
         )}
       </div>
     );
   }
-  const copy = CELL_COPY[status as Exclude<CellStatus, "found">];
+  const status = cell.status as Exclude<CellStatus, "found">;
+  const copy = CELL_COPY[status] ?? CELL_COPY.unknown;
   return (
-    <p className="flex items-center gap-1.5 py-1 text-[13px]" style={{ color: status === "unsupported" ? C.warning : C.muted }} title={copy.meaning}>
-      <StatusGlyph status={status as Exclude<CellStatus, "found">} />
-      {copy.label}
+    <p className="flex items-center gap-1.5 py-1.5 text-[13px] italic" style={{ color: status === "unsupported" ? C.warning : C.muted2 }} title={copy.meaning}>
+      <StatusGlyph status={status} />
+      <span data-cell-text>{cell.text}</span>
       <span className="sr-only">. {copy.meaning}</span>
     </p>
   );
 }
 
-/** A paper's column heading: what it is, where it stands, and a way to drop it. */
+/** A paper's column heading: which paper (numbered, named in full), where it
+ * stands, and -- on hover or focus -- a way to drop it from the view. */
 export function PaperHeading({
-  paperId,
-  kind,
-  abstractOnly,
-  inWorkspace,
+  paper,
+  index,
   onRemove,
   canRemove,
 }: {
-  paperId: string;
-  kind: PaperKind;
-  abstractOnly: boolean;
-  inWorkspace: boolean;
+  paper: ComparisonTablePaper;
+  index: number;
   onRemove: () => void;
   canRemove: boolean;
 }) {
-  const paper = usePaper(paperId);
-  const title = paper?.title ?? "Loading…";
-  const meta = [shortAuthors(paper?.authors ?? []), paper?.year != null ? String(paper.year) : null].filter(Boolean).join(" · ");
   return (
-    <div className="flex items-start gap-2">
-      <span className="mt-[5px]">
-        <NodeGlyph kind={kind} size={11} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <Link
-          href={kind === "seed" ? `/seed/${paperId}` : `/papers/${paperId}`}
-          className={`line-clamp-3 rounded-sm text-[14px] font-semibold leading-snug hover:underline hover:decoration-[rgba(93,240,168,0.5)] hover:underline-offset-4 ${focusRing}`}
-          title={title}
+    <div className="group/head">
+      <div className="flex h-6 items-center justify-between gap-2">
+        <span
+          className="inline-flex h-5 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] font-semibold tabular-nums"
+          style={{ color: C.ink, background: "rgba(150,175,230,.12)" }}
+          aria-hidden
         >
-          {title}
-        </Link>
-        <p className="mt-0.5 text-[12px]" style={{ color: C.muted }}>
-          {[meta, abstractOnly ? "Abstract only" : "Full text", inWorkspace ? null : "No longer in the workspace"].filter(Boolean).join(" · ")}
-        </p>
+          <NodeGlyph kind={paper.kind} size={8} />
+          {index}
+        </span>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove ${paper.title} from the comparison`}
+            title="Remove from this view"
+            className={`-mr-1.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-[opacity,background-color] hover:bg-white/10 focus-visible:opacity-100 group-hover/head:opacity-100 ${focusRing}`}
+            style={{ color: C.muted }}
+          >
+            <X className="size-3.5" weight="bold" aria-hidden />
+          </button>
+        )}
       </div>
-      {canRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${title} from the comparison`}
-          title="Remove from the comparison"
-          className={`-mr-1 -mt-1 inline-flex size-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-white/10 sm:size-8 ${focusRing}`}
-          style={{ color: C.muted }}
-        >
-          <X className="size-3.5" weight="bold" aria-hidden />
-        </button>
-      )}
+      {paper.kind === "seed" && <span className="sr-only">Seed paper: </span>}
+      <Link
+        href={paper.kind === "seed" ? `/seed/${paper.paper_id}` : `/papers/${paper.paper_id}`}
+        className={`mt-1.5 block rounded-sm text-[14px] font-semibold leading-snug text-pretty hover:underline hover:decoration-[rgba(93,240,168,0.5)] hover:underline-offset-4 ${focusRing}`}
+        data-testid="paper-title"
+      >
+        {paper.title}
+      </Link>
+      <p className="mt-1 text-[12px] leading-snug" style={{ color: C.muted }} data-testid="paper-meta">
+        {paper.meta}
+      </p>
     </div>
   );
 }
@@ -198,7 +206,7 @@ export function CellEvidence({
             <span className="mt-[3px]">
               <NodeGlyph kind={kind} size={10} />
             </span>
-            {truncate(paper?.title ?? "", 80)}
+            {paper?.title ?? ""}
           </p>
         </div>
         <button

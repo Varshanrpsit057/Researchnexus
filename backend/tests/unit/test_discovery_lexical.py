@@ -49,6 +49,20 @@ _EUROPE_PMC = {
 
 _S2 = {"data": [{"paperId": "s2x", "title": "Seed-like Paper", "year": 2022, "externalIds": {}}]}
 
+# publishers' own records (Crossref), the CS index (DBLP), open repositories (CORE)
+_CROSSREF = {"message": {"items": [{
+    "DOI": "10.1109/ACCESS.2023.1", "title": ["Retrieval Methods in Practice"], "publisher": "Institute of Electrical and Electronics Engineers (IEEE)",
+    "author": [{"given": "Ada", "family": "Lovelace"}], "issued": {"date-parts": [[2023]]}, "container-title": ["IEEE Access"], "type": "journal-article",
+}]}}
+_DBLP = {"result": {"hits": {"hit": [{"info": {
+    "title": "Dense Retrieval at Scale.", "authors": {"author": [{"text": "Wei Li 0001"}, {"text": "Ana Ruiz"}]},
+    "venue": "SIGIR", "year": "2022", "doi": "10.1145/3477495.1", "type": "Conference and Workshop Papers", "key": "conf/sigir/Li22",
+}}]}}}
+_CORE = {"results": [{
+    "id": 42, "title": "Open Retrieval Notes", "authors": [{"name": "Grace Hopper"}], "yearPublished": 2021,
+    "abstract": "Notes on retrieval.", "doi": None, "downloadUrl": "https://core.ac.uk/download/42.pdf", "publisher": "University Repository",
+}]}
+
 
 async def _no_sleep(_seconds: float) -> None:
     return None
@@ -79,6 +93,12 @@ def _handler(calls: dict[str, int], seen: list[httpx.Request] | None = None) -> 
             return httpx.Response(200, json=_EUROPE_PMC)
         if "semanticscholar.org" in url:
             return httpx.Response(200, json=_S2)
+        if "crossref.org" in url:
+            return httpx.Response(200, json=_CROSSREF)
+        if "dblp.org" in url:
+            return httpx.Response(200, json=_DBLP)
+        if "core.ac.uk" in url:
+            return httpx.Response(200, json=_CORE)
         raise AssertionError(url)
 
     return httpx.MockTransport(h)
@@ -95,6 +115,13 @@ def test_keyword_strategy_queries_every_source_and_tags_results() -> None:
     assert "Dense Passage Retrieval" in titles  # OpenAlex
     assert "Retrieval for clinical question answering" in titles  # Europe PMC, markup and trailing dot cleaned
     assert "Seed-like Paper" in titles  # Semantic Scholar (title query)
+    assert "Retrieval Methods in Practice" in titles  # Crossref: the publisher's own record
+    assert "Dense Retrieval at Scale" in titles  # DBLP, its trailing dot dropped
+    assert "Open Retrieval Notes" in titles  # CORE
+    by_title = {r.title: r for r in result.records}
+    assert by_title["Retrieval Methods in Practice"].publisher == "Institute of Electrical and Electronics Engineers (IEEE)"
+    assert by_title["Dense Retrieval at Scale"].authors == ["Wei Li", "Ana Ruiz"]  # DBLP's namesake number dropped
+    assert by_title["Open Retrieval Notes"].raw["downloadUrl"] == "https://core.ac.uk/download/42.pdf"
     for key, sig in result.signals.items():
         assert 0.0 <= sig["keyword_score"] <= 1.0
         assert key  # every record carries a signal keyed by its identity

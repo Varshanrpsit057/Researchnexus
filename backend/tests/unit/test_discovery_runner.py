@@ -202,3 +202,38 @@ def test_truncation_keeps_the_best_evidenced_candidates_and_counts_what_was_kept
     assert "Found Twice" in titles
     assert "Recommended For The Seed" in titles
     assert out.count_after_filter == 3  # counts what was kept, not the pre-cap pool
+
+
+def test_only_the_candidates_under_the_cap_are_scored() -> None:
+    # remediation Phase 8: scoring every record found (500-700 on real seeds)
+    # took up to 30 s, most of it on candidates the cap then discarded
+    kw = StrategyResult(strategy=DiscoveryStrategy.KEYWORD)
+    kw.records = [_rec(f"Keyword Hit {i}", doi=f"10.1/k{i}") for i in range(6)]
+    rec = StrategyResult(strategy=DiscoveryStrategy.RECOMMENDATION)
+    rec.records = [_rec("Recommended", doi="10.1/rec"), _rec("Keyword Hit 5", doi="10.1/k5")]
+    for result in (kw, rec):
+        result.signals = {record_key(r): {} for r in result.records}
+
+    class Scorer:
+        strategy = DiscoveryStrategy.SEMANTIC
+        pool: list[str] = []
+
+        async def run(self, ctx: StrategyContext) -> StrategyResult:
+            Scorer.pool = [r.title for r in ctx.candidate_pool]
+            out = StrategyResult(strategy=self.strategy, records=list(ctx.candidate_pool))
+            out.signals = {record_key(r): {"semantic_score": 0.5} for r in ctx.candidate_pool}
+            return out
+
+    out = _run(
+        [_FakeStrategy(DiscoveryStrategy.KEYWORD, kw), _FakeStrategy(DiscoveryStrategy.RECOMMENDATION, rec)],
+        [Scorer()],
+        ctx=_ctx(max_total_candidates=3),
+    )
+    # the two found by the seed's recommendations first, then the first keyword hit
+    kept = ["Keyword Hit 5", "Recommended", "Keyword Hit 0"]
+    assert sorted(c.normalized.title for c in out.candidates) == sorted(kept)
+    assert sorted(set(Scorer.pool)) == sorted(kept)  # nothing the cap discards was scored
+    assert Scorer.pool.count("Keyword Hit 5") == 2  # every record of a kept candidate is scored
+    assert all(c.raw_signals.semantic_score == 0.5 for c in out.candidates)
+    assert out.count_raw == 8  # what the sources returned, not re-counted by scoring
+    assert "budget_truncated" in out.warnings

@@ -12,6 +12,7 @@ handling; the dedupe false-merge target is 0, Evaluation Plan §2).
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -36,7 +37,7 @@ class DedupeResult:
     deduped_count: int = 0
 
 
-def _matches_seed(cand: NormalizedCandidate, seed: SeedIdentity) -> bool:
+def matches_seed(cand: NormalizedCandidate, seed: SeedIdentity) -> bool:
     if seed.doi and cand.external_ids.get("doi") == seed.doi:
         return True
     if seed.arxiv_id and cand.external_ids.get("arxiv") == seed.arxiv_id:
@@ -62,7 +63,7 @@ def dedupe(records: list[RawExternalRecord], seed: SeedIdentity | None = None) -
             key_to_group[k] = idx
 
     if seed is not None:
-        groups = [g for g in groups if not _matches_seed(g, seed)]
+        groups = [g for g in groups if not matches_seed(g, seed)]
 
     _flag_fuzzy_duplicates(groups)
 
@@ -72,17 +73,40 @@ def dedupe(records: list[RawExternalRecord], seed: SeedIdentity | None = None) -
 def _flag_fuzzy_duplicates(candidates: list[NormalizedCandidate]) -> None:
     """Second pass: two candidates that were NOT merged (no shared strong
     id) but whose titles are near-identical are each marked
-    `possible_duplicate` for a human to resolve."""
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            a, b = candidates[i], candidates[j]
-            if _share_strong_id(a, b):
+    `possible_duplicate` for a human to resolve.
+
+    Comparing every pair in full is quadratic -- 650 candidates, a real
+    run's worth, took 20 s (remediation Phase 8) -- so a pair is compared in
+    full only if it could reach the threshold: `ratio()` is at most
+    2*min(len)/(len+len) (so, with titles in length order, a scan stops at
+    the first title too long to match) and at most the share of characters
+    the two titles have in common. Both bounds are exact, and the full
+    comparison runs the way it always did, on the pair in its original
+    order, with the flags applied in that order too -- so what is flagged,
+    and against what, is exactly what the full pass produced."""
+    titles = [c.title.lower() for c in candidates]
+    counts = [Counter(t) for t in titles]
+    by_length = sorted(range(len(titles)), key=lambda k: len(titles[k]))
+    matches: list[tuple[int, int]] = []
+    for pos, i in enumerate(by_length):
+        short = len(titles[i])
+        for j in by_length[pos + 1 :]:
+            total = short + len(titles[j])
+            if total and 2 * short / total < _FUZZY_TITLE_THRESHOLD:
+                break  # every later title is at least as long
+            common = sum((counts[i] & counts[j]).values())
+            if total and 2 * common / total < _FUZZY_TITLE_THRESHOLD:
                 continue
-            ratio = SequenceMatcher(None, a.title.lower(), b.title.lower()).ratio()
-            if ratio >= _FUZZY_TITLE_THRESHOLD:
-                a.possible_duplicate = b.possible_duplicate = True
-                a.possible_duplicate_of_title_hash = b.title_hash
-                b.possible_duplicate_of_title_hash = a.title_hash
+            first, second = min(i, j), max(i, j)
+            if _share_strong_id(candidates[first], candidates[second]):
+                continue
+            if SequenceMatcher(None, titles[first], titles[second]).ratio() >= _FUZZY_TITLE_THRESHOLD:
+                matches.append((first, second))
+    for a_idx, b_idx in sorted(matches):
+        a, b = candidates[a_idx], candidates[b_idx]
+        a.possible_duplicate = b.possible_duplicate = True
+        a.possible_duplicate_of_title_hash = b.title_hash
+        b.possible_duplicate_of_title_hash = a.title_hash
 
 
 def _share_strong_id(a: NormalizedCandidate, b: NormalizedCandidate) -> bool:

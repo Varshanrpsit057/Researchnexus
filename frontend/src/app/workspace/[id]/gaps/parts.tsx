@@ -102,7 +102,7 @@ export function GapRow({
   onSelect: () => void;
   kindOf: (id: string) => PaperKind;
 }) {
-  const papers = new Set(gap.supporting_papers).size;
+  const papers = evidenceByPaper(gap).length; // the papers whose passages are shown
   const passages = passageCount(gap);
   return (
     <button
@@ -152,7 +152,7 @@ export const GapDetail = forwardRef<
 >(function GapDetail({ gap, workspaceId, kindOf, generated, actions }, headingRef) {
   const headingId = useId();
   const groups = evidenceByPaper(gap);
-  const papers = new Set(gap.supporting_papers).size;
+  const papers = groups.length;
   const terms = [...gap.affected_methods, ...gap.affected_datasets];
   return (
     <article aria-labelledby={headingId} className="flex min-h-full flex-col">

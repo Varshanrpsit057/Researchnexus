@@ -169,8 +169,9 @@ test.describe("Settings", () => {
     await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first().getByLabel("Name")).toHaveValue(`${originalName} (renamed)`);
 
     // 6. this device: a still background, and the reference style the citations page opens in
-    await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Still" }).click();
-    await expect(page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Still" })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Static" }).click();
+    await expect(page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Static" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("background")).toHaveAttribute("data-effect", "static");
     await page.getByRole("group", { name: "Reference style" }).getByRole("button", { name: "IEEE" }).click();
     expect(await page.evaluate(() => localStorage.getItem("researchnexus.pref.referenceStyle"))).toBe("ieee");
     await page.goto(`${workspaceHref}/citations`);
@@ -183,7 +184,7 @@ test.describe("Settings", () => {
     await restore.getByLabel("Name").fill(originalName);
     await restore.getByRole("button", { name: "Save" }).click();
     await expect(restore.getByText("Saved.")).toBeVisible();
-    await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Moving" }).click();
+    await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Auto" }).click();
     await page.getByRole("group", { name: "Reference style" }).getByRole("button", { name: "APA" }).click();
 
     // 7. the service (real /health)

@@ -29,18 +29,26 @@ Deferred to later phases (kept out per the Phase 8 brief):
 
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import repository as repo
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.deps import CurrentUser
+from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.orchestrator import StageName
 from app.domain.trail import UserState
+from app.domain.workspace import ResearchWorkspace
+from app.jobs.runner import new_id, run_fulltext_job
+from app.services.fulltext.batch import papers_to_read
+from app.services.fulltext.retrieve import coverage_of
+from app.services.trail.workspace_trail import NothingToConnect, build_workspace_trail
 from app.services.workspace import pipeline
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["workspaces"])
@@ -73,8 +81,9 @@ class AddPapersBody(BaseModel):
 
 class UpdatePaperBody(BaseModel):
     pinned: bool | None = None
-    tags: list[str] | None = None
-    note: str | None = None
+    # bounded, so a note or tag list can't grow without limit (2026-10-06)
+    tags: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=30)
+    note: str | None = Field(default=None, max_length=4000)
     order: int | None = None
 
 
@@ -92,12 +101,56 @@ def _workspace_json(ws: object, *, counts: dict | None = None) -> dict:
     return payload
 
 
+# --- full text (remediation Phase 7) ------------------------------------------------
+
+COVERAGE_STATES = ("full_text", "abstract_only", "retrieval_failed", "no_text")
+# a job still "running" this long after its last progress died with its server
+_STALE_JOB = timedelta(minutes=15)
+
+
+def _in_progress(job: Job) -> bool:
+    return job.status in (JobStatus.QUEUED, JobStatus.RUNNING) and datetime.now(timezone.utc) - job.updated_at < _STALE_JOB
+
+
+def _job_json(job: Job) -> dict:
+    # a run whose server stopped under it is over, not "running" forever
+    interrupted = job.status in (JobStatus.QUEUED, JobStatus.RUNNING) and not _in_progress(job)
+    return {
+        "job_id": job.job_id,
+        "kind": job.kind.value,
+        "status": JobStatus.FAILED.value if interrupted else job.status.value,
+        "progress": job.progress,
+        "error": "The run was interrupted before it finished." if interrupted else job.error,
+        "poll_url": f"/api/v1/jobs/{job.job_id}",
+    }
+
+
+def _start_fulltext(
+    db: Session, background_tasks: BackgroundTasks, workspace: ResearchWorkspace, owner_id: str, settings: Settings, *, force: bool
+) -> Job | None:
+    """Looks for the full text of the workspace's abstract-only papers in the
+    background; the one already running if there is one; None when every
+    paper that could have it already does."""
+    current = repo.latest_job(db, workspace.workspace_id, JobKind.FULLTEXT)
+    if current is not None and _in_progress(current):
+        return current
+    if not papers_to_read(db, workspace):
+        return None
+    job = repo.create_job(db, Job(job_id=new_id("job"), owner_id=owner_id, workspace_id=workspace.workspace_id, kind=JobKind.FULLTEXT))
+    background_tasks.add_task(run_fulltext_job, get_session_factory(), job.job_id, workspace.workspace_id, owner_id, settings, force)
+    return job
+
+
 # --- workspace CRUD -----------------------------------------------------
 
 
 @router.post("", status_code=201)
 def create_workspace(
-    body: CreateWorkspaceBody, db: DbSession, settings: AppSettings, current_user: CurrentUser
+    body: CreateWorkspaceBody,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    settings: AppSettings,
+    current_user: CurrentUser,
 ) -> dict:
     try:
         ws = pipeline.create_workspace(
@@ -114,13 +167,27 @@ def create_workspace(
         raise _err(404, "not_found", "seed paper not found") from e
     except pipeline.SeedNotAnalyzed as e:
         raise _err(409, "conflict", "seed paper must be analysed first (full text + profile)") from e
+    if settings.fulltext_auto:
+        _start_fulltext(db, background_tasks, ws, current_user.id, settings, force=False)
     return _workspace_json(ws)
 
 
 @router.get("")
 def list_workspaces(db: DbSession, current_user: CurrentUser) -> dict:
     items = pipeline.list_workspaces(db, owner=current_user)
-    return {"workspaces": [_workspace_json(w) for w in items], "next_cursor": None}
+    # each with its seed's title and what it holds, so the list says which is which
+    return {
+        "workspaces": [
+            {**_workspace_json(w, counts=repo.workspace_child_counts(db, w.workspace_id)), "seed_title": _title_of(db, w.seed_paper_id)}
+            for w in items
+        ],
+        "next_cursor": None,
+    }
+
+
+def _title_of(db: DbSession, paper_id: str) -> str | None:
+    paper = repo.get_paper(db, paper_id)
+    return paper.title if paper else None
 
 
 @router.get("/{workspace_id}")
@@ -166,6 +233,7 @@ def delete_workspace(
 def add_papers(
     workspace_id: str,
     body: AddPapersBody,
+    background_tasks: BackgroundTasks,
     db: DbSession,
     settings: AppSettings,
     current_user: CurrentUser,
@@ -183,7 +251,42 @@ def add_papers(
         raise _err(404, "not_found", "workspace not found") from e
     except pipeline.PaperNotFound as e:
         raise _err(404, "not_found", f"paper not found: {e}") from e
-    return {"workspace": _workspace_json(ws), "added": added}
+    job = _start_fulltext(db, background_tasks, ws, current_user.id, settings, force=False) if settings.fulltext_auto else None
+    return {"workspace": _workspace_json(ws), "added": added, "fulltext_job": _job_json(job) if job else None}
+
+
+@router.get("/{workspace_id}/coverage")
+def get_coverage(workspace_id: str, db: DbSession, current_user: CurrentUser) -> dict:
+    """What text each paper is read from -- full text, abstract only,
+    retrieval failed, no text -- and the latest full-text run."""
+    try:
+        ws = pipeline.get_workspace(db, owner=current_user, workspace_id=workspace_id)
+    except pipeline.WorkspaceNotFound as e:
+        raise _err(404, "not_found", "workspace not found") from e
+    papers = []
+    summary: Counter[str] = Counter()
+    for wp in ws.papers:
+        paper = repo.get_paper(db, wp.paper_id)
+        if paper is None:
+            continue
+        coverage = coverage_of(paper)
+        summary[str(coverage["state"])] += 1
+        papers.append({"paper_id": wp.paper_id, "title": paper.title, "role": wp.role.value, "coverage": coverage})
+    job = repo.latest_job(db, workspace_id, JobKind.FULLTEXT)
+    return {"papers": papers, "summary": {s: summary.get(s, 0) for s in COVERAGE_STATES}, "job": _job_json(job) if job else None}
+
+
+@router.post("/{workspace_id}/fulltext", status_code=202)
+def retrieve_workspace_full_text(
+    workspace_id: str, background_tasks: BackgroundTasks, db: DbSession, settings: AppSettings, current_user: CurrentUser
+) -> dict:
+    """Looks again for the full text of every paper that only has its abstract."""
+    try:
+        ws = pipeline.get_workspace(db, owner=current_user, workspace_id=workspace_id)
+    except pipeline.WorkspaceNotFound as e:
+        raise _err(404, "not_found", "workspace not found") from e
+    job = _start_fulltext(db, background_tasks, ws, current_user.id, settings, force=True)
+    return {"job": _job_json(job) if job else None}
 
 
 @router.delete("/{workspace_id}/papers/{paper_id}")
@@ -254,6 +357,32 @@ def get_trail(
         )
     except pipeline.WorkspaceNotFound as e:
         raise _err(404, "not_found", "workspace not found") from e
+
+
+@router.post("/{workspace_id}/trail/build")
+async def build_trail_from_papers(
+    workspace_id: str, db: DbSession, settings: AppSettings, current_user: CurrentUser
+) -> dict:
+    """Connect the workspace's own papers to its seed (remediation,
+    2026-10-02): the trail a discovery run gives, for papers the reader
+    uploaded or added. Rebuilt in place; decisions already made are kept."""
+    try:
+        workspace = pipeline.get_workspace(db, owner=current_user, workspace_id=workspace_id)
+    except pipeline.WorkspaceNotFound as e:
+        raise _err(404, "not_found", "workspace not found") from e
+    if repo.get_profile(db, workspace.seed_paper_id) is None:
+        raise _err(409, "seed_not_analyzed", "analyse the seed paper first: the trail compares each paper with its profile")
+    try:
+        result = await build_workspace_trail(db, workspace=workspace, owner_id=current_user.id, settings=settings)
+    except NothingToConnect as e:
+        raise _err(409, "nothing_to_connect", "this workspace holds only its seed paper; add papers to connect") from e
+    return {
+        "run_id": result.run_id,
+        "papers": result.papers,
+        "edges": result.edges,
+        "connected_papers": result.connected_papers,
+        "unconnected_papers": result.unconnected_papers,
+    }
 
 
 @router.post("/{workspace_id}/trail/{edge_id}")

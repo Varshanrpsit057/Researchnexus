@@ -14,12 +14,19 @@ score -- the runner treats that as a normal outcome.
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 
 from app.domain.candidate import DiscoveryStrategy, RawExternalRecord
 from app.retrieval.embeddings import EmbeddingProvider
 from app.retrieval.faiss_store import VectorIndex
 from app.services.discovery.base import StrategyContext, StrategyResult, record_key
+
+
+def pool_text(rec: RawExternalRecord) -> str:
+    """What a candidate is embedded as: its title and abstract."""
+    return f"{rec.title}\n{rec.abstract or ''}"
 
 
 def _l2norm(matrix: np.ndarray) -> np.ndarray:
@@ -44,7 +51,7 @@ class _SemanticStrategyBase:
     def _embedder(self, ctx: StrategyContext) -> EmbeddingProvider | None:  # pragma: no cover - overridden
         raise NotImplementedError
 
-    def _seed_texts(self, ctx: StrategyContext) -> list[str]:  # pragma: no cover - overridden
+    def seed_texts(self, ctx: StrategyContext) -> list[str]:  # pragma: no cover - overridden
         raise NotImplementedError
 
     async def run(self, ctx: StrategyContext) -> StrategyResult:
@@ -53,16 +60,18 @@ class _SemanticStrategyBase:
         if embedder is None:
             result.notes.append(f"{self.strategy.value}_no_embedder")
             return result
-        seed_texts = [t for t in self._seed_texts(ctx) if t.strip()]
+        seed_texts = [t for t in self.seed_texts(ctx) if t.strip()]
         if not seed_texts:
             result.notes.append(f"{self.strategy.value}_no_seed_text")
             return result
 
-        seed_vecs = _l2norm(embedder.embed(seed_texts))
+        # embedding is CPU work: on a worker thread, so the run's progress and
+        # its other tasks keep going meanwhile
+        seed_vecs = _l2norm(await asyncio.to_thread(embedder.embed, seed_texts))
 
         pool = list(ctx.candidate_pool)
         if pool:
-            cand_vecs = _l2norm(embedder.embed([f"{r.title}\n{r.abstract or ''}" for r in pool]))
+            cand_vecs = _l2norm(await asyncio.to_thread(embedder.embed, [pool_text(r) for r in pool]))
             sims = cand_vecs @ seed_vecs.T  # (num_candidates, num_seed_texts)
             for rec, row in zip(pool, sims, strict=True):
                 key = record_key(rec)
@@ -100,7 +109,7 @@ class SemanticChunkStrategy(_SemanticStrategyBase):
     def _embedder(self, ctx: StrategyContext) -> EmbeddingProvider | None:
         return ctx.chunk_embedder
 
-    def _seed_texts(self, ctx: StrategyContext) -> list[str]:
+    def seed_texts(self, ctx: StrategyContext) -> list[str]:
         texts = [c.text for c in ctx.seed_chunks]
         if not texts and ctx.seed.abstract:
             texts = [ctx.seed.abstract]

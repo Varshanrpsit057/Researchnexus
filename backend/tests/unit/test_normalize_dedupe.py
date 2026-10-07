@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.domain.candidate import CandidateSource, RawExternalRecord
+from app.domain.candidate import CandidateSource, NormalizedCandidate, RawExternalRecord
 from app.services.normalize.canonical import title_hash
 from app.services.normalize.dedupe import SeedIdentity, dedupe
 
@@ -92,3 +92,65 @@ def test_counts_are_reported() -> None:
     result = dedupe(recs)
     assert result.raw_count == 3
     assert result.deduped_count == 2
+
+
+# --- remediation Phase 8: the near-duplicate pass, fast and unchanged ----------------
+
+
+def _reference_flags(candidates: list[NormalizedCandidate]) -> None:
+    """The pass as it was before Phase 8: every pair, compared in full."""
+    from difflib import SequenceMatcher
+
+    from app.services.normalize.dedupe import _FUZZY_TITLE_THRESHOLD, _share_strong_id
+
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            a, b = candidates[i], candidates[j]
+            if _share_strong_id(a, b):
+                continue
+            if SequenceMatcher(None, a.title.lower(), b.title.lower()).ratio() >= _FUZZY_TITLE_THRESHOLD:
+                a.possible_duplicate = b.possible_duplicate = True
+                a.possible_duplicate_of_title_hash = b.title_hash
+                b.possible_duplicate_of_title_hash = a.title_hash
+
+
+def _titles() -> list[str]:
+    import random
+
+    rng = random.Random(8)
+    words = ["retrieval", "augmented", "generation", "dense", "passage", "neural", "face", "recognition", "attendance", "survey", "agentic", "deep", "learning"]
+    base = [" ".join(rng.choice(words) for _ in range(rng.randint(3, 14))).title() for _ in range(90)]
+    variants = []
+    for t in base[:30]:  # near-duplicates: a typo, a dropped word, a changed case, a subtitle
+        variants += [t.replace("e", "a", 1), t.rsplit(" ", 1)[0], t.upper(), f"{t}: A Study"]
+    long = [" ".join(words * 3), " ".join(words * 3) + " X"]  # over 200 characters: difflib's autojunk applies
+    return base + variants + long + ["", "A"]
+
+
+def test_the_fast_near_duplicate_pass_flags_exactly_what_the_full_one_did() -> None:
+    from app.services.normalize.dedupe import _flag_fuzzy_duplicates
+
+    titles = _titles()
+    expected = [NormalizedCandidate(title=t, title_hash=f"h{i}") for i, t in enumerate(titles)]
+    got = [NormalizedCandidate(title=t, title_hash=f"h{i}") for i, t in enumerate(titles)]
+    expected[3].external_ids["doi"] = got[3].external_ids["doi"] = "10.1/shared"
+    expected[100].external_ids["doi"] = got[100].external_ids["doi"] = "10.1/shared"
+    _reference_flags(expected)
+    _flag_fuzzy_duplicates(got)
+    assert sum(c.possible_duplicate for c in expected) > 30  # the fixture really has near-duplicates
+    assert [(c.possible_duplicate, c.possible_duplicate_of_title_hash) for c in got] == [
+        (c.possible_duplicate, c.possible_duplicate_of_title_hash) for c in expected
+    ]
+
+
+def test_the_near_duplicate_pass_scales_to_a_real_runs_candidates() -> None:
+    # measured: 650 candidates took 20 s, twice a run, blocking the event loop
+    import time
+
+    from app.services.normalize.dedupe import _flag_fuzzy_duplicates
+
+    titles = (_titles() * 3)[:650]
+    candidates = [NormalizedCandidate(title=f"{t} {i % 7}", title_hash=f"h{i}") for i, t in enumerate(titles)]
+    started = time.monotonic()
+    _flag_fuzzy_duplicates(candidates)
+    assert time.monotonic() - started < 3.0

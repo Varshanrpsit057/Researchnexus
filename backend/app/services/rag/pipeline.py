@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -35,9 +34,8 @@ from app.domain.rag import AnswerSentence, RagAnswer
 from app.domain.workspace import ResearchWorkspace
 from app.llm.client import LlmProviderError
 from app.llm.session import LlmSession
-from app.retrieval.embeddings import get_embedding_provider
 from app.retrieval.reranker import CrossEncoderReranker, get_reranker
-from app.retrieval.workspace_index import FaissWorkspaceIndex, WorkspaceChunkIndex
+from app.retrieval.workspace_index import WorkspaceChunkIndex, workspace_search_index
 from app.services.citations.validate import link_claims
 from app.services.ingest.abstract_chunks import ensure_abstract_chunks
 from app.services.rag.answerability import assess, suggestion_for
@@ -78,14 +76,8 @@ class _Budget:
         self.completion += ct
 
 
-def _build_index(db: Session, workspace: ResearchWorkspace, settings: Settings) -> FaissWorkspaceIndex:
-    idx = FaissWorkspaceIndex(
-        db,
-        workspace_id=workspace.workspace_id,
-        index_dir=Path(settings.data_dir) / "workspace_index",
-        embedder=get_embedding_provider(settings.rag_embedder),
-        vector_backend=settings.rag_vector_backend,
-    )
+def _build_index(db: Session, workspace: ResearchWorkspace, settings: Settings) -> WorkspaceChunkIndex:
+    idx = workspace_search_index(db, workspace_id=workspace.workspace_id, settings=settings)
     ensure_abstract_chunks(db, [p.paper_id for p in workspace.papers])
     idx.rebuild([p.paper_id for p in workspace.papers])
     return idx

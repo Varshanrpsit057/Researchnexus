@@ -214,3 +214,72 @@ def make_multi_page_pdf(n_pages: int) -> bytes:
         story.append(Spacer(1, 500))
     doc.build(story)
     return buf.getvalue()
+
+
+IEEE_DOI = "10.1109/ISCI65687.2025.11167819"
+IEEE_ABSTRACT_WORDS = ["Public", "transportation", "within", "university", "campuses", "plays", "an", "important", "role", "in", "student", "mobility.", "Buses", "often", "fail", "to", "adhere", "to", "schedules,", "which", "affects", "time", "management.", "This", "paper", "proposes", "a", "mobile", "application", "that", "tracks", "university", "buses", "in", "real", "time", "using", "GPS."]
+_IEEE_LEFT_BODY = ["Students", "rely", "on", "campus", "buses", "to", "move", "between", "faculties", "and", "residential", "colleges", "every", "day.", "Unreliable", "arrival", "times", "increase", "anxiety", "and", "cause", "students", "to", "miss", "the", "start", "of", "classes."]
+_IEEE_RIGHT_BODY = ["RIGHTCOLUMN", "begins", "here", "and", "continues", "the", "introduction", "with", "a", "survey", "of", "student", "satisfaction.", "Most", "respondents", "asked", "for", "live", "bus", "locations", "and", "accurate", "arrival", "estimates", "on", "their", "phones."]
+
+
+def make_ieee_style_pdf() -> bytes:
+    """Page 1 of a typical IEEE conference paper, built to reproduce what a
+    real one (remediation, 2026-10-02) defeated: a full-width title and a
+    three-column author block above two body columns; an inline
+    "Abstract—" paragraph and "Keywords—" line instead of headings; words
+    set 1.8 pt apart at 9 pt (tighter than a fixed 3 pt tolerance, so a
+    naive extractor glues them together); and the DOI printed sideways in
+    the left margin."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    width, _height = LETTER
+
+    def words_line(x: float, y: float, words: list[str], font: str = "Helvetica", size: float = 9.0, gap: float = 1.8) -> None:
+        c.setFont(font, size)
+        for w in words:
+            c.drawString(x, y, w)
+            x += stringWidth(w, font, size) + gap
+
+    def column(x: float, y: float, words: list[str], col_width: float, size: float = 9.0) -> float:
+        line: list[str] = []
+        for w in words:
+            trial = [*line, w]
+            if line and sum(stringWidth(t, "Helvetica", size) for t in trial) + 1.8 * (len(trial) - 1) > col_width:
+                words_line(x, y, line, size=size)
+                y -= 11
+                line = [w]
+            else:
+                line = trial
+        if line:
+            words_line(x, y, line, size=size)
+            y -= 11
+        return y
+
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(width / 2, 740, "OnBoard: A Real-Time Bus Tracking Mobile")
+    c.drawCentredString(width / 2, 714, "Application for University Campus")
+    c.setFont("Helvetica", 10)
+    for x, name, place in ((150, "Syaqir Syamsul", "Universiti Teknologi MARA"), (306, "Mohd Suffian Sulaiman", "Universiti Teknologi MARA"), (462, "Fakhrul Hazman Yusoff", "Sohar University")):
+        c.drawCentredString(x, 686, name)
+        c.drawCentredString(x, 673, place)
+
+    left_x, right_x, col_w = 54.0, 318.0, 240.0
+    y = column(left_x, 630, ["Abstract—" + IEEE_ABSTRACT_WORDS[0], *IEEE_ABSTRACT_WORDS[1:]], col_w)
+    y = column(left_x, y - 6, ["Keywords—bus", "tracking,", "GPS,", "mobile", "application"], col_w)
+    c.setFont("Helvetica", 10)
+    c.drawString(left_x + 90, y - 12, "I. INTRODUCTION")
+    column(left_x, y - 30, _IEEE_LEFT_BODY * 3, col_w)
+    column(right_x, 630, _IEEE_RIGHT_BODY * 4, col_w)
+
+    c.saveState()
+    c.translate(24, 300)
+    c.rotate(90)
+    c.setFont("Helvetica", 7)
+    c.drawString(0, 0, f"2025 IEEE Conference | DOI: {IEEE_DOI}")
+    c.restoreState()
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()

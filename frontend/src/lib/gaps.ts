@@ -66,8 +66,11 @@ export interface PaperEvidence {
 
 /** Passages grouped by paper, in `papers` order, then any paper only a passage names. */
 export function groupEvidence(papers: string[], supporting: GapEvidence[], conflicting: GapEvidence[] = []): PaperEvidence[] {
-  const order = [...papers];
-  for (const e of [...supporting, ...conflicting]) if (!order.includes(e.paper_id)) order.push(e.paper_id);
+  // the rule's own order: a method gap quotes the paper that uses the method first
+  const order: string[] = [];
+  for (const id of [...supporting.map((e) => e.paper_id), ...conflicting.map((e) => e.paper_id), ...papers]) {
+    if (!order.includes(id)) order.push(id);
+  }
   return order
     .map((paperId) => ({
       paperId,
@@ -77,7 +80,7 @@ export function groupEvidence(papers: string[], supporting: GapEvidence[], confl
     .filter((g) => g.supporting.length + g.conflicting.length > 0);
 }
 
-/** Every passage a gap rests on, one group per paper, in the gap's own paper order. */
+/** Every passage a gap rests on, one group per paper, in the order the rule gave them. */
 export function evidenceByPaper(gap: ResearchGap): PaperEvidence[] {
   return groupEvidence(gap.supporting_papers, gap.supporting_evidence, gap.conflicting_evidence);
 }

@@ -437,7 +437,7 @@ export default function GapsPage() {
                   <Warning className="mt-px size-4 shrink-0" weight="bold" aria-hidden />
                   <span>
                     No working LLM provider key is saved, so a run can&apos;t start yet.{" "}
-                    <Link href="/settings" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
+                    <Link href="/settings#models" className={`rounded-sm font-semibold underline underline-offset-4 ${focusRing}`}>
                       Add a key
                     </Link>
                   </span>
@@ -482,7 +482,7 @@ export default function GapsPage() {
                   <InlineError message={failure.message} />
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {failure.action === "settings" ? (
-                      <Link href="/settings" className={`inline-flex min-h-10 items-center rounded-full px-4 text-sm font-semibold ${focusRing}`} style={primaryButton}>
+                      <Link href="/settings#models" className={`inline-flex min-h-10 items-center rounded-full px-4 text-sm font-semibold ${focusRing}`} style={primaryButton}>
                         Check the key in Settings
                       </Link>
                     ) : (

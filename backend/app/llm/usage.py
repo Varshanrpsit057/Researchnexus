@@ -25,6 +25,7 @@ session, and a failed write is logged, not raised.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -198,6 +199,11 @@ class MeteredClient:
             )
         except LlmProviderError as e:
             self._note(self._call(scope, model, started, ok=False, error_kind=e.kind.value))
+            raise
+        except asyncio.CancelledError:
+            # cut off mid-flight (a time limit, a cancelled run): the provider
+            # may still bill it, so it is recorded -- its tokens unknown, never guessed
+            self._note(self._call(scope, model, started, ok=False, error_kind="cancelled"))
             raise
         except Exception:
             self._note(self._call(scope, model, started, ok=False, error_kind="error"))

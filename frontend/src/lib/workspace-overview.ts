@@ -4,6 +4,7 @@ import type {
   RelatedResult,
   ResearchDirection,
   ResearchGap,
+  StageName,
   WorkspacePaper,
 } from "@/lib/api/types";
 
@@ -176,4 +177,29 @@ export function nextStation(stations: Station[]): Station | null {
 export function addableFromRun(results: RelatedResult[], papers: WorkspacePaper[]): RelatedResult[] {
   const members = new Set(papers.map((p) => p.paper_id));
   return results.filter((r) => !members.has(r.paper.id));
+}
+
+/** What a stage run did, in words (the activity log and the overview). */
+export const STAGE_LABEL: Record<StageName, string> = {
+  ingest: "Parsed a PDF",
+  profile: "Extracted a research profile",
+  discovery: "Searched for related papers",
+  ranking: "Ranked candidates",
+  trail: "Classified relationships",
+  workspace: "Updated the workspace",
+  rag: "Answered a question",
+  comparison: "Compared papers",
+  gaps: "Looked for research gaps",
+  directions: "Proposed directions",
+  citations: "Formatted citations",
+};
+
+/** Tags typed as one line ("baseline, method"): trimmed, once each (any case), at most 30 of 60 characters. */
+export function parseTags(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(",")) {
+    const tag = raw.trim().slice(0, 60);
+    if (tag && !out.some((t) => t.toLowerCase() === tag.toLowerCase())) out.push(tag);
+  }
+  return out.slice(0, 30);
 }

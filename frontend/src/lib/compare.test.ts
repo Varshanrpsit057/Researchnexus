@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { ComparisonCell, ComparisonResponse } from "@/lib/api/types";
-import { cellStatus, coverageOf, fieldLabel, leftWorkspace, normalizeField, notYetCompared } from "./compare";
+import type { ComparisonCell, ComparisonResponse, ComparisonTable } from "@/lib/api/types";
+import {
+  cellStatus,
+  coverageOf,
+  emptyStatusesIn,
+  fieldLabel,
+  leftWorkspace,
+  normalizeField,
+  notYetCompared,
+  pickColumns,
+  tableCoverage,
+} from "./compare";
 
 const span = { paper_id: "a", section: "Method", page: 2, char_start: null, char_end: null, quote: "We use BM25." };
 
@@ -47,5 +57,60 @@ describe("compare helpers", () => {
     expect(fieldLabel("compute budget")).toBe("Compute budget");
     expect(normalizeField("  Compute   BUDGET ")).toBe("compute budget");
     expect(normalizeField("x".repeat(60))).toHaveLength(40);
+  });
+});
+
+const table: ComparisonTable = {
+  comparison_id: "cmp_1",
+  created_at: "2026-09-30T14:05:00+00:00",
+  corner: "Field",
+  papers: ["a", "b", "c"].map((id, i) => ({
+    paper_id: id,
+    title: `Paper ${id}`,
+    authors: "",
+    year: 2020 + i,
+    kind: i === 0 ? "seed" : "member",
+    read_from: "full_text",
+    in_workspace: true,
+    meta: `${2020 + i} · Full text`,
+  })),
+  rows: [
+    {
+      field: "method",
+      label: "Method",
+      cells: [
+        { paper_id: "a", status: "found", text: "BM25", note: null },
+        { paper_id: "b", status: "unsupported", text: "Unverified", note: null },
+        { paper_id: "c", status: "not_stated", text: "Not stated", note: null },
+      ],
+    },
+    {
+      field: "dataset",
+      label: "Datasets",
+      cells: [
+        { paper_id: "a", status: "no_text", text: "No text to read", note: null },
+        { paper_id: "b", status: "found", text: "NQ", note: "The same passage also says: TriviaQA" },
+        { paper_id: "c", status: "found", text: "MS MARCO", note: null },
+      ],
+    },
+  ],
+};
+
+describe("the comparison table", () => {
+  it("keeps the shown papers in the table's own order, whatever order they are asked in", () => {
+    const picked = pickColumns(table, ["c", "a"]);
+    expect(picked.papers.map((p) => p.paper_id)).toEqual(["a", "c"]);
+    expect(picked.rows.map((r) => r.cells.map((c) => c.text))).toEqual([
+      ["BM25", "Not stated"],
+      ["No text to read", "MS MARCO"],
+    ]);
+    expect(pickColumns(table, []).papers).toEqual([]);
+  });
+
+  it("counts what was found, and lists only the empty states it has, in the legend's order", () => {
+    expect(tableCoverage(table)).toEqual({ found: 3, total: 6 });
+    expect(tableCoverage(pickColumns(table, ["a"]))).toEqual({ found: 1, total: 2 });
+    expect(emptyStatusesIn(table)).toEqual(["not_stated", "unsupported", "no_text"]);
+    expect(emptyStatusesIn(pickColumns(table, ["c"]))).toEqual(["not_stated"]);
   });
 });

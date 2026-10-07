@@ -13,6 +13,7 @@ import type { EdgeUserState, GraphEdgeType } from "@/lib/api/types";
 import { MORPH } from "@/components/effects/constellation/field";
 import { CinematicHeader } from "@/components/layout/CinematicHeader";
 import { sendToBackground } from "@/lib/background-bus";
+import { useBackground } from "@/lib/background-mode";
 import { boundsOf, centerOn, fitCamera, lerpAbout, lerpCamera, nodeZoom, prominentFit, toScreen, zoomAt, type Camera, type Insets } from "@/lib/graph/camera";
 import { truncate } from "@/lib/graph/labels";
 import { NODE_RADIUS, layoutGraph, type Layout } from "@/lib/graph/layout";
@@ -66,25 +67,30 @@ function useMediaQuery(query: string): boolean {
  * prominent framing and settles (seconds on the morph clock). */
 const GROW = { at: MORPH.handoff[1], dur: 1.0 } as const;
 
+/** How much sooner the entrance starts over a still background: with no field
+ * to converge, the graph simply fades in instead of waiting for it. */
+const STILL_LEAD = MORPH.converge[1] - 0.28 - 0.15;
+
 /** The entrance, timed against the background's morph: nodes emerge as the
  * converging knots arrive (seed first, then outward), edges draw after them
- * in the same outward order, labels and the axis follow. */
-function introTimeline(nodes: GNode[], edges: GEdge[], layout: Layout, seedId: string | null): IntroTimeline & { total: number } {
+ * in the same outward order, labels and the axis follow. `lead` starts it
+ * that many seconds sooner (STILL_LEAD over the still background). */
+function introTimeline(nodes: GNode[], edges: GEdge[], layout: Layout, seedId: string | null, lead = 0): IntroTimeline & { total: number } {
   const origin = (seedId && layout.pos.get(seedId)) || { x: 0, y: 0 };
   const dist = (id: string) => {
     const p = layout.pos.get(id)!;
     return Math.hypot(p.x - origin.x, p.y - origin.y);
   };
-  const nodeStart = MORPH.converge[1] - 0.28;
+  const nodeStart = MORPH.converge[1] - 0.28 - lead;
   const nodeStagger = Math.min(0.045, 0.5 / Math.max(1, nodes.length));
   const node = new Map([...nodes].sort((a, b) => dist(a.id) - dist(b.id)).map((n, i) => [n.id, nodeStart + i * nodeStagger]));
-  const edgeStart = MORPH.converge[1] + 0.12;
+  const edgeStart = MORPH.converge[1] + 0.12 - lead;
   const edgeStagger = Math.min(0.05, 0.7 / Math.max(1, edges.length));
   const far = (e: GEdge) => Math.max(dist(e.src), dist(e.dst));
   const edge = new Map([...edges].sort((a, b) => far(a) - far(b)).map((e, i) => [e.key, edgeStart + i * edgeStagger]));
   const lastNode = nodeStart + Math.max(0, nodes.length - 1) * nodeStagger + 0.56;
   const lastEdge = edges.length ? edgeStart + (edges.length - 1) * edgeStagger + 0.95 : 0;
-  return { node, edge, chrome: nodeStart + 0.35, total: Math.max(GROW.at + GROW.dur, lastNode, lastEdge) + 0.1 };
+  return { node, edge, chrome: nodeStart + 0.35, total: Math.max(GROW.at - lead + GROW.dur, lastNode, lastEdge) + 0.1 };
 }
 
 type PathResult = { from: string; to: string; nodes: string[]; edges: string[] };
@@ -162,9 +168,11 @@ export default function GraphPage() {
   const activeSelection = selectionLive ? selection : null;
   if (path && model && !path.edges.every((e) => visible.edges.has(e))) setPath(null);
 
+  // over the still background the entrance is a plain fade, started at once
+  const lead = useBackground()?.effect === "static" ? STILL_LEAD : 0;
   const intro = useMemo(
-    () => (model && layout ? introTimeline(model.nodes, model.edges, layout, model.seedId) : { node: new Map(), edge: new Map(), chrome: 0, total: 0 }),
-    [model, layout],
+    () => (model && layout ? introTimeline(model.nodes, model.edges, layout, model.seedId, lead) : { node: new Map(), edge: new Map(), chrome: 0, total: 0 }),
+    [model, layout, lead],
   );
 
   // --- stage size and camera -------------------------------------------------
@@ -326,9 +334,9 @@ export default function GraphPage() {
         if (t < 1) flight.current = requestAnimationFrame(tick);
       };
       flight.current = requestAnimationFrame(tick);
-    }, GROW.at * 1000);
+    }, (GROW.at - lead) * 1000);
     return () => clearTimeout(timer);
-  }, [phase, layout]);
+  }, [phase, layout, lead]);
 
   useEffect(() => {
     if (phase !== "intro") return;

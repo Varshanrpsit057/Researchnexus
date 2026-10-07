@@ -91,6 +91,22 @@ export async function apiUpload<T>(path: string, form: FormData, signal?: AbortS
   return (await res.json()) as T;
 }
 
+/** A file the API sends (an export): its bytes, and the name the server gave it. */
+export async function apiDownload(
+  path: string,
+  query?: RequestOptions["query"],
+): Promise<{ blob: Blob; filename: string | null }> {
+  const res = await fetch(buildUrl(path, query), { headers: authHeader(), cache: "no-store" });
+  if (res.status === 401) clearToken();
+  if (!res.ok) {
+    const error = await parseErrorBody(res);
+    throw new ApiError(res.status, error.code, error.message, error.details);
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? null;
+  return { blob: await res.blob(), filename };
+}
+
 export function authHeader(): Record<string, string> {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};

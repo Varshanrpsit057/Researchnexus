@@ -83,6 +83,12 @@ def _handler(*, empty: bool = False) -> httpx.MockTransport:
             return httpx.Response(404, json={})
         if "europepmc" in url:
             return httpx.Response(200, json={"resultList": {"result": []}})
+        if "crossref.org" in url:
+            return httpx.Response(200, json={"message": {"items": []}})
+        if "dblp.org" in url:
+            return httpx.Response(200, json={"result": {"hits": {}}})
+        if "core.ac.uk" in url:
+            return httpx.Response(200, json={"results": []})
         raise AssertionError(url)
 
     return httpx.MockTransport(h)
