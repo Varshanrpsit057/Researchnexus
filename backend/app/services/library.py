@@ -69,7 +69,8 @@ def _collect(db: Session, owner_id: str) -> tuple[dict[str, _Entry], int, int]:
         )
     )
     for pid, at in uploads:
-        entry(pid).touch("uploaded", at)
+        if pid is not None:  # filtered in the query; typed as optional
+            entry(pid).touch("uploaded", at)
 
     analysed = db.execute(
         select(ResearchProfileORM.paper_id, ResearchProfileORM.updated_at).where(ResearchProfileORM.owner_id == owner_id)

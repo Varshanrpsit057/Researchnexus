@@ -277,6 +277,28 @@ def save_paper(db: Session, paper: PaperORM) -> PaperORM:
     return paper
 
 
+def paper_titles(db: Session, paper_ids: Collection[str]) -> dict[str, str]:
+    """Titles of many papers in one query (no other column is loaded)."""
+    ids = list(paper_ids)
+    out: dict[str, str] = {}
+    for start in range(0, len(ids), 500):
+        # a loop, not dict(result): a Result has .keys(), so dict() would index it
+        for pid, title in db.execute(select(PaperORM.id, PaperORM.title).where(PaperORM.id.in_(ids[start : start + 500]))):
+            out[pid] = title
+    return out
+
+
+def workspaces_holding(db: Session, paper_id: str, owner_id: str) -> list[dict[str, str]]:
+    """The reader's workspaces a paper is in, by name."""
+    rows = db.execute(
+        select(WorkspaceORM.id, WorkspaceORM.title)
+        .join(WorkspacePaperORM, WorkspacePaperORM.workspace_id == WorkspaceORM.id)
+        .where(WorkspacePaperORM.paper_id == paper_id, WorkspaceORM.owner_id == owner_id)
+        .order_by(WorkspaceORM.title)
+    )
+    return [{"workspace_id": wid, "title": title} for wid, title in rows]
+
+
 def get_paper(db: Session, paper_id: str) -> PaperORM | None:
     return db.get(PaperORM, paper_id)
 
@@ -1017,7 +1039,7 @@ def _trail_edge_domain_from_orm(row: PaperRelationshipORM) -> TrailEdge:
     )
 
 
-def _primary_rows(run_id: str) -> Select[tuple[PaperRelationshipORM]]:
+def _primary_rows(run_id: str) -> Select[Any]:  # Select's type parameter differs across SQLAlchemy 2.0 and 2.1
     """A run's own trail rows, not the copies later workspaces hold."""
     return select(PaperRelationshipORM).where(
         PaperRelationshipORM.run_id == run_id, PaperRelationshipORM.copied_from.is_(None)
@@ -1332,46 +1354,32 @@ def remove_workspace_paper(db: Session, workspace_id: str, paper_id: str) -> boo
 
 
 def workspace_child_counts(db: Session, workspace_id: str) -> dict[str, int]:
-    papers = db.scalar(
-        select(func.count())
-        .select_from(WorkspacePaperORM)
-        .where(WorkspacePaperORM.workspace_id == workspace_id)
-    )
-    edges = db.scalar(
-        select(func.count())
-        .select_from(PaperRelationshipORM)
-        .where(
-            PaperRelationshipORM.workspace_id == workspace_id,
-            PaperRelationshipORM.user_state != UserState.REJECTED.value,
-        )
-    )
-    # rejected gaps/directions are excluded, the same way rejected edges are
-    gaps = db.scalar(
-        select(func.count())
-        .select_from(ResearchGapORM)
-        .where(
-            ResearchGapORM.workspace_id == workspace_id,
-            ResearchGapORM.user_state != GapUserState.REJECTED.value,
-        )
-    )
-    directions = db.scalar(
-        select(func.count())
-        .select_from(ResearchDirectionORM)
-        .where(
-            ResearchDirectionORM.workspace_id == workspace_id,
-            ResearchDirectionORM.user_state != DirectionUserState.REJECTED.value,
-        )
-    )
-    comparisons = db.scalar(
-        select(func.count()).select_from(ComparisonORM).where(ComparisonORM.workspace_id == workspace_id)
-    )
-    return {
-        "papers": int(papers or 0),
-        "edges": int(edges or 0),
-        "gaps": int(gaps or 0),
-        "directions": int(directions or 0),
-        "comparisons": int(comparisons or 0),
-    }
+    return workspaces_child_counts(db, [workspace_id])[workspace_id]
+
+
+def workspaces_child_counts(db: Session, workspace_ids: Collection[str]) -> dict[str, dict[str, int]]:
+    """What each workspace holds -- papers, connections, gaps, directions,
+    comparisons -- for many workspaces in one grouped query per table (the
+    workspace list used to run five queries per workspace: 2 s for 1,300).
+    Rejected connections, gaps and directions are not counted."""
+    counts = {wid: {"papers": 0, "edges": 0, "gaps": 0, "directions": 0, "comparisons": 0} for wid in workspace_ids}
+    ids = list(counts)
+    tables: list[tuple[str, Any, list[ColumnElement[bool]]]] = [
+        ("papers", WorkspacePaperORM, []),
+        ("edges", PaperRelationshipORM, [PaperRelationshipORM.user_state != UserState.REJECTED.value]),
+        ("gaps", ResearchGapORM, [ResearchGapORM.user_state != GapUserState.REJECTED.value]),
+        ("directions", ResearchDirectionORM, [ResearchDirectionORM.user_state != DirectionUserState.REJECTED.value]),
+        ("comparisons", ComparisonORM, []),
+    ]
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        for key, model, extra in tables:
+            rows = db.execute(
+                select(model.workspace_id, func.count()).where(model.workspace_id.in_(chunk), *extra).group_by(model.workspace_id)
+            )
+            for wid, n in rows:
+                counts[wid][key] = int(n)
+    return counts
 
 
 def _copied_edge_id(primary_id: str, workspace_id: str) -> str:
@@ -1841,7 +1849,7 @@ def get_decided_gaps(db: Session, workspace_id: str) -> DecidedGaps:
     ).all()
 
     def pick(state: GapUserState, col: int) -> frozenset[str]:
-        return frozenset(r[col] for r in rows if r[2] == state.value and r[col])
+        return frozenset(v for r in rows if r[2] == state.value and (v := r[col]))
 
     return DecidedGaps(
         accepted_ids=pick(GapUserState.ACCEPTED, 0),

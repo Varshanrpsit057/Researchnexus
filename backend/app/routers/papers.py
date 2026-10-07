@@ -128,7 +128,7 @@ def list_library(db: DbSession, current_user: CurrentUser) -> dict[str, object]:
 
 
 @router.get("/{paper_id}")
-def get_paper(paper_id: str, db: DbSession) -> dict[str, object]:
+def get_paper(paper_id: str, db: DbSession, reader: OptionalUser) -> dict[str, object]:
     paper = repo.get_paper(db, paper_id)
     if paper is None:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "paper not found"}})
@@ -156,6 +156,8 @@ def get_paper(paper_id: str, db: DbSession) -> dict[str, object]:
         "warnings": paper.warnings,
         # what text the paper is read from (remediation Phase 7)
         "coverage": coverage_of(paper),
+        # the signed-in reader's workspaces that hold it (2026-10-07); none for anyone else
+        "workspaces": repo.workspaces_holding(db, paper.id, reader.id) if reader is not None else [],
     }
 
 

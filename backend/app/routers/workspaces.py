@@ -176,18 +176,21 @@ def create_workspace(
 def list_workspaces(db: DbSession, current_user: CurrentUser) -> dict:
     items = pipeline.list_workspaces(db, owner=current_user)
     # each with its seed's title and what it holds, so the list says which is which
+    counts = repo.workspaces_child_counts(db, [w.workspace_id for w in items])
+    titles = repo.paper_titles(db, {w.seed_paper_id for w in items})
     return {
         "workspaces": [
-            {**_workspace_json(w, counts=repo.workspace_child_counts(db, w.workspace_id)), "seed_title": _title_of(db, w.seed_paper_id)}
-            for w in items
+            {**_listed(_workspace_json(w, counts=counts[w.workspace_id])), "seed_title": titles.get(w.seed_paper_id)} for w in items
         ],
         "next_cursor": None,
     }
 
 
-def _title_of(db: DbSession, paper_id: str) -> str | None:
-    paper = repo.get_paper(db, paper_id)
-    return paper.title if paper else None
+def _listed(payload: dict) -> dict:
+    """A workspace as the list shows it: its papers without their ranking
+    snapshots (the overview reads those from the workspace itself), which
+    made the list megabytes long for a reader with many workspaces."""
+    return {**payload, "papers": [{**p, "ranking_snapshot": None} for p in payload["papers"]]}
 
 
 @router.get("/{workspace_id}")

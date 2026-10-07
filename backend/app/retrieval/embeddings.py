@@ -17,7 +17,7 @@ import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -168,7 +168,8 @@ class FastEmbedEmbeddingProvider:
             model = self._load()
             vectors = np.asarray(list(model.embed(missing)), dtype="float32")  # type: ignore[attr-defined]
             norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-            vectors = vectors / np.where(norms == 0.0, 1.0, norms)
+            # cast: numpy's stubs differ across versions on this division's type
+            vectors = cast(np.ndarray, vectors / np.where(norms == 0.0, 1.0, norms))
             for text, vec in zip(missing, vectors, strict=True):
                 self._vectors[text] = vec
         out = np.stack([self._vectors[t] for t in texts]) if texts else np.zeros((0, self.dimension), "float32")

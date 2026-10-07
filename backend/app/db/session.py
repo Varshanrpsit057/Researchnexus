@@ -17,15 +17,23 @@ from app.db.base import Base
 
 
 def make_engine(settings: Settings) -> Engine:
-    connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+    # a writer waits up to 15 s for another writer before giving up
+    connect_args: dict[str, object] = {"check_same_thread": False, "timeout": 15} if settings.database_url.startswith("sqlite") else {}
     engine = create_engine(settings.database_url, connect_args=connect_args)
 
     if settings.database_url.startswith("sqlite"):
 
         @event.listens_for(engine, "connect")
-        def _enable_sqlite_fk(dbapi_connection: object, _record: object) -> None:
+        def _configure_sqlite(dbapi_connection: object, _record: object) -> None:
             cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
             cursor.execute("PRAGMA foreign_keys=ON")
+            # WAL (2026-10-07): readers never wait for a writer, nor a writer
+            # for readers. With the default rollback journal, a request that
+            # read and then awaited the network (a full-text or record
+            # lookup) made every other request queue behind it. NORMAL sync
+            # is WAL's recommended durability/speed balance.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
     return engine

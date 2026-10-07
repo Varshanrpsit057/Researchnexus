@@ -137,6 +137,29 @@ def test_the_workspace_list_names_each_seed_and_counts_its_work(tmp_path: Path) 
     assert listed["counts"] == {"papers": 1, "edges": 0, "gaps": 0, "directions": 0, "comparisons": 0}
 
 
+def test_the_list_counts_match_each_workspace_and_a_paper_names_the_workspaces_holding_it(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    token = _token(client)
+    _seed_analysed_paper()
+    one = _create_ws(client, token, title="One")
+    two = _create_ws(client, token, title="Two")
+    member = _discovered_paper("Candidate For One")
+    client.post(f"/api/v1/workspaces/{one['workspace_id']}/papers", json={"paper_ids": [member]}, headers=_headers(token))
+    listed = {w["workspace_id"]: w["counts"] for w in client.get("/api/v1/workspaces", headers=_headers(token)).json()["workspaces"]}
+    for ws in (one, two):
+        detail = client.get(f"/api/v1/workspaces/{ws['workspace_id']}", headers=_headers(token)).json()["counts"]
+        assert listed[ws["workspace_id"]] == detail
+    assert listed[one["workspace_id"]]["papers"] == 2 and listed[two["workspace_id"]]["papers"] == 1
+
+    # the paper page says which of the reader's workspaces hold it -- and only the reader's
+    seen = client.get("/api/v1/papers/pap_seed", headers=_headers(token)).json()["workspaces"]
+    assert [w["title"] for w in seen] == ["One", "Two"]
+    assert client.get(f"/api/v1/papers/{member}", headers=_headers(token)).json()["workspaces"] == [{"workspace_id": one["workspace_id"], "title": "One"}]
+    other = _token(client, "someone-else@example.com")
+    assert client.get("/api/v1/papers/pap_seed", headers=_headers(other)).json()["workspaces"] == []
+    assert client.get("/api/v1/papers/pap_seed").json()["workspaces"] == []  # no one signed in
+
+
 def test_create_with_unanalysed_seed_is_409(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     token = _token(client)

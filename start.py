@@ -50,6 +50,7 @@ import secrets
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -433,6 +434,17 @@ def ensure_backend_secrets() -> None:
     say(f"added {', '.join(made)} to backend/.env (local only, never printed)")
 
 
+def sqlite_backup(source: Path, target: Path) -> None:
+    """A consistent copy of a SQLite database, made by SQLite itself: it
+    includes writes still in the WAL file, which a file copy would miss."""
+    src, dst = sqlite3.connect(source), sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+
 def migrate_database() -> None:
     (BACKEND / "data").mkdir(exist_ok=True)
     check = run([str(VENV_PYTHON), "-c", _MIGRATION_CHECK], cwd=BACKEND)
@@ -451,7 +463,7 @@ def migrate_database() -> None:
         db_file = (BACKEND / url.removeprefix("sqlite:///")).resolve()
         if db_file.exists() and db_file.stat().st_size:
             backup = db_file.with_name(f"{db_file.name}.bak-pre-{state['head']}-{datetime.now():%Y%m%d-%H%M%S}")
-            shutil.copy2(db_file, backup)
+            sqlite_backup(db_file, backup)
             say(f"backed up the database to {backup.relative_to(ROOT)}")
     say(f"migrating the database: {state['current'] or 'empty'} -> {state['head']}")
     if subprocess.call([str(VENV_PYTHON), "-m", "alembic", "upgrade", "head"], cwd=BACKEND) != 0:

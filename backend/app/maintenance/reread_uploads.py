@@ -10,7 +10,7 @@ usage (from backend/):  python -m app.maintenance.reread_uploads [--no-metadata 
 
 from __future__ import annotations
 
-import shutil
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +31,13 @@ def _backup(database_url: str, backend: Path) -> Path | None:
     if not db_file.is_file():
         return None
     backup = db_file.with_name(f"{db_file.name}.bak-pre-reread-{datetime.now():%Y%m%d-%H%M%S}")
-    shutil.copy2(db_file, backup)
+    # SQLite's own copy: consistent, and with any writes still in the WAL file
+    src, dst = sqlite3.connect(db_file), sqlite3.connect(backup)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
     return backup
 
 
