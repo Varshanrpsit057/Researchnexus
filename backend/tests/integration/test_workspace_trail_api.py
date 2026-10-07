@@ -51,6 +51,7 @@ def test_a_workspace_of_the_readers_own_papers_gets_a_trail_and_keeps_its_decisi
     db = get_session_factory()()
     try:
         seed = repo.get_paper(db, "pap_seed")
+        assert seed is not None
         seed.year = 2024
         # the seed's own bibliography lists the older paper
         seed.references = [{"raw_text": "A. Author. Dense Passage Retrieval for Questions. 2019.", "order": 0}]

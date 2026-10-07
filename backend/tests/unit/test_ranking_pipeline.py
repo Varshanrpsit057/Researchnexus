@@ -368,13 +368,13 @@ def test_re_weighing_a_saved_ranking_orders_it_exactly_as_a_fresh_ranking_would(
     citations_first = RankingCriteria(topic=10, problem=0, methods=0, datasets=0, citations=90, recency=0, publisher=0).to_weights()
     run_id = _run_with_candidates(db, _SPECS)
     # production ranks without a cross-encoder (see RankOptions.reranker)
-    embedders = {"chunk_embedder": FakeEmbeddingProvider(), "doc_embedder": FakeEmbeddingProvider()}
-    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(**embedders)))
+    chunk, doc = FakeEmbeddingProvider(), FakeEmbeddingProvider()
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(chunk_embedder=chunk, doc_embedder=doc)))
     asyncio.run(rerank_with_weights(db, run_id=run_id, weights=citations_first, settings=settings))
     reweighed = [(r.candidate_id, r.final_rank, r.fused_score, r.weights_version) for r in repo.get_ranked_papers(db, run_id)]
     assert _order(db, run_id)[0] == "Cited by the seed"
 
-    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(weights=citations_first, **embedders)))
+    asyncio.run(rank_search_run(db, run_id=run_id, settings=settings, options=RankOptions(weights=citations_first, chunk_embedder=chunk, doc_embedder=doc)))
     fresh = [(r.candidate_id, r.final_rank, r.fused_score, r.weights_version) for r in repo.get_ranked_papers(db, run_id)]
     assert reweighed == fresh
 

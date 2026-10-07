@@ -6,13 +6,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from app.db.models import ResearchProfileORM, SearchRunORM
 from app.db.session import get_session_factory
 from tests.integration.test_fulltext_api import _client, _found
 from tests.integration.test_workspaces_api import _create_ws, _headers, _seed_analysed_paper, _token
 
 
-def _library(client, token: str) -> dict:  # type: ignore[no-untyped-def]
+def _library(client: TestClient, token: str) -> dict:
     resp = client.get("/api/v1/papers", headers=_headers(token))
     assert resp.status_code == 200, resp.text
     return resp.json()

@@ -36,7 +36,7 @@ LONG_TITLE = (
 
 
 def _span(pid: str, quote: str) -> SourceSpan:
-    return SourceSpan(paper_id=pid, chunk_id=f"{pid}_c0", char_start=0, char_end=len(quote), quote=quote)
+    return SourceSpan(paper_id=pid, char_start=0, char_end=len(quote), quote=quote)
 
 
 def _found(col: str, pid: str, text: str, *, grounding: str = "full_text", conflicting: list[str] | None = None) -> ComparisonCell:

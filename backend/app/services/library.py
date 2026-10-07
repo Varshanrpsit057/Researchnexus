@@ -86,7 +86,9 @@ def _collect(db: Session, owner_id: str) -> tuple[dict[str, _Entry], int, int]:
         if e.last_run_at is None or (at is not None and at > e.last_run_at):
             e.last_run_id, e.last_run_at = run_id, at
 
-    titles = dict(db.execute(select(WorkspaceORM.id, WorkspaceORM.title).where(WorkspaceORM.owner_id == owner_id)).all())
+    titles: dict[str, str] = {
+        ws_id: title for ws_id, title in db.execute(select(WorkspaceORM.id, WorkspaceORM.title).where(WorkspaceORM.owner_id == owner_id))
+    }
     members = db.execute(
         select(WorkspacePaperORM.paper_id, WorkspacePaperORM.workspace_id, WorkspacePaperORM.role, WorkspacePaperORM.added_at).where(
             WorkspacePaperORM.owner_id == owner_id

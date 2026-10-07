@@ -16,7 +16,12 @@ import time
 from dataclasses import dataclass
 
 from app.config import Settings
-from app.external.http import ExternalError, ExternalHttpClient, UpstreamUnavailable, parse_retry_after
+from app.external.http import (
+    ExternalError,
+    ExternalHttpClient,
+    UpstreamUnavailable,
+    parse_retry_after,
+)
 from app.external.keys import source_headers
 
 

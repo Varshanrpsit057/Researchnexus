@@ -39,7 +39,8 @@ def test_a_discovered_paper_gains_its_full_text_from_a_pdf_the_reader_uploads(tm
     try:
         chunks = repo.get_chunks_for_paper(db, "pap_paywalled")
         assert any("Public transportation within university campuses" in c.text for c in chunks)
-        assert repo.get_paper(db, "pap_paywalled").doi == "10.1109/example.1"  # the record's DOI stays
+        stored = repo.get_paper(db, "pap_paywalled")
+        assert stored is not None and stored.doi == "10.1109/example.1"  # the record's DOI stays
     finally:
         db.close()
 
@@ -61,6 +62,7 @@ def test_an_upload_is_read_again_with_the_current_reader(tmp_path: Path, ieee_st
     try:
         db.execute(delete(PaperChunkORM).where(PaperChunkORM.paper_id == pid))
         paper = repo.get_paper(db, pid)
+        assert paper is not None
         paper.abstract = None
         db.commit()
     finally:
@@ -71,7 +73,8 @@ def test_an_upload_is_read_again_with_the_current_reader(tmp_path: Path, ieee_st
     assert resp.json()["outcome"]["abstract_found"] is True
     db = get_session_factory()()
     try:
-        assert repo.get_paper(db, pid).abstract == " ".join(IEEE_ABSTRACT_WORDS)
+        reread = repo.get_paper(db, pid)
+        assert reread is not None and reread.abstract == " ".join(IEEE_ABSTRACT_WORDS)
         assert any("time management" in c.text for c in repo.get_chunks_for_paper(db, pid))
     finally:
         db.close()
