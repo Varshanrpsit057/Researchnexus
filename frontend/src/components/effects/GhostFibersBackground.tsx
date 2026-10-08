@@ -38,10 +38,15 @@ function laptopSafeDpr(): number {
   return Math.min(window.devicePixelRatio || 1, 1);
 }
 
+/** A weak GPU's setting (2026-10-09): half the resolution (a quarter of the
+ * pixels), 24 fps and three layers -- about a fifth of the work, so a laptop
+ * drawing in software still gets the moving background. */
+const LIGHT = { dpr: 0.5, fps: 24, layers: 3 } as const;
+
 /** The no-dedicated-GPU background. It takes part in the graph transition
  * (fibers-morph.ts) instead of being swapped out: the same field speeds up,
  * draws in and dims while the graph emerges over it, then eases back. */
-export default function GhostFibersBackground() {
+export default function GhostFibersBackground({ light = false }: { light?: boolean }) {
   const [dyn, setDyn] = useState<FibersDynamics>(FIBERS_AT_REST);
   const [mode, setMode] = useState<"field" | "graph">("field");
   const [dpr] = useState(laptopSafeDpr);
@@ -89,7 +94,7 @@ export default function GhostFibersBackground() {
   }, []);
 
   return (
-    <div className="h-full w-full overflow-hidden" data-effect="fibers" data-mode={mode} data-testid="ghost-fibers">
+    <div className="h-full w-full overflow-hidden" data-effect="fibers" data-mode={mode} data-quality={light ? "light" : "full"} data-testid="ghost-fibers">
       <div className="h-full w-full" style={{ transform: `scale(${dyn.zoom})`, transformOrigin: "50% 50%" }}>
         <GhostFibers
           {...CONFIG}
@@ -98,7 +103,8 @@ export default function GhostFibersBackground() {
           glowIntensity={dyn.glowIntensity}
           brightness={dyn.brightness}
           vignette={dyn.vignette}
-          dpr={dpr}
+          dpr={light ? LIGHT.dpr : dpr}
+          {...(light ? { fps: LIGHT.fps, layers: LIGHT.layers } : {})}
         />
       </div>
     </div>

@@ -251,7 +251,7 @@ export default function ComparePage() {
               </p>
             </div>
             {comparison && members.length >= 2 && (
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <button
                   type="button"
                   aria-expanded={setupShown}
@@ -327,7 +327,7 @@ export default function ComparePage() {
                 <h2 id="compare-setup" className="text-base font-bold">
                   What to compare
                 </h2>
-                <div className="mt-4 grid gap-5 lg:grid-cols-[1fr_1fr]">
+                <div className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[1fr_1fr]">
                   <PaperPicker
                     members={members}
                     chosen={chosen}
@@ -685,7 +685,9 @@ function ComparisonGrid({
       role="region"
       aria-label="Comparison table"
       tabIndex={0}
-      className={`hidden max-h-[calc(100dvh-7.5rem)] overflow-auto overscroll-contain rounded-xl md:block [scrollbar-color:rgba(150,175,230,.28)_transparent] ${focusRing}`}
+      // relative: the containing block for the cells' screen-reader text, which
+      // otherwise escaped the scroll box and made the page 800 px too wide
+      className={`relative hidden max-h-[calc(100dvh-7.5rem)] overflow-auto overscroll-contain rounded-xl md:block [scrollbar-color:rgba(150,175,230,.28)_transparent] ${focusRing}`}
       style={{ border: `1px solid ${C.lineStrong}`, background: "rgba(7,11,26,.78)" }}
       data-testid="comparison-table"
     >

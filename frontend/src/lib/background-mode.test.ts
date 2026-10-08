@@ -24,10 +24,12 @@ describe("classifying the graphics the browser draws with", () => {
 });
 
 describe("choosing the background", () => {
-  it("auto follows the graphics: dedicated -> neural, integrated -> fibers, software -> static", () => {
-    expect(resolveBackground("auto", "dedicated", "auto").effect).toBe("neural");
-    expect(resolveBackground("auto", "integrated", "auto").effect).toBe("fibers");
-    expect(resolveBackground("auto", "software", "auto").effect).toBe("static");
+  it("auto follows the graphics: dedicated -> neural, integrated -> fibers, software -> lighter fibers, no WebGL -> still", () => {
+    expect(resolveBackground("auto", "dedicated", "auto")).toMatchObject({ effect: "neural", light: false });
+    expect(resolveBackground("auto", "integrated", "auto")).toMatchObject({ effect: "fibers", light: false });
+    // a weak GPU (drawing in software) still gets the fibers, at a lighter setting (2026-10-09)
+    expect(resolveBackground("auto", "software", "auto")).toMatchObject({ effect: "fibers", light: true });
+    expect(resolveBackground("auto", "none", "auto")).toMatchObject({ effect: "static" });
   });
 
   it("auto with graphics it can't name falls back to the startup hint, else the light animation", () => {
@@ -40,11 +42,18 @@ describe("choosing the background", () => {
   it("an explicit choice overrides auto, whatever the graphics", () => {
     expect(resolveBackground("animated", "software", "static").effect).toBe("neural");
     expect(resolveBackground("static", "dedicated", "neural").effect).toBe("static");
+    expect(resolveBackground("fibers", "dedicated", "neural")).toMatchObject({ effect: "fibers", light: false });
+    expect(resolveBackground("fibers", "software", "auto")).toMatchObject({ effect: "fibers", light: true });
+    // without WebGL nothing animated can draw, whatever was chosen
+    expect(resolveBackground("fibers", "none", "auto").effect).toBe("static");
+    expect(resolveBackground("animated", "none", "auto").effect).toBe("static");
   });
 
   it("says why it chose", () => {
     expect(resolveBackground("auto", "integrated", "auto").reason).toBe("Auto: no dedicated graphics found, so the lightweight fibers.");
     expect(resolveBackground("static", "dedicated", "auto").reason).toBe("You chose a still background.");
+    expect(resolveBackground("auto", "software", "auto").reason).toBe("Auto: the graphics here are weak (drawn in software), so the fibers at a lighter setting.");
+    expect(resolveBackground("fibers", "integrated", "auto").reason).toBe("You chose the fibers.");
   });
 });
 
@@ -53,6 +62,8 @@ describe("the background setting", () => {
     expect(readBackgroundChoice()).toBe("auto");
     writeBackgroundChoice("static");
     expect(readBackgroundChoice()).toBe("static");
+    writeBackgroundChoice("fibers");
+    expect(readBackgroundChoice()).toBe("fibers");
     window.localStorage.setItem("researchnexus.pref.background", "sparkles");
     expect(readBackgroundChoice()).toBe("auto");
   });

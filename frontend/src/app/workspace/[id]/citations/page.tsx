@@ -244,7 +244,7 @@ export default function CitationsPage() {
               </button>
             </div>
           ) : (
-            <div role="status" className="mt-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+            <div role="status" className="mt-8 grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
               <span className="sr-only">Loading the citations…</span>
               <div className="space-y-3">
                 {[0, 1, 2, 3].map((i) => (
@@ -299,7 +299,7 @@ export default function CitationsPage() {
               </div>
             </section>
 
-            <div className="mt-8 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+            <div className="mt-8 grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
               <section aria-labelledby="ledger">
                 <h2 id="ledger" className="sr-only">
                   Papers

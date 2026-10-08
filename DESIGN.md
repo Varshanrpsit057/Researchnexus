@@ -111,7 +111,7 @@ Depth comes from the background behind glass, not from shadows. Panels sit flat 
 - **Inline error**: danger text with a warning icon, naming the problem and the way out, beside the thing that failed.
 - **Dialog**: native `<dialog>`, glass 2, used only for confirmations that protect data (deleting a workspace) and short forms (creating a workspace).
 - **Evidence**: verbatim passages with the supporting sentence marked and section/page beside them; a value without a passage is not shown.
-- **Background**: Auto picks the animated neural network (dedicated GPU), GhostFibers (integrated graphics) or a still field (software rendering); the reader can override it in Settings > Appearance. The research graph page morphs the network into the graph.
+- **Background**: Auto picks the animated neural network (dedicated GPU), GhostFibers (integrated graphics), GhostFibers at a lighter setting where the GPU is weak and draws in software (half resolution, 24 fps, three layers), or a still field only without WebGL; the reader can choose Neural network, Fibers or Static in Settings > Appearance. The research graph page morphs the network (or the fibers) into the graph.
 
 ## Motion
 

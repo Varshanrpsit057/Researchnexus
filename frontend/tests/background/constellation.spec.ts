@@ -1,18 +1,19 @@
 // spec: the one global background, by device and setting (remediation Phase 14).
 //
 // Auto picks from the graphics the browser really draws with: the neural
-// network with a dedicated GPU, GhostFibers without one, a still background
-// when graphics run in software -- Playwright's own headless Chromium draws
+// network with a dedicated GPU, GhostFibers without one, GhostFibers at a
+// lighter setting where the GPU is weak (drawn in software), and a still
+// background only without WebGL -- Playwright's own headless Chromium draws
 // in software (SwiftShader), so that is what Auto sees here unless a test
-// launches Chromium on the real GPU. Explicit Animated / Static choices
-// override Auto. Exactly one effect is ever mounted.
+// launches Chromium on the real GPU. Explicit Neural network / Fibers /
+// Static choices override Auto. Exactly one effect is ever mounted.
 import { test, expect, type Page } from "@playwright/test";
 
 function background(page: Page) {
   return page.getByTestId("background");
 }
 
-async function choose(page: Page, choice: "auto" | "animated" | "static") {
+async function choose(page: Page, choice: "auto" | "animated" | "fibers" | "static") {
   await page.addInitScript((c) => window.localStorage.setItem("researchnexus.pref.background", c), choice);
 }
 
@@ -74,9 +75,25 @@ test.describe("Global background", () => {
     await expect.poll(lit, { timeout: 5_000 }).toBeGreaterThan(0.02);
   });
 
-  test("Auto on software graphics shows a still background: no canvas, nothing animating", async ({ page }) => {
+  test("Auto on a weak GPU (drawing in software) runs the fibers at a lighter setting, and they move", async ({ page }) => {
     await page.goto("/");
     await expect(background(page)).toHaveAttribute("data-tier", "software");
+    await expect(background(page)).toHaveAttribute("data-effect", "fibers");
+    await expect(background(page)).toHaveAttribute("data-quality", "light");
+    const fibers = page.getByTestId("ghost-fibers");
+    await expect(fibers.locator("canvas")).toHaveCount(1);
+    // half the resolution: a quarter of the pixels of the integrated-graphics setting
+    const ratio = await fibers.locator("canvas").evaluate((c: HTMLCanvasElement) => c.width / c.getBoundingClientRect().width);
+    expect(ratio).toBeGreaterThan(0.45);
+    expect(ratio).toBeLessThan(0.55);
+    expect(await animating(page)).toBe(true);
+  });
+
+  test("without WebGL there is a still background: no canvas, nothing animating", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as unknown as { __RN_GPU__: string }).__RN_GPU__ = "none";
+    });
+    await page.goto("/");
     await expect(background(page)).toHaveAttribute("data-effect", "static");
     await expect(background(page).locator("canvas")).toHaveCount(0);
     await expect(page.getByTestId("static-background")).toBeVisible();
@@ -91,6 +108,7 @@ test.describe("Global background", () => {
     });
     await page.goto("/");
     await expect(background(page)).toHaveAttribute("data-effect", "fibers");
+    await expect(background(page)).toHaveAttribute("data-quality", "full");
     const fibers = page.getByTestId("ghost-fibers");
     await expect(fibers.locator("canvas")).toHaveCount(1);
     // laptop-safe: never drawn above 1x, whatever the screen's pixel density
@@ -108,11 +126,16 @@ test.describe("Global background", () => {
     await page.waitForURL(/\/home$/);
     await page.goto("/settings#appearance");
     const group = page.getByRole("group", { name: "Background" });
-    await expect(page.getByText("Auto: this browser draws in software, so a still background.")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Auto: the graphics here are weak (drawn in software), so the fibers at a lighter setting.")).toBeVisible({ timeout: 10_000 });
 
-    await group.getByRole("button", { name: "Animated" }).click();
+    await group.getByRole("button", { name: "Neural network" }).click();
     await expect(background(page)).toHaveAttribute("data-effect", "neural");
     await expect(background(page).locator("canvas")).toHaveCount(1);
+    // the fibers on their own, at the lighter setting this weak (software) GPU needs
+    await group.getByRole("button", { name: "Fibers" }).click();
+    await expect(background(page)).toHaveAttribute("data-effect", "fibers");
+    await expect(background(page)).toHaveAttribute("data-quality", "light");
+    await expect(page.getByText("You chose the fibers.", { exact: false })).toBeVisible();
     await group.getByRole("button", { name: "Static" }).click();
     await expect(background(page)).toHaveAttribute("data-effect", "static");
     await expect(background(page).locator("canvas")).toHaveCount(0);

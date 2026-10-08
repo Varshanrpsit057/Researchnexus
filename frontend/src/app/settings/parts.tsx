@@ -237,7 +237,7 @@ export function KeyForm({
       <h3 id={`${id}-t`} className="text-[15px] font-bold">
         Add or replace a key
       </h3>
-      <div className="mt-3 grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
         <div>
           <label htmlFor={`${id}-provider`} className="text-[12.5px] font-semibold" style={{ color: C.muted }}>
             Provider
@@ -348,7 +348,7 @@ export function WorkspaceRow({ ws, onSaved, extra }: { ws: Workspace; onSaved: (
 
   return (
     <li className="px-4 py-4" data-testid={`workspace-${ws.workspace_id}`}>
-      <form onSubmit={save} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+      <form onSubmit={save} className="grid grid-cols-[minmax(0,1fr)] gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <label htmlFor={titleId} className="block min-w-0">
           <span className="text-[12.5px] font-semibold" style={{ color: C.muted }}>
             Name

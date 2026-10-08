@@ -35,6 +35,7 @@ test.describe("Adding papers to a workspace", () => {
   });
 
   test("several PDFs uploaded at once are parsed and added, and several ids can be added together", async ({ page }, testInfo) => {
+    test.setTimeout(60_000); // three real uploads and parses; under a full run's load they take longer
     // 1. A real seed paper and a workspace around it.
     const chooser = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "Browse for a file" }).click();

@@ -370,7 +370,7 @@ export default function DirectionsPage() {
             <div role="status" className="mt-8 space-y-4">
               <span className="sr-only">Loading the directions…</span>
               <div className="h-40 rounded-2xl motion-safe:animate-pulse" style={panel} />
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+              <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
                 <div className="h-72 rounded-2xl motion-safe:animate-pulse" style={panel} />
                 <div className="hidden h-72 rounded-2xl motion-safe:animate-pulse lg:block" style={panel} />
               </div>
@@ -405,7 +405,7 @@ export default function DirectionsPage() {
                   No gap is accepted right now, so no new directions can be proposed. The directions below stay, with the gap each came from.
                 </p>
               ) : (
-                <ul className="mt-3 grid gap-2 md:grid-cols-2" aria-label="Accepted gaps to propose from">
+                <ul className="mt-3 grid grid-cols-[minmax(0,1fr)] gap-2 md:grid-cols-2" aria-label="Accepted gaps to propose from">
                   {accepted.map((g) => {
                     const on = picked.includes(g.gap_id);
                     const n = perGap.get(g.gap_id) ?? 0;
@@ -511,7 +511,7 @@ export default function DirectionsPage() {
                 </div>
               )
             ) : (
-              <div className="mt-8 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+              <div className="mt-8 grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
                 <section aria-labelledby="dir-list">
                   <h2 id="dir-list" className="sr-only">
                     Directions

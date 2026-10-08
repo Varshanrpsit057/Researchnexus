@@ -382,7 +382,7 @@ export default function GapsPage() {
               </button>
             </div>
           ) : (
-            <div role="status" className="mt-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+            <div role="status" className="mt-8 grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
               <span className="sr-only">Loading the gaps…</span>
               <div className="space-y-3">
                 {[0, 1, 2].map((i) => (
@@ -528,7 +528,7 @@ export default function GapsPage() {
                 </div>
               )
             ) : (
-              <div className="mt-8 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+              <div className="mt-8 grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
                 <section aria-labelledby="gap-list">
                   <h2 id="gap-list" className="sr-only">
                     Gaps

@@ -6,18 +6,22 @@
  * one installed -- and picks:
  *   dedicated GPU          -> the neural network (the richer animation)
  *   integrated graphics    -> GhostFibers (one light full-screen shader)
- *   software rendering     -> a still background (no animation at all)
+ *   a weak GPU, drawing in software -> GhostFibers at a lighter setting
+ *                             (half resolution, 24 fps, three layers;
+ *                             2026-10-09 -- it used to be a still frame)
+ *   no WebGL at all        -> a still background (nothing animated can draw)
  * When the browser won't name its graphics, the startup hint from start.py
  * (NEXT_PUBLIC_RN_BACKGROUND, from the machine's own adapter list) decides.
- * Nothing assumes NVIDIA or CUDA exists. An explicit Animated or Static
- * choice overrides Auto; it is kept in this browser only.
+ * Nothing assumes NVIDIA or CUDA exists. An explicit choice (neural network,
+ * fibers or still) overrides Auto; it is kept in this browser only.
  */
 "use client";
 
 import { useSyncExternalStore } from "react";
 
-export type GpuTier = "dedicated" | "integrated" | "software" | "unknown";
-export type BackgroundChoice = "auto" | "animated" | "static";
+export type GpuTier = "dedicated" | "integrated" | "software" | "none" | "unknown";
+/** "animated" is the neural network (its stored name from before the fibers could be chosen). */
+export type BackgroundChoice = "auto" | "animated" | "fibers" | "static";
 export type BackgroundEffect = "neural" | "fibers" | "static";
 
 const SOFTWARE = [
@@ -56,7 +60,7 @@ export function detectGraphics(): DetectedGraphics {
   try {
     const canvas = document.createElement("canvas");
     const gl = (canvas.getContext("webgl2") ?? canvas.getContext("webgl")) as WebGLRenderingContext | null;
-    if (!gl) return (detected = { tier: "software", renderer: null }); // no WebGL: nothing animated can run well
+    if (!gl) return (detected = { tier: "none", renderer: null }); // no WebGL: nothing animated can draw
     const info = gl.getExtension("WEBGL_debug_renderer_info");
     renderer = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
     gl.getExtension("WEBGL_lose_context")?.loseContext();
@@ -72,15 +76,20 @@ export function resolveBackground(
   choice: BackgroundChoice,
   tier: GpuTier,
   hint: string | undefined,
-): { effect: BackgroundEffect; reason: string } {
-  if (choice === "static") return { effect: "static", reason: "You chose a still background." };
-  if (choice === "animated") return { effect: "neural", reason: "You chose the animated background." };
-  if (tier === "dedicated") return { effect: "neural", reason: "Auto: dedicated graphics found, so the animated neural network." };
-  if (tier === "integrated") return { effect: "fibers", reason: "Auto: no dedicated graphics found, so the lightweight fibers." };
-  if (tier === "software") return { effect: "static", reason: "Auto: this browser draws in software, so a still background." };
+): { effect: BackgroundEffect; light: boolean; reason: string } {
+  // a weak GPU draws the fibers at a lighter setting, whoever chose them
+  const light = tier === "software";
+  if (choice === "static") return { effect: "static", light: false, reason: "You chose a still background." };
+  if (tier === "none") return { effect: "static", light: false, reason: "This browser has no WebGL, so a still background." };
+  if (choice === "animated") return { effect: "neural", light: false, reason: "You chose the neural network." };
+  if (choice === "fibers") return { effect: "fibers", light, reason: "You chose the fibers." };
+  if (tier === "dedicated") return { effect: "neural", light: false, reason: "Auto: dedicated graphics found, so the animated neural network." };
+  if (tier === "integrated") return { effect: "fibers", light: false, reason: "Auto: no dedicated graphics found, so the lightweight fibers." };
+  if (tier === "software")
+    return { effect: "fibers", light: true, reason: "Auto: the graphics here are weak (drawn in software), so the fibers at a lighter setting." };
   const fromStart = hint ? HINTS[hint] : undefined;
-  if (fromStart) return { effect: fromStart, reason: "Auto: the browser didn't name its graphics, so the startup check decided." };
-  return { effect: "fibers", reason: "Auto: the graphics couldn't be identified, so the lightweight fibers." };
+  if (fromStart) return { effect: fromStart, light: false, reason: "Auto: the browser didn't name its graphics, so the startup check decided." };
+  return { effect: "fibers", light: false, reason: "Auto: the graphics couldn't be identified, so the lightweight fibers." };
 }
 
 // -- the setting, kept in this browser -----------------------------------------
@@ -88,7 +97,7 @@ export function resolveBackground(
 const KEY = "researchnexus.pref.background";
 const LEGACY_KEY = "researchnexus.pref.backgroundMotion"; // "moving" | "still", before Phase 14
 const EVENT = "researchnexus:background";
-const CHOICES: readonly BackgroundChoice[] = ["auto", "animated", "static"];
+const CHOICES: readonly BackgroundChoice[] = ["auto", "animated", "fibers", "static"];
 
 export function readBackgroundChoice(): BackgroundChoice {
   try {
@@ -127,7 +136,7 @@ export function useBackgroundChoice(): BackgroundChoice {
 
 /** The background in effect here, once the browser is known (null before:
  * the server can't know the device, so nothing is drawn until the client does). */
-export function useBackground(): ({ effect: BackgroundEffect; reason: string } & DetectedGraphics & { choice: BackgroundChoice }) | null {
+export function useBackground(): ({ effect: BackgroundEffect; light: boolean; reason: string } & DetectedGraphics & { choice: BackgroundChoice }) | null {
   const choice = useBackgroundChoice();
   // probed once, on the client; the server renders without it
   const graphics = useSyncExternalStore(subscribeNever, detectGraphics, () => null);

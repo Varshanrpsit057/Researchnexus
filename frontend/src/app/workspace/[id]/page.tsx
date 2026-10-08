@@ -357,7 +357,7 @@ function ResearchPath({ stations, next, base }: { stations: Station[]; next: Sta
             animate={{ scaleY: 1 }}
             transition={transition}
           />
-          <ol className="relative grid gap-5 lg:grid-cols-5 lg:gap-3">
+          <ol className="relative grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-5 lg:gap-3">
           {stations.map((s) => {
             const isNext = next?.key === s.key;
             const href = s.key === "papers" ? "#papers" : sectionHref(base, s.slug);

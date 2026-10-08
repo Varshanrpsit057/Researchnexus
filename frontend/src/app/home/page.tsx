@@ -112,7 +112,7 @@ export default function HomePage() {
             <h2 id="how-heading" className="text-lg font-bold">
               How a review goes
             </h2>
-            <ol className="mt-5 grid gap-px overflow-hidden rounded-2xl md:grid-cols-5" style={{ ...panel, background: C.line }}>
+            <ol className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-px overflow-hidden rounded-2xl md:grid-cols-5" style={{ ...panel, background: C.line }}>
               {STEPS.map((s, i) => (
                 <li key={s.title} className="px-5 py-5" style={{ background: "rgba(8,12,26,.92)" }}>
                   <span className="text-[13px] font-semibold tabular-nums" style={{ color: C.mint }}>
@@ -128,7 +128,7 @@ export default function HomePage() {
           </section>
         </Reveal>
       ) : (
-        <div className="mt-14 grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-12">
+        <div className="mt-14 grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-12">
           <Reveal delay={0.08}>
             <section aria-labelledby="ws-heading">
               <div className="flex items-baseline justify-between gap-3">

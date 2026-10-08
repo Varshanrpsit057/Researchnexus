@@ -196,7 +196,7 @@ export const DirectionDetail = forwardRef<
           <h3 id={`${headingId}-plan`} className="sr-only">
             The plan
           </h3>
-          <dl className="grid sm:grid-cols-3">
+          <dl className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-3">
             <PlanCell term="Method" value={direction.suggested_method || "Not named"} empty={!direction.suggested_method} />
             <PlanCell term="Data" value={direction.possible_dataset ?? "Not named"} empty={!direction.possible_dataset} bordered />
             <PlanCell term="How to test it" value={direction.evaluation_strategy || "Not specified"} empty={!direction.evaluation_strategy} bordered />

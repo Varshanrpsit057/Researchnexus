@@ -133,7 +133,7 @@ function Names({ items }: { items: ProfileItem[] }) {
 
 function Rows({ groups }: { groups: Group[] }) {
   return (
-    <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[132px_minmax(0,1fr)]">
+    <dl className="grid grid-cols-[minmax(0,1fr)] gap-x-6 gap-y-3 sm:grid-cols-[132px_minmax(0,1fr)]">
       {groups.map((g) => (
         <div key={g.label} className="contents">
           <dt className="pt-0.5 text-[13px] font-medium" style={{ color: C.muted }}>

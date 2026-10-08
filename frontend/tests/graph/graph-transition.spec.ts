@@ -92,6 +92,8 @@ test.describe("Background to graph", () => {
   });
 
   test("the still background fades behind the graph, with no animation", async ({ page }) => {
+    // chosen: software drawing gets the light fibers since 2026-10-09
+    await page.evaluate(() => window.localStorage.setItem("researchnexus.pref.background", "static"));
     const ws = await graphWorkspace(page);
     seedId = ws.seedId;
     await throughTheGraph(page, ws.workspaceId, "static", "static-background");

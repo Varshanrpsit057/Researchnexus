@@ -144,15 +144,17 @@ export default function SettingsPage() {
         {announcement}
       </p>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[232px_minmax(0,1fr)] lg:gap-12">
-        <nav aria-label="Settings sections" className="lg:sticky lg:top-6 lg:self-start">
-          <ul className="-mx-1 flex gap-1 overflow-x-auto pb-1 lg:mx-0 lg:flex-col lg:gap-0 lg:overflow-visible lg:pb-0">
+      {/* minmax(0,1fr): the column never grows past the window. The sidebar
+          from 768 px; narrower, the sections wrap, so none is out of sight. */}
+      <div className="mt-8 grid grid-cols-[minmax(0,1fr)] gap-8 md:grid-cols-[208px_minmax(0,1fr)] md:gap-10 lg:grid-cols-[232px_minmax(0,1fr)] lg:gap-12">
+        <nav aria-label="Settings sections" className="min-w-0 md:sticky md:top-6 md:self-start">
+          <ul className="flex flex-wrap gap-1.5 md:flex-col md:flex-nowrap md:gap-0">
             {SECTIONS.map((group, g) =>
               group.map((s, i) => {
                 const on = s.id === section;
                 const Icon = s.icon;
                 return (
-                  <li key={s.id} className={g > 0 && i === 0 ? "lg:mt-3 lg:border-t lg:pt-3" : ""} style={{ borderColor: C.line }}>
+                  <li key={s.id} className={g > 0 && i === 0 ? "md:mt-3 md:border-t md:pt-3" : ""} style={{ borderColor: C.line }}>
                     <a
                       href={`#${s.id}`}
                       onClick={(e) => {
@@ -160,8 +162,12 @@ export default function SettingsPage() {
                         open(s.id);
                       }}
                       aria-current={on ? "page" : undefined}
-                      className={`flex min-h-11 items-center gap-2.5 whitespace-nowrap rounded-xl px-3 text-[14px] transition-colors lg:min-h-10 ${on ? "" : "hover:bg-white/[0.05] hover:text-white"} ${focusRing}`}
-                      style={on ? { background: "rgba(93,240,168,.09)", color: C.ink } : { color: C.muted }}
+                      className={`flex min-h-11 items-center gap-2.5 whitespace-nowrap rounded-xl px-3 text-[14px] transition-colors md:min-h-10 ${on ? "" : "hover:bg-white/[0.05] hover:text-white"} ${focusRing}`}
+                      style={
+                        on
+                          ? { background: "rgba(93,240,168,.09)", color: C.ink, border: "1px solid rgba(93,240,168,.22)" }
+                          : { color: C.muted, border: "1px solid transparent" }
+                      }
                     >
                       <Icon className="size-[18px] shrink-0" weight={on ? "fill" : "regular"} aria-hidden />
                       <span className={on ? "font-semibold" : ""}>{s.label}</span>
@@ -237,7 +243,7 @@ function AccountPane({ onOpen, announce }: { onOpen: (id: SectionId) => void; an
         </div>
       )}
       <div className="rounded-2xl p-5" style={panel}>
-        <dl className="grid gap-5 sm:grid-cols-2">
+        <dl className="grid grid-cols-[minmax(0,1fr)] gap-5 sm:grid-cols-2">
           <Field term="Email">
             <span className="text-[16px] font-semibold [overflow-wrap:anywhere]">{me.email}</span>
           </Field>
@@ -409,7 +415,7 @@ function AppearancePane({ announce }: { announce: (text: string) => void }) {
       <Choice
         label="Background"
         hint={[
-          "Auto picks by the graphics this browser uses: the animated neural network with a dedicated GPU, lightweight fibers without one, a still background when graphics run in software.",
+          "Auto picks by the graphics this browser uses: the neural network with a dedicated GPU, the fibers without one, and the fibers at a lighter setting where the GPU is weak (drawn in software). Only a browser without WebGL gets a still background.",
           background ? `${background.reason}${background.renderer ? ` Graphics in use: ${rendererName(background.renderer)}.` : ""}` : "",
           systemReduced ? "Your system asks for reduced motion, so any animation stays still." : "",
         ]
@@ -417,7 +423,8 @@ function AppearancePane({ announce }: { announce: (text: string) => void }) {
           .join(" ")}
         options={[
           { value: "auto", label: "Auto" },
-          { value: "animated", label: "Animated" },
+          { value: "animated", label: "Neural network" },
+          { value: "fibers", label: "Fibers" },
           { value: "static", label: "Static" },
         ]}
         value={backgroundChoice}
@@ -457,7 +464,7 @@ function ServicePane({ ready }: { ready: boolean }) {
             Checking the server…
           </p>
         ) : (
-          <dl className="grid gap-5 sm:grid-cols-3">
+          <dl className="grid grid-cols-[minmax(0,1fr)] gap-5 sm:grid-cols-3">
             <Field term="Server">
               <span className="font-mono text-[13px]">{API_BASE_URL}</span>
             </Field>
@@ -522,7 +529,7 @@ function Choice({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start">
       <p className="text-[14px] font-semibold sm:pt-2">{label}</p>
       <div>
         <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">

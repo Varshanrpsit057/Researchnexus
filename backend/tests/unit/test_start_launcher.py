@@ -63,7 +63,7 @@ def test_background_follows_the_best_gpu() -> None:
     # a laptop with both: the dedicated GPU decides
     assert start.background_mode([gpu("Intel UHD", "integrated"), gpu("RTX 4060", "dedicated")]) == "neural"
     assert start.background_mode([gpu("Intel UHD", "integrated")]) == "fibers"
-    assert start.background_mode([gpu("Microsoft Basic Display Adapter", "software")]) == "static"
+    assert start.background_mode([gpu("Microsoft Basic Display Adapter", "software")]) == "fibers"  # weak: the light fibers
     # nothing known: the browser's own check decides
     assert start.background_mode([]) == "auto"
     assert start.background_mode([gpu("?", "unknown")]) == "auto"
@@ -106,8 +106,8 @@ def test_linux_without_nvidia_smi_or_lspci_asks_nothing_it_cannot_run(monkeypatc
         (["Intel(R) UHD Graphics 620"], "fibers"),  # a thin laptop: integrated only
         (["AMD Radeon(TM) Graphics"], "fibers"),  # an AMD APU laptop
         (["Intel(R) Iris(R) Xe Graphics", "NVIDIA GeForce RTX 4060 Laptop GPU"], "neural"),  # hybrid: the dGPU decides
-        (["Microsoft Basic Display Adapter"], "static"),  # no driver: software only
-        (["VMware SVGA 3D"], "static"),  # a virtual machine
+        (["Microsoft Basic Display Adapter"], "fibers"),  # no driver: software only, the light fibers
+        (["VMware SVGA 3D"], "fibers"),  # a virtual machine
         ([], "auto"),  # nothing reported
     ],
 )

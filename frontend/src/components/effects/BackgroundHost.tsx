@@ -15,8 +15,9 @@ const GhostFibersBackground = dynamic(() => import("./GhostFibersBackground"), {
  * lib/background-mode.ts (Auto from the graphics in use, or the user's
  * choice), and switched in place when the setting changes. Until the browser
  * is known only the dark ground is drawn. Exposes what it chose for tests and
- * diagnostics: data-effect, data-tier, data-mode ("graph" while a page holds
- * it in the graph transition). */
+ * diagnostics: data-effect, data-tier, data-quality (the fibers' lighter
+ * setting on a weak GPU), data-mode ("graph" while a page holds it in the
+ * graph transition). */
 export default function BackgroundHost() {
   const bg = useBackground();
   const [mode, setMode] = useState<"field" | "graph">("field");
@@ -29,10 +30,11 @@ export default function BackgroundHost() {
       data-effect={bg?.effect ?? "pending"}
       data-tier={bg?.tier ?? "pending"}
       data-choice={bg?.choice ?? "pending"}
+      data-quality={bg ? (bg.light ? "light" : "full") : "pending"}
       data-mode={mode}
     >
       {bg?.effect === "neural" && <Constellation className="h-full w-full" />}
-      {bg?.effect === "fibers" && <GhostFibersBackground />}
+      {bg?.effect === "fibers" && <GhostFibersBackground light={bg.light} />}
       {bg?.effect === "static" && <StaticBackground />}
     </div>
   );

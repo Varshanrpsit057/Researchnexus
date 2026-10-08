@@ -524,7 +524,7 @@ export function Results({
           </p>
         </div>
       ) : (
-        <div className="mt-2 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,27rem)]">
+        <div className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,27rem)]">
           <div className="rounded-2xl" style={{ background: C.glass, border: `1px solid ${C.line}` }}>
             {visible.length === 0 ? (
               <div className="px-6 py-14 text-center">

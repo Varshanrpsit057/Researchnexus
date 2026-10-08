@@ -16,8 +16,8 @@ Starting checks, and installs only what is missing:
 - Node >= 20.9, npm, and frontend/node_modules.
 It then detects the GPU and picks the background the frontend starts with:
 the neural network on a dedicated GPU, the lightweight fibers on an
-integrated one, a still frame on a software renderer. The browser can still
-decide on its own, and Settings overrides both.
+integrated one or a weak (software) renderer. The browser can still decide on
+its own, and Settings overrides both.
 
 The ports are fixed: the frontend runs only on 3000 and the backend only on
 8000. If one is held by a ResearchNexus server left over from an earlier run,
@@ -549,15 +549,14 @@ def classify_gpu(name: str) -> str:
 
 def background_mode(gpus: list[Gpu]) -> str:
     """The background the frontend starts with: `neural` (the full animated
-    network), `fibers` (the lightweight shader), `static`, or `auto` (let the
-    browser's own GPU check decide)."""
+    network), `fibers` (the lightweight shader -- also where the GPU is weak
+    and draws in software, at a lighter setting the browser picks), or `auto`
+    (let the browser's own GPU check decide)."""
     tiers = {g.tier for g in gpus}
     if "dedicated" in tiers:
         return "neural"
-    if "integrated" in tiers:
+    if tiers & {"integrated", "software"}:
         return "fibers"
-    if tiers == {"software"}:
-        return "static"
     return "auto"
 
 
