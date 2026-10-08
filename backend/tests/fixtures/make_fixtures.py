@@ -283,3 +283,29 @@ def make_ieee_style_pdf() -> bytes:
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def make_offset_columns_pdf() -> bytes:
+    """A two-column references page whose columns don't share baselines
+    (2026-10-07: a real arXiv paper's reference list): the left column at
+    11 pt leading under a "REFERENCES" heading, the right at 8.7 pt from a
+    slightly different top. Hardly any line has text on both sides of the
+    gutter, which a both-sides test took for one column -- the heading was
+    read as part of the right column's first line and the references were
+    never found."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(140, 742, "REFERENCES")
+    c.setFont("Helvetica", 8)
+    y = 724.0
+    for n in range(1, 31):
+        c.drawString(54, y, f"[{n}] A. Author{n} and B. Writer, Left entry title {n}, 2021.")
+        y -= 11.0
+    y = 739.0
+    for n in range(31, 71):
+        c.drawString(318, y, f"[{n}] C. Person{n}, Right entry title {n}, 2022.")
+        y -= 8.7
+    c.showPage()
+    c.save()
+    return buf.getvalue()

@@ -63,7 +63,8 @@ def _fill_from_pdf(db: Session, paper_id: str, parsed: ParsedPdf) -> TextOutcome
 
 
 def reread_stored_pdf(db: Session, paper_id: str, settings: Settings) -> TextOutcome:
-    """Read an uploaded paper's stored PDF again with the current reader."""
+    """Read a paper's stored PDF again with the current reader: an upload,
+    or a discovered paper whose PDF was fetched or uploaded later."""
     paper = repo.get_paper(db, paper_id)
     if paper is None:
         raise PaperNotFound(paper_id)
@@ -74,8 +75,9 @@ def reread_stored_pdf(db: Session, paper_id: str, settings: Settings) -> TextOut
     parsed = parse_pdf(paper_id, data, path.name, settings)
     repo.replace_text(db, paper_id, parsed)
     new_title = parsed.document.title
-    if new_title and new_title != paper.title and new_title != path.name:
-        # an upload's title is the PDF's: an earlier, worse read of it is replaced
+    if paper.source == "upload" and new_title and new_title != paper.title and new_title != path.name:
+        # an upload's title is the PDF's: an earlier, worse read of it is replaced;
+        # a discovered paper's comes from its record and stays
         paper.title = new_title
         paper.title_hash = title_hash_of(new_title)
         db.commit()

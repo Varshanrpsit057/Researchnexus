@@ -70,7 +70,8 @@ test.describe("Explore -> Curate", () => {
     //    not-yet-run discovery blocked reaching a workspace at all.
     await page.getByText("Skip discovery, start a workspace with just this paper").click();
     const dialog = page.getByRole("dialog", { name: "Create a workspace" });
-    await expect(dialog.getByText(`Only ${paperTitle}`, { exact: false })).toBeVisible();
+    await expect(dialog.getByText("Only this paper is added, as the seed.", { exact: false })).toBeVisible();
+    await expect(dialog.getByRole("textbox", { name: "Title" })).toHaveAttribute("placeholder", `${paperTitle} workspace`);
     await dialog.getByRole("button", { name: "Create workspace" }).click();
     await page.waitForURL(/\/workspace\/ws_/, { timeout: 10_000 });
     const workspaceId = page.url().split("/workspace/")[1].split(/[/?#]/)[0];
@@ -85,10 +86,11 @@ test.describe("Explore -> Curate", () => {
     //    services/workspace/pipeline.py's `_accept_edges_for_target`; the
     //    "Create workspace" dialog copy was silently wrong about this
     //    until this session's Slice 3 pass -- verifying it for real here).
-    await page.goto(`/workspaces/${workspaceId}/papers`);
-    await page.getByLabel("Add a paper by ID").fill(targetPaperId);
-    await page.getByRole("button", { name: "Add" }).click();
-    await expect(page.getByText(targetPaperId)).toBeVisible({ timeout: 5_000 });
+    await page.goto(`/workspace/${workspaceId}`);
+    await page.getByRole("button", { name: "Add papers" }).click();
+    await page.getByLabel("Add by paper ID").fill(targetPaperId);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.locator("#papers").getByText("A Playwright Fixture Related Paper")).toBeVisible({ timeout: 10_000 });
 
     // 5. The trail edge to that paper should already read ACCEPTED, not
     //    PENDING -- the real, live proof of the auto-accept behavior. (The

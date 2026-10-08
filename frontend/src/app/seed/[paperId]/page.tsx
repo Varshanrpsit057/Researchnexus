@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { useParams } from "next/navigation";
+import { useRef, useState, type ReactNode } from "react";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
 import { ArrowSquareOut, Compass, FileText, Sparkle, Table as TableIcon, WarningCircle } from "@phosphor-icons/react/dist/ssr";
-import { papers } from "@/lib/api/endpoints";
+import { papers, workspaces as workspacesApi } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
 import { useProfile } from "@/lib/api/hooks";
 import { useRequireAuth } from "@/lib/auth/use-require-auth";
@@ -15,6 +15,8 @@ import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPa
 import { ProfilePanel } from "@/components/profile/ProfilePanel";
 import { COVERAGE_LABEL } from "@/lib/coverage";
 import { RankingCriteriaControls } from "@/components/discovery/RankingCriteriaControls";
+import { CinematicDialog, type CinematicDialogHandle } from "@/components/ui/CinematicDialog";
+import { InlineError, focusRing, quietButton } from "@/components/cinematic/ui";
 import { DEFAULT_CRITERIA, criteriaError, criteriaName, sameCriteria, useSavedCriteria, writeCriteria } from "@/lib/ranking";
 import type { RankingCriteria } from "@/lib/api/types";
 
@@ -124,6 +126,8 @@ export default function SeedPaperPage() {
   }
 
   if (!paper) return null;
+  // the reader's workspaces that already hold it, so a second one isn't started by mistake
+  const holding = paper.workspaces ?? [];
 
   const externalRefs = [
     paper.doi ? { label: `doi:${paper.doi}`, href: `https://doi.org/${paper.doi}` } : null,
@@ -154,6 +158,21 @@ export default function SeedPaperPage() {
           <p className="mt-1 font-mono text-xs" style={{ color: C.muted2 }}>
             {paper.id}
           </p>
+          {holding.length > 0 && (
+            <p className="mt-3 flex flex-wrap items-center gap-1.5 text-[13px]" data-testid="paper-workspaces">
+              <span style={{ color: C.muted }}>In your workspace{holding.length === 1 ? "" : "s"}</span>
+              {holding.map((w) => (
+                <Link
+                  key={w.workspace_id}
+                  href={`/workspace/${w.workspace_id}`}
+                  className={`rounded-full px-2.5 py-0.5 transition-colors hover:text-white ${focusRing}`}
+                  style={{ border: `1px solid ${C.lineStrong}`, color: C.ink }}
+                >
+                  {w.title}
+                </Link>
+              ))}
+            </p>
+          )}
           {paper.warnings.length > 0 && (
             <ul className="mt-2 space-y-0.5">
               {paper.warnings.map((w) => (
@@ -264,7 +283,10 @@ export default function SeedPaperPage() {
                   paper&apos;s profile.
                 </p>
                 {profile ? (
-                  <DiscoveryStart paperId={paperId} />
+                  <>
+                    <DiscoveryStart paperId={paperId} />
+                    <StartWorkspace paperId={paperId} paperTitle={paper.title} />
+                  </>
                 ) : (
                   <>
                     <span
@@ -357,5 +379,89 @@ function StatusStat({ label, value }: { label: string; value: string }) {
       </dt>
       <dd className="mt-0.5 font-mono text-sm capitalize">{value}</dd>
     </div>
+  );
+}
+
+/** A workspace with just this paper as its seed -- no discovery first: a
+ * reader with their own papers adds them there (the old paper page had this;
+ * it is how a workspace of one's own papers starts). */
+function StartWorkspace({ paperId, paperTitle }: { paperId: string; paperTitle: string }) {
+  const router = useRouter();
+  const dialog = useRef<CinematicDialogHandle>(null);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const ws = await workspacesApi.create({ title: title.trim() || `${paperTitle} workspace`, seed_paper_id: paperId });
+      dialog.current?.close();
+      router.push(`/workspace/${ws.workspace_id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.message}.` : "The workspace couldn't be created: the server couldn't be reached.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => dialog.current?.show()}
+        className={`rounded-sm text-left text-[13px] underline decoration-[rgba(150,175,230,.35)] underline-offset-4 transition-colors hover:text-white ${focusRing}`}
+        style={{ color: C.muted }}
+      >
+        Skip discovery, start a workspace with just this paper
+      </button>
+      <CinematicDialog ref={dialog} title="Create a workspace" onClose={() => setError(null)}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+          className="space-y-4"
+        >
+          <label className="block text-left">
+            <span className="text-[13px] font-semibold" style={{ color: C.muted }}>
+              Title
+            </span>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={`${paperTitle} workspace`}
+              maxLength={200}
+              className={`mt-1 h-10 w-full rounded-xl px-3 text-[14px] ${focusRing}`}
+              style={{ background: "rgba(255,255,255,.04)", border: `1px solid ${C.lineStrong}`, color: C.ink }}
+            />
+          </label>
+          <p className="text-[13px] leading-relaxed" style={{ color: C.muted }}>
+            Only this paper is added, as the seed. Add your own papers there, or discover related ones later, and connect them on its research
+            trail.
+          </p>
+          {error && <InlineError message={error} />}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => dialog.current?.close()}
+              className={`rounded-full px-4 py-2 text-sm font-semibold hover:bg-white/10 ${focusRing}`}
+              style={{ ...quietButton, color: C.ink }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className={`rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-60 ${focusRing}`}
+              style={{ color: C.mintInk, background: `linear-gradient(180deg, ${C.mint}, ${C.mint2})` }}
+            >
+              {busy ? "Creating…" : "Create workspace"}
+            </button>
+          </div>
+        </form>
+      </CinematicDialog>
+    </>
   );
 }

@@ -28,6 +28,9 @@ function collectConsoleErrors(page: Page): string[] {
 }
 
 const provider = (page: Page, id: string) => page.getByTestId(`provider-${id}`);
+// each section is its own pane, opened from the sidebar (2026-10-06)
+const open = (page: Page, name: string | RegExp) =>
+  page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name }).click();
 
 test.describe("Settings", () => {
   test.beforeEach(() => {
@@ -50,11 +53,13 @@ test.describe("Settings", () => {
 
     // 1. account (real /me)
     await expect(page.locator("#account")).toContainText(EMAIL);
-    await expect(page.locator("#account")).toContainText("Local sign-in: the email is the account.");
+    await expect(page.locator("#account")).toContainText("Local sign-in: the email is the account");
     await page.getByRole("button", { name: "Copy the account ID" }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^usr_/);
 
     // 2. keys, and which provider every model stage uses (real list + /me)
+    await open(page, /^Language models/);
+    await expect(page.getByRole("link", { name: /^Language models/ })).toHaveAttribute("aria-current", "page");
     const status = page.getByTestId("model-status");
     await expect(status).toHaveText(/use Groq, the first working key you saved\. Choose a default to decide\./);
     await expect(provider(page, "groq")).toContainText("Working");
@@ -119,6 +124,7 @@ test.describe("Settings", () => {
     await expect(provider(page, "gemini")).toContainText("•••• gm03");
 
     // 4. model usage: the providers' own token counts from the real ledger, over a stated range -- and no cost
+    await open(page, "Model usage");
     await expect(page.getByTestId("usage-summary")).toHaveText("No model calls in the last 30 days.");
     const seeded = usage("seed", EMAIL) as { workspace_id: string; title: string };
     await page.reload();
@@ -157,18 +163,20 @@ test.describe("Settings", () => {
     await page.goto("/settings");
 
     // 5. a workspace's name is saved (real PATCH); there is no spending cap any more
+    await open(page, "Library & workspaces");
     const firstWorkspace = page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first();
     await expect(firstWorkspace.getByLabel("Spending cap (USD)")).toHaveCount(0);
-    const name = firstWorkspace.getByLabel("Name");
+    const name = firstWorkspace.getByLabel("Name", { exact: true });
     const originalName = await name.inputValue();
     await name.fill(`${originalName} (renamed)`);
     await firstWorkspace.getByRole("button", { name: "Save" }).click();
     await expect(firstWorkspace.getByText("Saved.")).toBeVisible();
     const workspaceHref = await firstWorkspace.getByRole("link", { name: "Open workspace" }).getAttribute("href");
     await page.reload();
-    await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first().getByLabel("Name")).toHaveValue(`${originalName} (renamed)`);
+    await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first().getByLabel("Name", { exact: true })).toHaveValue(`${originalName} (renamed)`);
 
     // 6. this device: a still background, and the reference style the citations page opens in
+    await open(page, "Appearance");
     await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Static" }).click();
     await expect(page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Static" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("background")).toHaveAttribute("data-effect", "static");
@@ -178,20 +186,23 @@ test.describe("Settings", () => {
     await expect(page.getByRole("group", { name: "Reference style" }).first().getByRole("button", { name: "IEEE" })).toHaveAttribute("aria-pressed", "true", {
       timeout: 10_000,
     });
-    await page.goto("/settings");
+    await page.goto("/settings#library");
     // leave the workspace and this device as they were
     const restore = page.getByRole("list", { name: "Workspaces" }).getByRole("listitem").first();
-    await restore.getByLabel("Name").fill(originalName);
+    await restore.getByLabel("Name", { exact: true }).fill(originalName);
     await restore.getByRole("button", { name: "Save" }).click();
     await expect(restore.getByText("Saved.")).toBeVisible();
+    await open(page, "Appearance");
     await page.getByRole("group", { name: "Background" }).getByRole("button", { name: "Auto" }).click();
     await page.getByRole("group", { name: "Reference style" }).getByRole("button", { name: "APA" }).click();
 
     // 7. the service (real /health)
+    await open(page, "Service & about");
     await expect(page.getByTestId("service-status")).toContainText("http://localhost:8000");
     await expect(page.getByTestId("service-status")).toContainText("Connected · database ok");
 
     // 8. signing out
+    await open(page, "Account");
     await page.locator("#account").getByRole("button", { name: "Sign out" }).click();
     await page.waitForURL(/\/sign-in/);
     expect(consoleErrors).toEqual([]);
@@ -199,8 +210,9 @@ test.describe("Settings", () => {
 
   test("a server that can't be reached is said plainly", async ({ page }) => {
     await page.route("**/health", (route) => route.abort("failed"));
-    await page.goto("/settings");
+    await page.goto("/settings#service");
     await expect(page.getByTestId("service-status")).toContainText("Can't reach the server at http://localhost:8000.", { timeout: 10_000 });
+    await open(page, /^Language models/);
     await expect(page.getByTestId("model-status")).toContainText("No working key is saved"); // real: none saved
   });
 });

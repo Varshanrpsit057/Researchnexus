@@ -184,10 +184,28 @@ Open from this round:
 - A profile's other fields (problem, methods, ...) were extracted from the earlier read; only the abstract is replaced on read. "Analyze" again refreshes them.
 - Some uploads' titles match no source record (theses, course reports, preprints without a DOI), so their records stay as the PDF gives them.
 
+## Final round: one app, a real library, Settings in sections (reported 2026-10-06)
+The user's report: the Papers and Workspaces pages were still in the old theme, Settings was one long scroll, and the app needed a last pass before a college presentation. The user chose: Settings sections for discovery defaults, sources & full text, and library & data; a server-side library with safer sign-in; pins, tags and notes moved onto the workspace overview.
+
+| Area | Done |
+|---|---|
+| One dark world | `/papers` (library + upload), `/papers/[id]` (the seed page), `/workspaces`, `/workspace/[id]/activity` rebuilt in the cinematic world; the old shell (`(app)` group, AppShell and its light components) deleted; old URLs redirect. The root is dark before anything paints; selection, caret, placeholders, scrollbars and focus rings use the palette; the header marks the current section |
+| Paper library | `GET /api/v1/papers`: every paper the reader uploaded (now credited to them), analysed, searched from or collected, with coverage, profile, workspaces and its next step; search, views, sort. The paper page names the reader's workspaces holding it and offers "Skip discovery, start a workspace with just this paper" again (the old page had it; the new one had lost it) |
+| Workspaces | The list shows each seed, counts (one grouped query per table: 2 s → 0.4 s for 1,300 workspaces), rename in place and delete behind a confirmation that says what stays. Overview rows gain pin, tags and a note |
+| Settings | A sidebar of sections, one pane at a time, addressed by the URL hash (old `#models`/`#usage` links work): Account, Library & workspaces, Discovery defaults (weights; preferred publishers chosen from the publishers the server knows, sent with every discovery and re-rank and recorded on the run), Sources & full text (each source's use and set-up, a live check, never a key), Language models, Model usage, Appearance, Service & about |
+| Accounts | Sign-in matches an email whatever its case (exact spelling first, so no existing account becomes unreachable), says when it made a new account, and the sign-in page offers this browser's accounts and flags a new email before it makes one. Each session has its own data cache, so nothing fetched for one account can show for another (a sign-out and sign-in within 2 s used to reuse the old `/me`) |
+| Reliability | SQLite runs in WAL mode (a request awaiting the network made others queue: an upload took 5.5 s, the library never loaded); backups use SQLite's own backup. PDF columns: the gutter is looked for in the middle band only and columns need not share baselines -- measured on 975 stored pages: 34 two-column pages now read in order (a references page, OnBoard's page 3), 30 tables and prose pages no longer cut in half |
+| CI | Ruff import order and mypy under the newest SQLAlchemy 2.1/numpy fixed; GitHub Actions green |
+
+Open from this round:
+- Uploads made before uploads were credited to an account appear in the library only when they are in a workspace, were analysed or searched from by the reader, or this browser remembers them.
+- Preferred publishers and ranking weights are kept per browser, not per account.
+- Stored papers are read with the improved column detection only once re-read ("Read the PDF again", or the maintenance script).
+
 Found in Phases 9–16, open:
 - Answers stream once they are verified: the first words of a chat answer arrive after the check, about 6–8 s into a turn on DeepSeek (the stages are shown live before that). Streaming unverified words first would show sentences that may then be withdrawn.
 - Some source text carries U+FFFD where a PDF or a scholarly API lost a character ("Students’" read as "Students�", "[3�6]"); it is shown as stored, never repaired by guess.
-- Two-column PDFs can interleave lines, so a "sentence" the passage window marks may run across both columns; the passage is still verbatim.
+- Two-column PDFs can interleave lines, so a "sentence" the passage window marks may run across both columns; the passage is still verbatim. (Much reduced on 2026-10-02 and 2026-10-07; a page whose columns can't be told apart is still read straight across.)
 - No cross-encoder is installed (it needs the torch extra), so chat keeps the embedder's retrieval order; the MS MARCO cross-encoder was measured earlier and rejected for paper-to-paper ranking, not yet for chat.
 - The gaps page asks for each member's profile; members not profiled yet answer 404, which the page reports as "N of M papers have a research profile" but the browser console also lists.
 

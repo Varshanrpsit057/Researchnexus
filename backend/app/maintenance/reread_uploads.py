@@ -1,9 +1,12 @@
-"""Re-read every uploaded paper's stored PDF with the current reader and
-complete its record from its sources (remediation, 2026-10-02).
+"""Re-read every stored PDF with the current reader, and complete each
+upload's record from its sources (remediation, 2026-10-02; every stored
+PDF, not only uploads, since 2026-10-07).
 
 Earlier reads glued the words of tightly set PDFs together, read IEEE first
-pages across both columns and missed inline abstracts; this brings every
-stored upload up to the current reader. The database is copied first.
+pages across both columns, missed inline abstracts, and cut off-centre
+"columns" through tables and prose; this brings every stored PDF up to the
+current reader. A discovered paper keeps its record. The database is copied
+first.
 
 usage (from backend/):  python -m app.maintenance.reread_uploads [--no-metadata | --records-only]
 """
@@ -76,12 +79,16 @@ def main(argv: list[str]) -> int:
     configure(settings)
     db = get_session_factory()()
     try:
-        ids = [
-            pid
-            for pid, path in db.execute(select(PaperORM.id, PaperORM.pdf_path).where(PaperORM.source == "upload")).all()
+        # every paper with a stored PDF: uploads, and discovered papers whose
+        # full text was fetched or uploaded later (their record stays as found)
+        stored = [
+            (pid, source)
+            for pid, path, source in db.execute(select(PaperORM.id, PaperORM.pdf_path, PaperORM.source)).all()
             if path and Path(path).is_file()
         ]
-        print(f"{len(ids)} uploaded papers have a stored PDF")
+        ids = [pid for pid, _ in stored]
+        uploads = {pid for pid, source in stored if source == "upload"}
+        print(f"{len(ids)} papers have a stored PDF ({len(uploads)} uploads)")
         abstracts = found = failed = 0
         for n, pid in enumerate(ids, 1):
             try:
@@ -94,7 +101,7 @@ def main(argv: list[str]) -> int:
                 print(f"[{n}/{len(ids)}] {pid}: could not be read again ({type(e).__name__})")
                 continue
             abstracts += outcome.abstract_found
-            meta = complete_metadata(db, pid, settings) if lookups else {}
+            meta = complete_metadata(db, pid, settings) if lookups and pid in uploads else {}
             found += meta.get("metadata") == "found"
             print(f"[{n}/{len(ids)}] {pid}: {outcome.chunks} passages, abstract {'yes' if outcome.abstract_found else 'no'}, record {meta.get('metadata', 'skipped')}")
         print(f"done: {len(ids) - failed} read again ({abstracts} with an abstract), {found} records completed, {failed} failed")

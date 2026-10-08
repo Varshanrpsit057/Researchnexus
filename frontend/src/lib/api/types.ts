@@ -176,6 +176,8 @@ export interface Paper {
   has_abstract?: boolean;
   /** Absent from papers served before remediation Phase 7. */
   coverage?: PaperCoverage;
+  /** the signed-in reader's workspaces that hold it (absent from older servers) */
+  workspaces?: { workspace_id: string; title: string }[];
   parse_confidence: ParseConfidence | null;
   page_count: number | null;
   sections: PaperSection[];

@@ -106,7 +106,7 @@ test.describe("Global background", () => {
     await page.getByRole("textbox", { name: "Password" }).fill("anything");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.waitForURL(/\/home$/);
-    await page.goto("/settings");
+    await page.goto("/settings#appearance");
     const group = page.getByRole("group", { name: "Background" });
     await expect(page.getByText("Auto: this browser draws in software, so a still background.")).toBeVisible({ timeout: 10_000 });
 

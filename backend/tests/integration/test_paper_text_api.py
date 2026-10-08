@@ -44,6 +44,10 @@ def test_a_discovered_paper_gains_its_full_text_from_a_pdf_the_reader_uploads(tm
     finally:
         db.close()
 
+    # reading that PDF again keeps the record's title too (2026-10-07: it used to take the PDF's)
+    assert client.post("/api/v1/papers/pap_paywalled/reread", headers=_headers(token)).status_code == 200
+    assert client.get("/api/v1/papers/pap_paywalled").json()["title"] == "Found pap_paywalled"
+
     assert client.post("/api/v1/papers/pap_none/pdf", files={"file": ("x.pdf", ieee_style_pdf_bytes, "application/pdf")}, headers=_headers(token)).status_code == 404
     not_pdf = client.post("/api/v1/papers/pap_paywalled/pdf", files={"file": ("x.pdf", b"hello", "application/pdf")}, headers=_headers(token))
     assert not_pdf.status_code in (415, 422)

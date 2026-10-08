@@ -1,9 +1,9 @@
 "use client";
 
 import { createContext, useCallback, useContext, useSyncExternalStore, type ReactNode } from "react";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR from "swr";
 import { auth } from "@/lib/api/endpoints";
-import { clearToken, getToken, setToken } from "./token";
+import { clearToken, getToken, setToken, subscribeToToken } from "./token";
 import { noteNewAccount, recordAccount } from "@/lib/recent-accounts";
 import type { MeResponse } from "@/lib/api/types";
 
@@ -32,15 +32,6 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * (which may well be "yes, there is a token") ever gets a chance to apply. */
 type TokenState = "unknown" | "present" | "absent";
 
-function subscribeToToken(callback: () => void): () => void {
-  window.addEventListener("researchnexus:auth", callback);
-  window.addEventListener("storage", callback);
-  return () => {
-    window.removeEventListener("researchnexus:auth", callback);
-    window.removeEventListener("storage", callback);
-  };
-}
-
 function getTokenSnapshot(): TokenState {
   return getToken() ? "present" : "absent";
 }
@@ -58,27 +49,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     revalidateOnFocus: false,
   });
 
-  // every cached response belongs to the account that fetched it: a new
-  // sign-in, or signing out, starts from nothing so no other account's data shows
-  const { mutate: mutateAll } = useSWRConfig();
-  const forgetCached = useCallback(() => mutateAll(() => true, undefined, { revalidate: false }), [mutateAll]);
-
-  const signIn = useCallback(
-    async (email: string, password: string) => {
-      const session = await auth.createSession(email, password);
-      await forgetCached();
-      setToken(session.token);
-      recordAccount(email);
-      if (session.created) noteNewAccount(email);
-      return { created: Boolean(session.created) };
-    },
-    [forgetCached],
-  );
+  // every sign-in and sign-out gets a fresh data cache (Providers keys it by
+  // the token), so no other account's responses can show
+  const signIn = useCallback(async (email: string, password: string) => {
+    const session = await auth.createSession(email, password);
+    recordAccount(email);
+    if (session.created) noteNewAccount(email);
+    setToken(session.token);
+    return { created: Boolean(session.created) };
+  }, []);
 
   const signOut = useCallback(() => {
     clearToken();
-    void forgetCached();
-  }, [forgetCached]);
+  }, []);
 
   const value: AuthContextValue = {
     isAuthenticated: Boolean(hasToken && me),

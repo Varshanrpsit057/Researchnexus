@@ -16,8 +16,12 @@ test.describe("Paper upload", () => {
     // 3. The really-extracted title renders in the page header
     await expect(page.getByRole("heading", { level: 1 })).toContainText("Retrieval-Augmented Generation");
 
-    // 4. The upload is remembered locally for quick access next time
+    // 4. It is in the reader's library, by its real title and as their upload
     await page.goto("/papers");
-    await expect(page.getByText("Recently uploaded in this browser")).toBeVisible();
+    const row = page.getByTestId("library").getByRole("listitem").filter({ hasText: "Retrieval-Augmented Generation" }).first();
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await expect(row).toContainText("Uploaded");
+    await page.getByRole("button", { name: /^Uploaded \d+$/ }).click();
+    await expect(page.getByTestId("library")).toContainText("Retrieval-Augmented Generation");
   });
 });

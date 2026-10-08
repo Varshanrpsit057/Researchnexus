@@ -101,3 +101,35 @@ def test_sideways_margin_text_stays_out_of_the_body(ieee_style_pdf_bytes: bytes)
     data = load_pdf(ieee_style_pdf_bytes, _settings())
     assert "IEEE Conference" not in data.pages[0].text
     assert "10.1109" in data.margin_text or "10.1109" in data.margin_text[::-1]
+
+
+def test_columns_whose_lines_dont_line_up_are_still_read_one_after_the_other() -> None:
+    # 2026-10-07: a reference list in two columns at different line spacing
+    from tests.fixtures.make_fixtures import make_offset_columns_pdf
+
+    with pdfplumber.open(io.BytesIO(make_offset_columns_pdf())) as pdf:
+        text, _truncated = reading_order_text(pdf.pages[0], max_chars=1_000_000)
+    lines = text.splitlines()
+    assert lines[0] == "REFERENCES"  # its own line, not merged into the right column's first
+    assert text.index("[30]") < text.index("[31]")  # the whole left column, then the right
+    assert text.index("[1]") < text.index("[2]") < text.index("[30]")
+
+
+def test_a_table_beside_its_labels_is_not_split_into_columns() -> None:
+    # labels left, figures right, the gap well off-centre: read row by row
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setFont("Helvetica", 9)
+    y = 760.0
+    for n in range(30):
+        c.drawString(60, y, f"Construct{n} -> Outcome")
+        c.drawString(200, y, f"0.{n:03d} 0.{n:03d} 0.047 6.556 0.000")
+        y -= 13.0 if n % 2 else 15.0
+    c.showPage()
+    c.save()
+    with pdfplumber.open(io.BytesIO(buf.getvalue())) as pdf:
+        text, _truncated = reading_order_text(pdf.pages[0], max_chars=1_000_000)
+    assert "Construct0 -> Outcome 0.000 0.000" in text

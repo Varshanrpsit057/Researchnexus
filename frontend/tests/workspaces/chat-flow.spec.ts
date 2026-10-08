@@ -213,7 +213,7 @@ test.describe("Research chat", () => {
     await composer(page).fill("Any question");
     await page.getByRole("button", { name: "Ask", exact: true }).click();
     await expect(page.getByText("No working LLM provider key is saved. Add one in Settings to ask questions.")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole("link", { name: "Add a key in Settings" })).toHaveAttribute("href", "/settings");
+    await expect(page.getByRole("link", { name: "Add a key in Settings" })).toHaveAttribute("href", "/settings#models");
   });
 
   test("a conversation that isn't in the workspace, and a missing workspace, say so", async ({ page }) => {

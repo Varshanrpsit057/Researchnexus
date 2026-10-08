@@ -108,3 +108,33 @@ def test_real_fixture_produces_expected_section_titles(normal_paper_pdf_bytes: b
     for expected in ["Abstract", "1 Introduction", "2 Related Work", "3 Method", "References"]:
         assert expected in titles, f"missing {expected!r} in {titles}"
     assert titles == sorted(titles, key=titles.index)  # sections in document order
+
+
+def test_a_table_column_header_repeated_through_the_paper_is_not_a_section() -> None:
+    # 2026-10-07: a real arXiv paper's tables each had a "Method" column
+    # header on its own line, which made eight "Method" sections
+    text = (
+        "1 Introduction\nWe study driving.\n"
+        "2 Experiments\nTable 1.\nMethod\nOurs 0.9\n"
+        "Table 2.\nMethod\nOurs 0.8\n"
+        "Table 3.\nMethod\nOurs 0.7\n"
+        "3 Conclusion\nIt works.\n"
+    )
+    titles = [s.title for s in split_sections(text, [(0, len(text))])]
+    assert titles == ["1 Introduction", "2 Experiments", "3 Conclusion"]
+
+
+def test_a_single_unnumbered_method_heading_is_still_a_section() -> None:
+    text = "Abstract\nWe propose.\nIntroduction\nIt matters.\nMethod\nWe do this.\nResults\nIt is better.\n"
+    titles = [s.title for s in split_sections(text, [(0, len(text))])]
+    assert titles == ["Abstract", "Introduction", "Method", "Results"]
+
+
+def test_a_repeated_abstract_keeps_the_papers_own_and_drops_the_later_ones() -> None:
+    # a paper whose appendix shows prompts with "Abstract" fields keeps its own abstract
+    text = (
+        "Abstract\nWe search papers.\n1 Introduction\nIt matters.\n"
+        "A Prompts\nAbstract\n{abstract}\nAbstract\n{abstract}\nAbstract\n{abstract}\n"
+    )
+    titles = [s.title for s in split_sections(text, [(0, len(text))])]
+    assert titles == ["Abstract", "1 Introduction"]

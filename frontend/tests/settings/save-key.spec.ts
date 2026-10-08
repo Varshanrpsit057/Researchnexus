@@ -12,7 +12,7 @@ test.describe("Settings", () => {
       route.request().method() === "PUT" ? route.abort("failed") : route.fallback()
     );
 
-    await page.goto("/settings");
+    await page.goto("/settings#models");
     await page.getByLabel("API key").fill("sk-test-not-a-real-key");
     await page.getByRole("button", { name: "Save key" }).click();
 

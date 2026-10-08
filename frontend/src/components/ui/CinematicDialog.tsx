@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
 import { X } from "@phosphor-icons/react/dist/ssr";
 import { CINEMATIC } from "@/lib/cinematic-theme";
 
@@ -22,6 +22,8 @@ interface CinematicDialogProps {
  * cinematic pages instead of duplicating that logic with a different look. */
 export function CinematicDialog({ ref, title, children, onClose }: CinematicDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  // one id per dialog: a page may hold several (one per workspace row)
+  const titleId = useId();
 
   useImperativeHandle(ref, () => ({
     show: () => dialogRef.current?.showModal(),
@@ -39,7 +41,7 @@ export function CinematicDialog({ ref, title, children, onClose }: CinematicDial
   return (
     <dialog
       ref={dialogRef}
-      aria-labelledby="cinematic-dialog-title"
+      aria-labelledby={titleId}
       className="m-auto w-full max-w-md rounded-2xl p-0 text-[color:var(--dlg-ink)] backdrop:bg-black/60 backdrop:backdrop-blur-[2px] open:animate-[dialog-in_180ms_cubic-bezier(0.23,1,0.32,1)]"
       style={
         {
@@ -51,7 +53,7 @@ export function CinematicDialog({ ref, title, children, onClose }: CinematicDial
       }
     >
       <div className="flex items-center justify-between border-b px-5 py-3.5" style={{ borderColor: CINEMATIC.line }}>
-        <h2 id="cinematic-dialog-title" className="text-sm font-semibold">
+        <h2 id={titleId} className="text-sm font-semibold">
           {title}
         </h2>
         <button

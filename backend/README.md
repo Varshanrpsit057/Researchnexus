@@ -67,14 +67,29 @@ the paper. The download refuses private and loopback addresses and checks
 every redirect, and it is size-capped. A paywalled PDF can't be fetched;
 upload it on the paper's page instead (`POST /api/v1/papers/{id}/pdf`).
 
+Settings > Sources & full text shows each source's use and set-up
+(`GET /api/v1/service/sources`, never a key's value) and can ask each one
+a single question now (`POST /api/v1/service/sources/check`; that uses one
+request of each source's allowance).
+
+## Database
+
+SQLite in WAL mode: a reader never waits for a writer, so a request that is
+waiting on a scholarly source doesn't hold up the others. Next to
+`data/researchnexus.db` you will see `-wal` and `-shm` files while the
+server runs; copy the database with SQLite's backup (as `start.py` and the
+maintenance scripts do), not a plain file copy, or recent writes can be
+missed.
+
 ## Maintenance
 
 Run these from `backend/`, preferably with the backend stopped (both write
 to the SQLite database).
 
 ```bash
-# read every uploaded PDF again with the current reader (abstract, DOI,
-# columns), then complete each record from the scholarly sources;
+# read every stored PDF again with the current reader (abstract, DOI,
+# columns), then complete each upload's record from the scholarly sources
+# (a discovered paper keeps its record);
 # backs up the database to data/researchnexus.db.bak-pre-reread-* first
 python -m app.maintenance.reread_uploads [--no-metadata | --records-only]
 

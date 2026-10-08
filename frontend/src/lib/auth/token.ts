@@ -24,3 +24,13 @@ export function clearToken(): void {
   window.localStorage.removeItem(STORAGE_KEY);
   window.dispatchEvent(new Event("researchnexus:auth"));
 }
+
+/** Re-renders on every sign-in and sign-out, in this tab or another. */
+export function subscribeToToken(callback: () => void): () => void {
+  window.addEventListener("researchnexus:auth", callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener("researchnexus:auth", callback);
+    window.removeEventListener("storage", callback);
+  };
+}

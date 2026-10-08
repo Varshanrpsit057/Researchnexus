@@ -24,7 +24,11 @@ export function LibraryPane({ ready, announce }: { ready: boolean; announce: Ann
   const workspacesQ = useSWR(ready ? "workspaces" : null, () => workspacesApi.list());
   const usageQ = useSWR(ready ? ["usage", "30d"] : null, () => usage.get("30d"));
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const counts = libraryQ.data?.counts;
+  // most recently worked on first; a long list shows its first ten until asked
+  const workspaces = [...(workspacesQ.data?.workspaces ?? [])].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  const shown = showAll ? workspaces : workspaces.slice(0, 10);
 
   const facts: { term: string; value: number | undefined; hint: string }[] = [
     { term: "Papers in your library", value: counts?.papers, hint: "uploaded, analysed, searched from or collected" },
@@ -82,7 +86,7 @@ export function LibraryPane({ ready, announce }: { ready: boolean; announce: Ann
           </div>
         ) : (
           <ul className="divide-y divide-[rgba(150,175,230,0.12)] overflow-hidden rounded-2xl" style={panel} aria-label="Workspaces">
-            {workspacesQ.data.workspaces.map((ws) => (
+            {shown.map((ws) => (
               <WorkspaceRow
                 key={ws.workspace_id}
                 ws={ws}
@@ -105,6 +109,11 @@ export function LibraryPane({ ready, announce }: { ready: boolean; announce: Ann
               />
             ))}
           </ul>
+        )}
+        {workspaces.length > shown.length && (
+          <div className="mt-4">
+            <SmallButton onClick={() => setShowAll(true)}>Show all {workspaces.length} workspaces</SmallButton>
+          </div>
         )}
       </div>
     </>

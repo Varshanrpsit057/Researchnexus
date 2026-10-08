@@ -33,6 +33,8 @@ _MIN_GUTTER_FRACTION_OF_WIDTH = 0.03
 # size (pdfplumber's fixed 3 pt default glued the words of tightly set LaTeX
 # papers together -- "CurrentadvancesinAImodels" -- measured on 129 stored
 # PDFs: 301 glued words at 3 pt, 1 at this ratio, and no word split apart).
+# where a two-column page's gutter can be, as a share of the page width
+_GUTTER_BAND = (0.42, 0.58)
 _WORD_GAP_RATIO = 0.15
 # A line whose two halves are this close across the gutter runs across it
 # (a centred title, an author block), wider than any word space.
@@ -89,6 +91,14 @@ def _detect_column_split(words: list[dict], page_width: float) -> float | None:
     so the page was read straight across both columns). Requires most lines
     to keep clear of the gutter and enough words on each side, so a
     single-column page is never split.
+
+    The gutter is looked for in the middle of the page only (2026-10-07): a
+    research paper's columns split it near the centre, and an off-centre
+    "gutter" was a table's label column or a gap in single-column prose --
+    61 stored pages were being read half a line at a time. And the columns
+    needn't share baselines: a reference list at a smaller leading in one
+    column has hardly any line with text on both sides, but nearly every line
+    sits wholly on one side.
     """
     if len(words) < _MIN_WORDS_FOR_COLUMN_DETECTION:
         return None
@@ -96,7 +106,7 @@ def _detect_column_split(words: list[dict], page_width: float) -> float | None:
     if len(lines) < 6:
         return None
 
-    lo, hi = page_width * 0.3, page_width * 0.7
+    lo, hi = page_width * _GUTTER_BAND[0], page_width * _GUTTER_BAND[1]
     best_x: float | None = None
     best_cover = len(lines) + 1
     x = lo
@@ -123,9 +133,14 @@ def _detect_column_split(words: list[dict], page_width: float) -> float | None:
         for line in lines
         if any(w["x1"] <= best_x for w in line) and any(w["x0"] >= best_x for w in line)
     )
-    if two_sided < len(lines) * 0.2:  # most lines have text on both sides of a real gutter
-        return None
-    return best_x
+    if two_sided >= len(lines) * 0.2:  # columns whose lines line up
+        return best_x
+    # columns whose lines don't line up: each holds a real share of the lines
+    left_only = sum(1 for line in lines if all(w["x1"] <= best_x for w in line))
+    right_only = sum(1 for line in lines if all(w["x0"] >= best_x for w in line))
+    if left_only >= len(lines) * 0.2 and right_only >= len(lines) * 0.2:
+        return best_x
+    return None
 
 
 def _join(line: list[dict]) -> str:

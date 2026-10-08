@@ -52,10 +52,13 @@ test.describe("Research workspace -> Graph evidence navigation", () => {
 
     const targetPaperId = `pap_pw_graph_${Date.now()}`;
     seedSecondPaperAndEdge(seedPaperId, targetPaperId, workspaceId);
+    // the old Papers tab forwards to the overview's papers, where a paper is added by id
     await page.goto(`/workspaces/${workspaceId}/papers`);
-    await page.getByLabel("Add a paper by ID").fill(targetPaperId);
-    await page.getByRole("button", { name: "Add" }).click();
-    await expect(page.getByText(targetPaperId)).toBeVisible({ timeout: 5_000 });
+    await page.waitForURL(new RegExp(`/workspace/${workspaceId}#papers$`));
+    await page.getByRole("button", { name: "Add papers" }).click();
+    await page.getByLabel("Add by paper ID").fill(targetPaperId);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.locator("#papers").getByText("A Playwright Fixture Related Paper")).toBeVisible({ timeout: 10_000 });
 
     // the old URL forwards to the graph page
     await page.goto(`/workspaces/${workspaceId}/graph`);

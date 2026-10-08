@@ -11,6 +11,7 @@ handling: "section detection fails -> single body section, flag").
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from app.domain.paper import Section
 
@@ -124,12 +125,30 @@ def _heading_title(line: str) -> str | None:
     return None
 
 
+# an unnumbered heading word seen this often in one paper is a table's
+# column header ("Method", "Results") or a prompt template's field, not a
+# section (2026-10-07); a front-matter heading keeps its first, real one
+_REPEATED_LABEL = 3
+_FRONT_MATTER = {"abstract", "keywords"}
+
+
 def split_sections(full_text: str, page_ranges: list[tuple[int, int]]) -> list[Section]:
     candidates = [
         (start, title)
         for start, _end, line in _iter_stripped_lines_with_offsets(full_text)
         if (title := _heading_title(line)) is not None
     ]
+    unnumbered = Counter(title.lower() for _, title in candidates if not _NUMBERED_HEADING_RE.match(title))
+    kept: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for start, title in candidates:
+        key = title.lower()
+        repeated = not _NUMBERED_HEADING_RE.match(title) and unnumbered[key] >= _REPEATED_LABEL
+        if repeated and not (key in _FRONT_MATTER and key not in seen):
+            continue
+        seen.add(key)
+        kept.append((start, title))
+    candidates = kept
 
     if len(candidates) < 2:
         return _fallback_body_section(full_text, page_ranges)
