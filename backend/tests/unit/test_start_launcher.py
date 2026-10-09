@@ -6,6 +6,7 @@ server it may stop, and that the frontend's port is pinned."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -199,3 +200,43 @@ def test_the_project_pins_its_ports() -> None:
     assert start.dev_script_port(package["scripts"]["dev"]) == start.PORTS["frontend"] == 3000
     assert start.PORTS["backend"] == 8000
     assert start.API_BASE == "http://localhost:8000"
+
+
+def test_a_virtualenv_from_another_computer_is_recognised(tmp_path: Path) -> None:
+    """A zipped folder carries backend/.venv along; its pyvenv.cfg names the
+    first computer's Python, which isn't on the next one (2026-10-09)."""
+    here = ROOT / "backend" / ".venv"
+    assert start.venv_problem(here) is None  # this computer's own virtualenv runs
+
+    copied = tmp_path / ".venv"
+    scripts = copied / ("Scripts" if start.WINDOWS else "bin")
+    scripts.mkdir(parents=True)
+    exe = "python.exe" if start.WINDOWS else "python"
+    (scripts / exe).write_bytes((here / ("Scripts" if start.WINDOWS else "bin") / exe).read_bytes())
+    elsewhere = r"C:\Users\someone-else\AppData\Local\Programs\Python\Python310" if start.WINDOWS else "/home/someone-else/python3.10"
+    (copied / "pyvenv.cfg").write_text(f"home = {elsewhere}\ninclude-system-site-packages = false\nversion = 3.10.11\n", encoding="utf-8")
+    problem = start.venv_problem(copied)
+    assert problem is not None and "another computer" in problem and elsewhere in problem
+
+    (copied / "pyvenv.cfg").unlink()
+    assert start.venv_problem(copied) == "it is incomplete"
+
+
+def test_frontend_packages_installed_elsewhere_are_checked_again(tmp_path: Path) -> None:
+    here = {"platform": "win32", "arch": "amd64", "folder": r"D:\ResearchNexus"}
+    marker = tmp_path / ".researchnexus-installed-for.json"
+    assert start.node_modules_refresh_reason(marker, here) is not None  # no record: installed by someone else
+    marker.write_text(json.dumps(here), encoding="utf-8")
+    assert start.node_modules_refresh_reason(marker, here) is None
+    assert "another kind of computer" in (start.node_modules_refresh_reason(marker, {**here, "platform": "darwin", "arch": "arm64"}) or "")
+    assert "moved" in (start.node_modules_refresh_reason(marker, {**here, "folder": r"C:\Users\friend\ResearchNexus"}) or "")
+
+
+def test_remove_tree_removes_read_only_files(tmp_path: Path) -> None:
+    folder = tmp_path / "old"
+    folder.mkdir()
+    locked = folder / "read-only.txt"
+    locked.write_text("x", encoding="utf-8")
+    locked.chmod(0o400)
+    start.remove_tree(folder)
+    assert not folder.exists()

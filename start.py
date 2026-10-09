@@ -10,10 +10,12 @@
     --skip-install   don't check or install dependencies (a faster restart)
 
 Starting checks, and installs only what is missing:
-- Python >= 3.10, the backend virtualenv (backend/.venv) and its packages;
+- Python >= 3.10, the backend virtualenv (backend/.venv) and its packages
+  (a virtualenv copied from another computer is rebuilt: it can't run here);
 - backend/.env's local secrets (generated once when absent, never printed);
 - the database schema (migrated to the latest revision, after a backup);
-- Node >= 20.9, npm, and frontend/node_modules.
+- Node >= 20.9, npm, and frontend/node_modules (re-checked with npm when they
+  were installed on another computer or in another folder).
 It then detects the GPU and picks the background the frontend starts with:
 the neural network on a dedicated GPU, the lightweight fibers on an
 integrated one or a weak (software) renderer. The browser can still decide on
@@ -45,6 +47,7 @@ import base64
 import contextlib
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -69,6 +72,8 @@ API_BASE = f"http://localhost:{PORTS['backend']}"
 APP_ORIGIN = f"http://localhost:{PORTS['frontend']}"
 WINDOWS = os.name == "nt"
 MIN_PYTHON = (3, 10)
+# every backend package has wheels up to this version (some, like onnxruntime, lag behind new Pythons)
+NEWEST_TESTED_PYTHON = (3, 13)
 MIN_NODE = (20, 9)
 VENV_PYTHON = BACKEND / ".venv" / ("Scripts/python.exe" if WINDOWS else "bin/python")
 READY_TIMEOUT_S = {"backend": 90.0, "frontend": 180.0}
@@ -387,7 +392,54 @@ print(json.dumps({"url": url, "head": head, "current": current, "tables": tables
 """
 
 
+def venv_problem(venv: Path) -> str | None:
+    """Why a virtualenv can't be used on this computer (None: it can).
+
+    A virtualenv belongs to the computer that made it: its pyvenv.cfg names
+    that computer's Python, and its python.exe only starts that one. One
+    copied over with the folder (a zip, a USB stick) points at a path that
+    doesn't exist here, and the backend never starts."""
+    python = venv / ("Scripts/python.exe" if WINDOWS else "bin/python")
+    cfg = venv / "pyvenv.cfg"
+    if not python.exists() or not cfg.is_file():
+        return "it is incomplete"
+    home = ""
+    for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "home":
+            home = value.strip()
+    if home and not Path(home).is_dir():
+        return f"it was made on another computer (its Python, {home}, isn't on this one)"
+    try:
+        runs = subprocess.run([str(python), "-c", "import sys"], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        runs = False
+    return None if runs else "its Python doesn't run on this computer"
+
+
+def remove_tree(path: Path) -> None:
+    """shutil.rmtree that also removes read-only files (Windows marks some)."""
+
+    def make_writable_and_retry(func: Callable[[str], object], target: str, _exc: object) -> None:
+        os.chmod(target, 0o700)
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=make_writable_and_retry)
+    else:
+        shutil.rmtree(path, onerror=make_writable_and_retry)
+
+
 def ensure_backend(install: bool) -> None:
+    venv = BACKEND / ".venv"
+    if venv.exists() and (problem := venv_problem(venv)):
+        if not install:
+            fail(f"backend/.venv can't be used here: {problem}. Run `python start.py` without --skip-install to rebuild it")
+        say(f"backend/.venv can't be used here: {problem}. Making a new one for this computer")
+        try:
+            remove_tree(venv)
+        except OSError as e:
+            fail(f"could not remove the old backend/.venv ({e}); delete that folder, then run `python start.py` again")
     if not VENV_PYTHON.exists():
         if not install:
             fail("backend/.venv is missing; run `python start.py` without --skip-install to create it")
@@ -485,6 +537,30 @@ def npm_command() -> str:
     return str(npm)
 
 
+NODE_MARKER = FRONTEND / "node_modules" / ".researchnexus-installed-for.json"
+
+
+def this_computer() -> dict[str, str]:
+    return {"platform": sys.platform, "arch": platform.machine().lower(), "folder": str(ROOT)}
+
+
+def node_modules_refresh_reason(marker: Path, here: dict[str, str]) -> str | None:
+    """Why frontend/node_modules must be checked again (None: it was
+    installed here). Some packages ship code built for one kind of computer
+    (Windows/macOS/Linux, x64/arm64), so a copy from another computer can
+    miss the one this computer needs; and Next's cache (frontend/.next)
+    holds the folder's own path."""
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "they weren't installed by this launcher here"
+    if recorded.get("platform") != here["platform"] or recorded.get("arch") != here["arch"]:
+        return "they were installed on another kind of computer"
+    if recorded.get("folder") != here["folder"]:
+        return "the folder was copied or moved"
+    return None
+
+
 def ensure_frontend(install: bool) -> str:
     node = shutil.which("node")
     if not node:
@@ -504,12 +580,22 @@ def ensure_frontend(install: bool) -> str:
             fail(f"frontend/{env_file.name} points at port {', '.join(map(str, sorted(stray)))}; ResearchNexus uses only 3000 and 8000")
     names = [*package.get("dependencies", {}), *package.get("devDependencies", {})]
     missing = [n for n in names if not (FRONTEND / "node_modules" / n / "package.json").exists()]
-    if missing:
+    here = this_computer()
+    refresh = None if missing else node_modules_refresh_reason(NODE_MARKER, here)
+    if missing or refresh:
         if not install:
-            fail("frontend packages are missing; run `python start.py` without --skip-install")
-        say(f"installing frontend packages ({len(missing)} missing)")
+            fail("frontend packages are missing or from another computer; run `python start.py` without --skip-install")
+        if refresh:
+            say(f"checking the frontend packages fit this computer ({refresh})")
+            if (FRONTEND / ".next").exists():
+                with contextlib.suppress(OSError):
+                    remove_tree(FRONTEND / ".next")  # Next's cache; rebuilt on start
+        else:
+            say(f"installing frontend packages ({len(missing)} missing)")
         if subprocess.call([npm, "install"], cwd=FRONTEND) != 0:
             fail("npm install failed (see above)")
+        with contextlib.suppress(OSError):
+            NODE_MARKER.write_text(json.dumps(here), encoding="utf-8")
     elif install:
         say(f"frontend packages are installed (Node {version})")
     return npm
@@ -833,6 +919,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a server name goes only after stop or restart")
     if sys.version_info < MIN_PYTHON:
         fail(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer is needed (this is {sys.version.split()[0]})")
+    if sys.version_info[:2] > NEWEST_TESTED_PYTHON:
+        say(f"Python {sys.version.split()[0]} is newer than tested ({NEWEST_TESTED_PYTHON[0]}.{NEWEST_TESTED_PYTHON[1]}); "
+            "if installing the backend packages fails, install Python 3.12 or 3.13 and run with it")
     if WINDOWS:
         with contextlib.suppress(AttributeError, ValueError):
             sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]

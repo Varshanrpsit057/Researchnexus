@@ -24,6 +24,25 @@ the frontend on http://localhost:3000 and the backend on http://localhost:8000
 printed in the backend's terminal instead of emailed. `python start.py stop`
 stops both.
 
+### Running it on another computer
+
+Needs: Windows 10/11, macOS or Linux; **Python 3.10-3.13** (3.12 recommended;
+on Windows tick "Add python.exe to PATH" when installing); **Node.js 20.9+**
+(the LTS); internet on the first run (it downloads the packages, ~1 GB on
+disk, and a 70 MB model on the first discovery); ports 3000 and 8000 free.
+No GPU, Docker or Git needed.
+
+Copy the folder **without** `backend/.venv`, `frontend/node_modules`,
+`frontend/.next` and the root `node_modules` (they are built for the computer
+that made them; `start.py` makes new ones -- and rebuilds them if they were
+copied anyway). Leave out `backend/.env` and `backend/data/` too unless the
+other person should have your accounts, papers and saved model keys: they are
+your local secrets and database. Then, in the copied folder:
+
+```bash
+python start.py
+```
+
 In containers, production-like (PostgreSQL, the production images): copy
 `.env.example` to `.env`, fill in the three secrets it asks for, then
 `docker compose up --build`.
