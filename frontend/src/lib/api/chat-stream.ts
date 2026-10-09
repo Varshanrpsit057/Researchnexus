@@ -1,5 +1,5 @@
-import { getToken } from "@/lib/auth/token";
-import { API_BASE_URL, ApiError } from "./client";
+import { csrfHeader } from "@/lib/auth/session";
+import { apiBase, ApiError } from "./client";
 import type { SseCitationEvent, SseDoneEvent, SseErrorEvent, SseStatusEvent, SseUsageEvent } from "./types";
 
 interface ChatStreamCallbacks {
@@ -26,8 +26,8 @@ interface ChatStreamBody {
 
 /**
  * The backend's chat SSE stream is plain fetch + ReadableStream, not
- * EventSource -- EventSource cannot send a POST body or a custom
- * Authorization header, both of which this endpoint requires.
+ * EventSource -- EventSource cannot send a POST body or the CSRF header,
+ * both of which this endpoint requires.
  *
  * Events are separated by a blank line (LF or CRLF); `: keep-alive`
  * comments are skipped. A stream that ends without `done` or `error` --
@@ -41,16 +41,16 @@ export async function streamChat(
   callbacks: ChatStreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
-  const token = getToken();
-  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces/${workspaceId}/chat`, {
+  const res = await fetch(`${apiBase()}/api/v1/workspaces/${workspaceId}/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...csrfHeader("POST"),
     },
     body: JSON.stringify(body),
     signal,
+    credentials: "include",
   });
 
   if (!res.ok || !res.body) {

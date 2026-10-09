@@ -434,7 +434,7 @@ def workspace_search_index(db: Session, *, workspace_id: str, settings: Settings
     once); the lexical index when that embedder can't load (e.g. offline
     before the model's first download) -- never the hash stand-in."""
     index_dir = Path(settings.data_dir) / "workspace_index"
-    embedder = discovery_embedder(settings.rag_embedder, model_dir=Path(settings.data_dir) / "models")
+    embedder = discovery_embedder(settings.rag_embedder, model_dir=settings.model_cache_dir(), threads=settings.embedding_threads)
     if embedder is None:
         return DbBackedWorkspaceIndex(db, workspace_id=workspace_id, index_dir=index_dir)
     return FaissWorkspaceIndex(

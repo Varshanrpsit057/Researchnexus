@@ -14,14 +14,17 @@ dependencies = [
   "pydantic-settings>=2.3",
   "sqlalchemy>=2.0",
   "alembic>=1.13",
-  "pypdf>=4.2",
+  "pypdf>=6.19",
   "pdfplumber>=0.11",
   "python-multipart>=0.0.9",
   "numpy>=1.26",
   "httpx>=0.27",
   "structlog>=24.1",
-  "python-jose[cryptography]>=3.3",
   "cryptography>=42.0",
+  # password hashing (Argon2id), OWASP's first recommendation
+  "argon2-cffi>=23.1",
+  # PostgreSQL, the staging/production database (psycopg 3, binary wheels)
+  "psycopg[binary]>=3.2",
   "defusedxml>=0.7",
   # discovery relevance: bge-small embeddings on ONNX Runtime (no torch);
   # its ~70 MB model downloads once into data/models on first use

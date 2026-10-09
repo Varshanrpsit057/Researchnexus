@@ -12,6 +12,7 @@ from app.domain.chunk import PaperChunk
 from app.domain.profile import ProfileField, ResearchProfile
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import sign_in
 
 
 def _make_client(tmp_path: Path) -> TestClient:
@@ -28,7 +29,7 @@ def _make_client(tmp_path: Path) -> TestClient:
 
 
 def _token(client: TestClient, email: str = "researcher@example.com") -> str:
-    return client.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    return sign_in(client, email)
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -157,7 +158,7 @@ def test_the_list_counts_match_each_workspace_and_a_paper_names_the_workspaces_h
     assert client.get(f"/api/v1/papers/{member}", headers=_headers(token)).json()["workspaces"] == [{"workspace_id": one["workspace_id"], "title": "One"}]
     other = _token(client, "someone-else@example.com")
     assert client.get("/api/v1/papers/pap_seed", headers=_headers(other)).json()["workspaces"] == []
-    assert client.get("/api/v1/papers/pap_seed").json()["workspaces"] == []  # no one signed in
+    assert client.get("/api/v1/papers/pap_seed").status_code == 401  # papers are read signed in
 
 
 def test_create_with_unanalysed_seed_is_409(tmp_path: Path) -> None:

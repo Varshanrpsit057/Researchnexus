@@ -1,0 +1,15 @@
+# keep the build context to the source: never local data, secrets or caches
+.env
+.env.*
+!.env.example
+.venv/
+data/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+*.db
+*.db-*
+*.sqlite3

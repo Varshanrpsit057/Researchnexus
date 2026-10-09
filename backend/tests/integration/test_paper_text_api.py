@@ -11,6 +11,7 @@ from sqlalchemy import delete
 from app.db import repository as repo
 from app.db.models import PaperChunkORM
 from app.db.session import get_session_factory
+from tests.auth_helpers import ANONYMOUS
 from tests.fixtures.make_fixtures import IEEE_ABSTRACT_WORDS, IEEE_DOI
 from tests.integration.test_fulltext_api import _client, _found
 from tests.integration.test_workspaces_api import _headers, _token
@@ -87,7 +88,7 @@ def test_an_upload_is_read_again_with_the_current_reader(tmp_path: Path, ieee_st
     _found("pap_discovered")
     no_pdf = client.post("/api/v1/papers/pap_discovered/reread", headers=_headers(token))
     assert no_pdf.status_code == 409 and no_pdf.json()["detail"]["error"]["code"] == "no_stored_pdf"
-    assert client.post(f"/api/v1/papers/{pid}/reread").status_code == 401
+    assert client.post(f"/api/v1/papers/{pid}/reread", headers=ANONYMOUS).status_code == 401
 
 
 def test_an_upload_whose_doi_discovery_already_holds_is_still_saved(tmp_path: Path, ieee_style_pdf_bytes: bytes) -> None:

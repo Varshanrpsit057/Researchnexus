@@ -45,3 +45,6 @@ next-env.d.ts
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# Playwright: the saved session of the local test account (a cookie; never commit)
+/.auth/

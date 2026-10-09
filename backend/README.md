@@ -1,8 +1,9 @@
 # ResearchNexus backend
 
-FastAPI backend. Phase 1 (auth/BYOK foundation) and Phase 2 (PDF ingestion)
-are implemented; see `docs/architecture/ResearchNexus_Implementation_Roadmap.md`
-for the full build sequence.
+FastAPI backend: email + password sign-in with emailed codes, PDF ingestion,
+research profiles, discovery and ranking, research workspaces (trail, graph,
+chat, comparison, gaps, directions, citations) and model-usage accounting.
+SQLite in development, PostgreSQL deployed (migrations in `migrations/`).
 
 ## Setup
 
@@ -23,15 +24,25 @@ mypy app tests
 
 ## Local dev secrets
 
-Two settings have no default (by design -- see `app/config.py`) and must be
-set before the auth or BYOK-key endpoints are used:
+`python start.py` (repo root) writes `backend/.env` with generated local
+secrets on first run and starts the backend in development mode. Running
+uvicorn yourself, set them first:
 
 ```bash
-export RESEARCHNEXUS_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export RESEARCHNEXUS_ENVIRONMENT=development   # unset means production, which refuses to start without its settings
+export RESEARCHNEXUS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 export RESEARCHNEXUS_KEY_VAULT_SECRET="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 ```
 
-Everything else (PDF ingestion, health) works without them. Optional heavy
+(`RESEARCHNEXUS_JWT_SECRET`, from before sessions replaced JWTs, is still
+read as the secret key.) In development, sign-in codes are printed in the
+backend's terminal and readable at `GET /api/v1/dev/mailbox?email=...` from
+this machine; nothing is emailed. Every setting:
+[ENVIRONMENT_VARIABLES.md](../ENVIRONMENT_VARIABLES.md); sign-in:
+[AUTHENTICATION.md](../AUTHENTICATION.md); deploying:
+[DEPLOYMENT.md](../DEPLOYMENT.md).
+
+Optional heavy
 retrieval backends (`sentence-transformers`/`torch`, `faiss-cpu`) are not
 installed by the base `pip install -e .` -- add `.[embeddings]` / `.[faiss]`
 when a later phase needs them.

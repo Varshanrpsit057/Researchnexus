@@ -23,7 +23,16 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    return os.environ.get("RESEARCHNEXUS_DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+    """RESEARCHNEXUS_DATABASE_URL; else the connection in parts
+    (RESEARCHNEXUS_DB_HOST/..., how a deployment hands over its database);
+    else alembic.ini's local SQLite file."""
+    if os.environ.get("RESEARCHNEXUS_DATABASE_URL"):
+        return os.environ["RESEARCHNEXUS_DATABASE_URL"]
+    if os.environ.get("RESEARCHNEXUS_DB_HOST"):
+        from app.config import get_settings
+
+        return get_settings().database_url
+    return config.get_main_option("sqlalchemy.url")
 
 
 def run_migrations_offline() -> None:

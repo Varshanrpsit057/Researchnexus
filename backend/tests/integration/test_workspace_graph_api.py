@@ -12,6 +12,7 @@ from app.domain.profile import Confidence, ProfileField, ResearchProfile, Source
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import sign_in
 
 
 def _make_client(tmp_path: Path) -> TestClient:
@@ -28,7 +29,7 @@ def _make_client(tmp_path: Path) -> TestClient:
 
 
 def _token(client: TestClient, email: str = "researcher@example.com") -> str:
-    return client.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    return sign_in(client, email)
 
 
 def _headers(token: str) -> dict[str, str]:

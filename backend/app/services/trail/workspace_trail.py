@@ -19,7 +19,6 @@ proposed again).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -104,7 +103,7 @@ async def build_workspace_trail(
         )
     db.commit()
 
-    embedder = discovery_embedder(settings.discovery_embedder, model_dir=Path(settings.data_dir) / "models")
+    embedder = discovery_embedder(settings.discovery_embedder, model_dir=settings.model_cache_dir(), threads=settings.embedding_threads)
     # every paper here was chosen by the reader: none is dropped as off-topic
     ranked = await rank_search_run(
         db,

@@ -43,6 +43,10 @@ class User(BaseModel):
     auth_subject: str
     created_at: datetime = Field(default_factory=_utcnow)
     default_provider: LlmProvider | None = None
+    name: str | None = None
+    email_verified_at: datetime | None = None
+    # the password hash itself never leaves the auth store
+    has_password: bool = False
 
 
 class ApiKeyRecord(BaseModel):

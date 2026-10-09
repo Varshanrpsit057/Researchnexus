@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.main import create_app
+from tests.auth_helpers import signed_in
 
 
 def _make_client(tmp_path: Path, **settings_overrides: object) -> TestClient:
@@ -21,7 +22,7 @@ def _make_client(tmp_path: Path, **settings_overrides: object) -> TestClient:
     )
     app = create_app(settings=settings)
     app.dependency_overrides[get_settings] = lambda: settings
-    return TestClient(app)
+    return signed_in(TestClient(app))
 
 
 def _upload(client: TestClient, data: bytes, filename: str = "paper.pdf") -> httpx.Response:

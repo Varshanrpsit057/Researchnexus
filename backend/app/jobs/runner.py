@@ -75,6 +75,7 @@ def run_ingest_job(
         try:
             result = run_ingestion(db, paper_id, pdf_bytes, filename, settings)
         except Exception as e:  # noqa: BLE001 - surface any failure on the job, never crash silently
+            _log.warning("ingest_job_failed", job_id=job_id, error=type(e).__name__)
             repo.update_job(db, job_id, status=JobStatus.FAILED, error=str(e))
             return
         progress: dict[str, object] = {"parse": "done"}

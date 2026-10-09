@@ -1,0 +1,159 @@
+name: Deploy
+
+# Staging: automatically, after CI passes on main. Production: by hand
+# (Actions > Deploy > Run workflow), naming the commit already running on
+# staging; the "production" GitHub environment should require a reviewer.
+#
+# Nothing runs until the repository variable AWS_DEPLOY_ENABLED is "true" --
+# which needs the AWS account, the stacks and the GitHub settings in
+# DEPLOYMENT.md first. AWS access is by OIDC (no stored AWS keys).
+#
+# Order: images -> new task definitions -> database migration (a one-off
+# task; additive migrations only, so the running version keeps working) ->
+# services -> smoke test. A failed migration changes nothing else; a failed
+# rollout or smoke test puts the previous task definitions back. The
+# database is never dropped, restored or overwritten by this pipeline.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: where to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
+      git_sha:
+        description: the commit to deploy (for production, the one already on staging); empty = this branch's head
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.AWS_DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment || 'staging' }}
+      url: https://${{ vars.APP_DOMAIN }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TARGET: ${{ github.event.inputs.environment || 'staging' }}
+      SHA: ${{ github.event.inputs.git_sha || github.event.workflow_run.head_sha || github.sha }}
+      APP_URL: https://${{ vars.APP_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the images (skipped when this commit's images exist)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          for app in backend frontend; do
+            image="$REGISTRY/researchnexus/$app:$SHA"
+            if aws ecr describe-images --repository-name "researchnexus/$app" --image-ids imageTag="$SHA" >/dev/null 2>&1; then
+              echo "$image already pushed"; continue
+            fi
+            if [ "$TARGET" = production ]; then
+              echo "::error::production deploys only images that staging already ran ($image is missing)"; exit 1
+            fi
+            # the frontend is built for "the API on this same address" (no backend URL inside)
+            docker build --build-arg NEXT_PUBLIC_API_BASE_URL= -t "$image" "./$app"
+            docker push "$image"
+          done
+
+      - name: Read the stack
+        id: stack
+        run: |
+          out() { aws cloudformation describe-stacks --stack-name "researchnexus-$TARGET" \
+            --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+          echo "cluster=$(out ClusterName)" >> "$GITHUB_OUTPUT"
+          echo "subnets=$(out BackendSubnets)" >> "$GITHUB_OUTPUT"
+          echo "security_group=$(out BackendSecurityGroup)" >> "$GITHUB_OUTPUT"
+
+      - name: New task definitions (the previous ones are kept for rollback)
+        id: taskdefs
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+        run: |
+          for app in backend frontend; do
+            current=$(aws ecs describe-services --cluster "$CLUSTER" --services "$app" --query 'services[0].taskDefinition' --output text)
+            echo "previous_$app=$current" >> "$GITHUB_OUTPUT"
+            aws ecs describe-task-definition --task-definition "$current" --query taskDefinition > current.json
+            jq --arg image "$REGISTRY/researchnexus/$app:$SHA" '
+              .containerDefinitions[0].image = $image
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+              current.json > next.json
+            next=$(aws ecs register-task-definition --cli-input-json file://next.json --query taskDefinition.taskDefinitionArn --output text)
+            echo "next_$app=$next" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Migrate the database (one-off task; nothing else changes if it fails)
+        env:
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+          SUBNETS: ${{ steps.stack.outputs.subnets }}
+          SECURITY_GROUP: ${{ steps.stack.outputs.security_group }}
+          TASKDEF: ${{ steps.taskdefs.outputs.next_backend }}
+        run: |
+          task=$(aws ecs run-task --cluster "$CLUSTER" --launch-type FARGATE --task-definition "$TASKDEF" \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --overrides '{"containerOverrides":[{"name":"backend","command":["migrate"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
+          code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "migration exit code: $code"
+          [ "$code" = "0" ]
+
+      - name: Roll out
+        env:
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service backend --task-definition "${{ steps.taskdefs.outputs.next_backend }}" >/dev/null
+          aws ecs update-service --cluster "$CLUSTER" --service frontend --task-definition "${{ steps.taskdefs.outputs.next_frontend }}" >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services backend frontend
+
+      - name: Smoke test
+        run: |
+          set -e
+          curl -fsS "$APP_URL/health/ready" | tee ready.json
+          jq -e '.status == "ok" and .environment == env.TARGET' ready.json
+          curl -fsS -o /dev/null "$APP_URL/"
+          curl -fsS -o /dev/null "$APP_URL/sign-in"
+          curl -fsS "$APP_URL/api/v1/auth/session" | jq -e '.user == null'
+          # protected data needs a session
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/v1/workspaces")" = 401
+          # no development mailbox on a deployed server
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/v1/dev/mailbox?email=a@b.c")" = 404
+
+      - name: Roll back to the previous release
+        if: failure() && steps.taskdefs.outputs.previous_backend != ''
+        env:
+          CLUSTER: ${{ steps.stack.outputs.cluster }}
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service backend --task-definition "${{ steps.taskdefs.outputs.previous_backend }}" >/dev/null
+          aws ecs update-service --cluster "$CLUSTER" --service frontend --task-definition "${{ steps.taskdefs.outputs.previous_frontend }}" >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services backend frontend
+          echo "::warning::rolled back to the previous release; the database schema was not changed back (migrations are additive)"

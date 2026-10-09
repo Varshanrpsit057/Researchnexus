@@ -78,9 +78,10 @@ async function createWorkspace(page: Page): Promise<{ seedPaperId: string; works
 
 /** Pretend a key is saved: only the `me` flag changes, the rest is the real response. */
 async function claimAKey(page: Page) {
-  await page.route("**/api/v1/me", async (route: Route) => {
+  await page.route("**/api/v1/auth/session", async (route: Route) => {
     const res = await route.fetch();
-    route.fulfill({ response: res, json: { ...(await res.json()), has_working_llm_key: true } });
+    const body = await res.json();
+    route.fulfill({ response: res, json: { user: { ...body.user, has_working_llm_key: true } } });
   });
 }
 
@@ -119,11 +120,7 @@ test.describe("Research chat", () => {
     await expect(page.getByRole("heading", { name: "Ask anything the paper in this workspace can answer." })).toBeVisible();
 
     // 2. With a key, a question streams: the stages first, then the answer with its citations.
-    const seedTitle = await page.evaluate(async (pid) => {
-      const token = localStorage.getItem("researchnexus.token");
-      const res = await fetch(`http://localhost:8000/api/v1/papers/${pid}`, { headers: { Authorization: `Bearer ${token}` } });
-      return (await res.json()).title as string;
-    }, seedPaperId);
+    const seedTitle = (await (await page.request.get(`http://localhost:8000/api/v1/papers/${seedPaperId}`)).json()).title as string;
     const turn: SeededTurn = seedTurn("answer", workspaceId, `a${Date.now()}`);
     const bodies: Record<string, unknown>[] = [];
     await claimAKey(page);

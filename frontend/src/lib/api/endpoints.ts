@@ -36,7 +36,9 @@ import type {
   ResearchDirection,
   RankingCriteria,
   RelatedResponse,
-  SessionResponse,
+  SignedIn,
+  AuthChallenge,
+  AuthSession,
   SourceCheck,
   SourcesResponse,
   PublishersResponse,
@@ -59,10 +61,25 @@ import type {
 // --- auth -----------------------------------------------------------------
 
 export const auth = {
-  createSession: (email: string, password: string) =>
-    apiFetch<SessionResponse>("/api/v1/auth/session", { method: "POST", body: { email, password } }),
+  signUp: (body: { name: string; email: string; password: string }) =>
+    apiFetch<AuthChallenge>("/api/v1/auth/signup", { method: "POST", body }),
+  logIn: (body: { email: string; password: string }) => apiFetch<AuthChallenge>("/api/v1/auth/login", { method: "POST", body }),
+  /** finish signing up or in with the emailed code (sets the session cookie) */
+  verify: (body: { challenge_id: string; code: string }) => apiFetch<SignedIn>("/api/v1/auth/verify", { method: "POST", body }),
+  resend: (challenge_id: string) => apiFetch<AuthChallenge>("/api/v1/auth/resend", { method: "POST", body: { challenge_id } }),
+  forgotPassword: (email: string) => apiFetch<AuthChallenge>("/api/v1/auth/password/forgot", { method: "POST", body: { email } }),
+  resetPassword: (body: { challenge_id: string; code: string; password: string }) =>
+    apiFetch<SignedIn>("/api/v1/auth/password/reset", { method: "POST", body }),
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    apiFetch<SignedIn>("/api/v1/auth/password/change", { method: "POST", body }),
+  logout: () => apiFetch<void>("/api/v1/auth/logout", { method: "POST" }),
+  sessions: () => apiFetch<{ sessions: AuthSession[] }>("/api/v1/auth/sessions"),
+  revokeSession: (id: string) => apiFetch<void>(`/api/v1/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  revokeOtherSessions: () => apiFetch<{ revoked: number }>("/api/v1/auth/sessions/revoke-others", { method: "POST" }),
+  /** who is signed in, if anyone (never a 401) */
+  session: () => apiFetch<{ user: MeResponse | null }>("/api/v1/auth/session"),
   me: () => apiFetch<MeResponse>("/api/v1/me"),
-  updateMe: (body: { default_provider: LlmProvider | null }) => apiFetch<MeResponse>("/api/v1/me", { method: "PATCH", body }),
+  updateMe: (body: { name?: string; default_provider?: LlmProvider | null }) => apiFetch<MeResponse>("/api/v1/me", { method: "PATCH", body }),
 };
 
 export const service = {

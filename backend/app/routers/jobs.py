@@ -50,9 +50,9 @@ def job_json(job: Job) -> dict[str, object]:
 
 
 @router.get("/{job_id}")
-def get_job(job_id: str, db: DbSession) -> dict[str, object]:
+def get_job(job_id: str, db: DbSession, current_user: CurrentUser) -> dict[str, object]:
     job = repo.get_job(db, job_id)
-    if job is None:
+    if job is None or job.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "job not found"}})
     return job_json(job)
 

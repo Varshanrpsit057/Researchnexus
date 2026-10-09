@@ -22,13 +22,14 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.db import repository as repo
-from app.db.models import JobORM, PaperORM
+from app.db.models import JobORM, JobRunnerORM, PaperORM
 from app.db.session import get_session_factory
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.profile import ProfileField, ResearchProfile
 from app.jobs import runner as job_runner
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import ANONYMOUS, sign_in, signed_in
 from tests.integration.test_discover_related_api import (
     _fake_build_trail,
     _fake_rank_search_run,
@@ -50,12 +51,12 @@ def _client(tmp_path: Path) -> TestClient:
     settings = _settings(tmp_path)
     app = create_app(settings=settings)
     app.dependency_overrides[get_settings] = lambda: settings
-    return TestClient(app)
+    return signed_in(TestClient(app))
 
 
 def _sign_in(c: TestClient, email: str = "r@example.com") -> tuple[dict[str, str], str]:
-    body = c.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()
-    return {"Authorization": f"Bearer {body['token']}"}, c.get("/api/v1/me", headers={"Authorization": f"Bearer {body['token']}"}).json()["id"]
+    token = sign_in(c, email)
+    return {"Authorization": f"Bearer {token}"}, c.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"}).json()["id"]
 
 
 def _seed(paper_id: str = "pap_seed") -> None:
@@ -173,7 +174,7 @@ def test_only_the_owner_can_cancel_and_only_what_can_be_stopped(tmp_path: Path) 
     other_headers, _ = _sign_in(c, "other@example.com")
     job_id = _job(user_id)
     assert c.post(f"/api/v1/jobs/{job_id}/cancel", headers=other_headers).status_code == 404
-    assert c.post(f"/api/v1/jobs/{job_id}/cancel").status_code == 401
+    assert c.post(f"/api/v1/jobs/{job_id}/cancel", headers=ANONYMOUS).status_code == 401
     gaps = _job(user_id, kind=JobKind.GAPS)
     refused = c.post(f"/api/v1/jobs/{gaps}/cancel", headers=headers)
     assert refused.status_code == 409
@@ -267,22 +268,49 @@ def test_a_run_that_stopped_responding_is_reported_as_failed(tmp_path: Path) -> 
     assert job["progress"]["stage"] == "interrupted"
 
 
+def _run_by(job_id: str, runner_id: str | None, *, heard_from_s_ago: float | None = None) -> None:
+    """Say which server process runs the job (and, if given, when that
+    process last said it was alive)."""
+    db = get_session_factory()()
+    try:
+        row = db.get(JobORM, job_id)
+        assert row is not None
+        row.runner_id = runner_id
+        if runner_id is not None and heard_from_s_ago is not None:
+            now = datetime.now(timezone.utc)
+            beat = now - timedelta(seconds=heard_from_s_ago)
+            db.merge(JobRunnerORM(id=runner_id, started_at=beat, heartbeat_at=beat))
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_jobs_cut_off_by_a_restart_are_failed_when_the_server_starts(tmp_path: Path) -> None:
     c = _client(tmp_path)
     _, user_id = _sign_in(c)
     running = _job(user_id)
     queued = _job(user_id, status=JobStatus.QUEUED)
     finished = _job(user_id, status=JobStatus.SUCCEEDED)
+    from_before_runners = _job(user_id)
+    # the process that ran them stopped three minutes ago
+    for job_id in (running, queued, finished):
+        _run_by(job_id, "old-host:41:dead", heard_from_s_ago=180)
+    _run_by(from_before_runners, None)
+    # another server, alive, is still running this one
+    elsewhere = _job(user_id)
+    _run_by(elsewhere, "other-host:7:alive", heard_from_s_ago=5)
 
     settings = _settings(tmp_path)
     app = create_app(settings=settings)
-    with TestClient(app) as restarted:  # runs the app's startup
-        for job_id in (running, queued):
+    with signed_in(TestClient(app)) as restarted:  # runs the app's startup
+        for job_id in (running, queued, from_before_runners):
             job = restarted.get(f"/api/v1/jobs/{job_id}").json()
             assert job["status"] == "failed"
             assert job["error"] == "The server restarted before this finished."
             assert job["progress"]["stage"] == "interrupted"
         assert restarted.get(f"/api/v1/jobs/{finished}").json()["status"] == "succeeded"
+        # a starting server leaves another live server's jobs alone
+        assert restarted.get(f"/api/v1/jobs/{elsewhere}").json()["status"] == "running"
 
 
 def test_related_results_carry_how_the_run_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

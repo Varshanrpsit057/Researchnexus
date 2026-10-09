@@ -13,6 +13,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { Page } from "@playwright/test";
+import { apiPost } from "../auth-helpers";
 import { test, expect } from "../fixtures";
 
 const PYTHON = String.raw`H:\Researchnexus\backend\.venv\Scripts\python.exe`;
@@ -30,11 +31,7 @@ async function graphWorkspace(page: Page): Promise<{ seedId: string; workspaceId
   const stamp = Date.now();
   const runId = `run_pw_morph_${stamp}`;
   py([FIXTURE, "seed", seedId, runId, `m${stamp}`]);
-  const token = await page.evaluate(() => window.localStorage.getItem("researchnexus.token"));
-  const resp = await page.request.post("http://localhost:8000/api/v1/workspaces", {
-    headers: { Authorization: `Bearer ${token}` },
-    data: { title: `Graph transition ${stamp}`, seed_paper_id: seedId, import_run_id: runId },
-  });
+  const resp = await apiPost(page, "/api/v1/workspaces", { title: `Graph transition ${stamp}`, seed_paper_id: seedId, import_run_id: runId });
   expect(resp.ok()).toBe(true);
   return { seedId, workspaceId: (await resp.json()).workspace_id };
 }

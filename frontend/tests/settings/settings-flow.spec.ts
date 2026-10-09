@@ -53,7 +53,10 @@ test.describe("Settings", () => {
 
     // 1. account (real /me)
     await expect(page.locator("#account")).toContainText(EMAIL);
-    await expect(page.locator("#account")).toContainText("Local sign-in: the email is the account");
+    await expect(page.locator("#account")).toContainText("Your password, then a one-time code sent to your email.");
+    await expect(page.locator("#account").getByText("Verified")).toBeVisible();
+    // this browser is listed among the signed-in devices
+    await expect(page.getByRole("region", { name: "Signed-in devices" }).getByText("This device")).toBeVisible();
     await page.getByRole("button", { name: "Copy the account ID" }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^usr_/);
 
@@ -201,10 +204,9 @@ test.describe("Settings", () => {
     await expect(page.getByTestId("service-status")).toContainText("http://localhost:8000");
     await expect(page.getByTestId("service-status")).toContainText("Connected · database ok");
 
-    // 8. signing out
+    // 8. signing out is offered (signing out for real is tests/auth: this session is shared)
     await open(page, "Account");
-    await page.locator("#account").getByRole("button", { name: "Sign out" }).click();
-    await page.waitForURL(/\/sign-in/);
+    await expect(page.locator("#account").getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     expect(consoleErrors).toEqual([]);
   });
 

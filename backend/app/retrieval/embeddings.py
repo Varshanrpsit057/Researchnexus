@@ -21,6 +21,10 @@ from typing import Protocol, cast
 
 import numpy as np
 
+from app.telemetry.logging import get_logger
+
+_log = get_logger(__name__)
+
 
 class EmbeddingProvider(Protocol):
     name: str
@@ -143,9 +147,12 @@ class FastEmbedEmbeddingProvider:
     caches = True
     _CACHE_MAX = 20000  # ~30 MB of vectors: discovery runs and workspace passages
 
-    def __init__(self, cache_dir: str | Path | None = None) -> None:
+    def __init__(self, cache_dir: str | Path | None = None, threads: int | None = None) -> None:
         self._cache_dir = str(cache_dir) if cache_dir is not None else None
+        self._threads = threads
         self._model: object | None = None
+        # the ONNX Runtime providers the model really runs on (e.g. ["CPUExecutionProvider"])
+        self.execution_providers: list[str] = []
         self._vectors: OrderedDict[str, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -155,7 +162,13 @@ class FastEmbedEmbeddingProvider:
                 from fastembed import TextEmbedding
             except ImportError as e:
                 raise EmbeddingBackendUnavailable("fastembed is not installed (pip install fastembed)") from e
-            self._model = TextEmbedding(self.MODEL, cache_dir=self._cache_dir)
+            self._model = TextEmbedding(self.MODEL, cache_dir=self._cache_dir, threads=self._threads)
+            try:  # what actually runs it -- a GPU is never claimed when the CPU did the work
+                session = self._model.model.model  # type: ignore[attr-defined]
+                self.execution_providers = list(session.get_providers())
+            except AttributeError:
+                self.execution_providers = []
+            _log.info("embedding_model_loaded", model=self.MODEL, providers=self.execution_providers or ["unknown"], threads=self._threads)
         return self._model
 
     def embed(self, texts: list[str]) -> np.ndarray:
@@ -200,7 +213,7 @@ _shared: dict[str, EmbeddingProvider] = {}
 _shared_lock = threading.Lock()
 
 
-def discovery_embedder(name: str, *, model_dir: Path) -> EmbeddingProvider | None:
+def discovery_embedder(name: str, *, model_dir: Path, threads: int | None = None) -> EmbeddingProvider | None:
     """The process-wide embedder behind discovery's semantic signals, loaded
     once (discovery jobs run on worker threads, hence the lock). Returns
     None -- and the ranking falls back to its non-semantic signals -- when
@@ -211,7 +224,7 @@ def discovery_embedder(name: str, *, model_dir: Path) -> EmbeddingProvider | Non
     with _shared_lock:
         provider = _shared.get(name)
         if provider is None:
-            kwargs: dict[str, object] = {"cache_dir": model_dir} if name == "fastembed" else {}
+            kwargs: dict[str, object] = {"cache_dir": model_dir, "threads": threads} if name == "fastembed" else {}
             try:
                 provider = get_embedding_provider(name, **kwargs)
                 provider.embed(["warm-up"])  # load now, so failure surfaces here, not mid-ranking

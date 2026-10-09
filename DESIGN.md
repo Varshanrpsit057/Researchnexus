@@ -113,10 +113,21 @@ Depth comes from the background behind glass, not from shadows. Panels sit flat 
 - **Evidence**: verbatim passages with the supporting sentence marked and section/page beside them; a value without a passage is not shown.
 - **Background**: Auto picks the animated neural network (dedicated GPU), GhostFibers (integrated graphics), GhostFibers at a lighter setting where the GPU is weak and draws in software (half resolution, 24 fps, three layers), or a still field only without WebGL; the reader can choose Neural network, Fibers or Static in Settings > Appearance. The research graph page morphs the network (or the fibers) into the graph.
 
+## Signing in
+
+Sign in, sign up and reset a password are three separate pages in the same
+glass card on the navy ground: a mint flask, a heading, one sentence, then
+the form. Fields say what's wrong beside themselves; the password field has a
+show/hide eye and, when choosing one, a live checklist of the rules. The
+second step of each is the same screen: "We sent a 6-digit code to ..." in a
+mint-tinted note, one wide code field (it accepts a paste and submits at the
+sixth digit), the code's countdown, "Send a new code in N s", and a way back.
+
 ## Motion
 
 - Sections fade up 18px on arrival (0.5s, `cubic-bezier(0.22,0.7,0.2,1)`, small staggers); dialogs open in 180ms with `cubic-bezier(0.23,1,0.32,1)`.
 - Buttons scale to 0.97 on press. Hover changes are colour only.
+- Three small effects adapted from React Bits (THIRD_PARTY_NOTICES.md), each played once and skipped under reduced motion: the auth headings' words resolve from a light blur (BlurText, 10 px rise); the masked email on the code step decrypts in place (DecryptedText, ~1 s); the Library figures count up (CountUp, 0.9 s, the real number always in the page).
 - Under `prefers-reduced-motion`, everything appears without movement and the background stays still.
 
 ## Browser surfaces

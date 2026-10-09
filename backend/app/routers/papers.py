@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db import repository as repo
 from app.db.session import get_db, get_session_factory
-from app.deps import CurrentUser, OptionalUser
+from app.deps import CurrentUser
 from app.domain.jobs import Job, JobKind, JobStatus
 from app.domain.ranking import RankingCriteria
 from app.jobs.runner import complete_metadata, new_id, run_discover_related_job, run_ingest_job
@@ -74,7 +74,7 @@ async def upload_paper(
     db: DbSession,
     settings: AppSettings,
     file: Annotated[UploadFile, File(...)],
-    uploader: OptionalUser,
+    uploader: CurrentUser,
 ) -> dict[str, object]:
     data = await file.read()
     try:
@@ -88,15 +88,14 @@ async def upload_paper(
     file_summary = {"sha256": meta.sha256, "size_bytes": meta.size_bytes, "page_count": meta.page_count}
 
     # the upload is credited to the signed-in reader: it is in their library (remediation, 2026-10-06)
-    owner_id = uploader.id if uploader is not None else "usr_dev"
+    owner_id = uploader.id
     existing = repo.find_paper_by_sha256(db, meta.sha256)
     if existing is not None:
-        if uploader is not None:
-            # already read: nothing to do but record that this reader has it too
-            repo.create_job(
-                db,
-                Job(job_id=new_id("job"), owner_id=owner_id, kind=JobKind.INGEST, status=JobStatus.SUCCEEDED, result_ref=existing.id),
-            )
+        # already read: nothing to do but record that this reader has it too
+        repo.create_job(
+            db,
+            Job(job_id=new_id("job"), owner_id=owner_id, kind=JobKind.INGEST, status=JobStatus.SUCCEEDED, result_ref=existing.id),
+        )
         return {"paper_id": existing.id, "file": file_summary, "job": None, "deduplicated": True}
 
     paper_id = new_id("pap")
@@ -128,7 +127,7 @@ def list_library(db: DbSession, current_user: CurrentUser) -> dict[str, object]:
 
 
 @router.get("/{paper_id}")
-def get_paper(paper_id: str, db: DbSession, reader: OptionalUser) -> dict[str, object]:
+def get_paper(paper_id: str, db: DbSession, reader: CurrentUser) -> dict[str, object]:
     paper = repo.get_paper(db, paper_id)
     if paper is None:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "paper not found"}})
@@ -156,8 +155,8 @@ def get_paper(paper_id: str, db: DbSession, reader: OptionalUser) -> dict[str, o
         "warnings": paper.warnings,
         # what text the paper is read from (remediation Phase 7)
         "coverage": coverage_of(paper),
-        # the signed-in reader's workspaces that hold it (2026-10-07); none for anyone else
-        "workspaces": repo.workspaces_holding(db, paper.id, reader.id) if reader is not None else [],
+        # the signed-in reader's workspaces that hold it (2026-10-07)
+        "workspaces": repo.workspaces_holding(db, paper.id, reader.id),
     }
 
 
@@ -226,7 +225,7 @@ async def upload_paper_pdf(
 
 
 @router.get("/{paper_id}/profile")
-def get_profile(paper_id: str, db: DbSession) -> dict[str, object]:
+def get_profile(paper_id: str, db: DbSession, current_user: CurrentUser) -> dict[str, object]:
     # A thin passthrough to the already-stored ResearchProfile, added
     # alongside analyze() so a client can show a previously extracted
     # profile without re-running (and re-billing) the LLM extraction on
@@ -282,9 +281,21 @@ def patch_profile(
             status_code=404,
             detail={"error": {"code": "not_found", "message": "no profile exists for this paper -- call analyze first"}},
         )
+    owner = repo.profile_owner(db, paper_id)
+    if owner is not None and owner != current_user.id:
+        # the profile is shared by everyone who reads this paper: only the person who produced it edits it
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "not_profile_owner", "message": "Only the person who analysed this paper can edit its profile."}},
+        )
     patched = apply_patch(existing, **body.model_dump())
     stored = repo.upsert_profile(db, patched)
     return {"profile": stored.model_dump(mode="json")}
+
+def _may_read_run(owner_id: str | None, reader_id: str) -> bool:
+    """A discovery run is its owner's (runs from before owners were kept are anyone's)."""
+    return owner_id is None or owner_id == reader_id
+
 
 # the publishers a reader prefers (remediation, 2026-10-06): up to 30 names
 PreferredPublishers = Annotated[
@@ -364,7 +375,7 @@ async def rerank_related(paper_id: str, body: RerankRequest, db: DbSession, sett
     from app.services.ranking.pipeline import RankingRequired, rerank_with_weights
 
     run = repo.get_search_run(db, body.run_id)
-    if run is None or run.seed_paper_id != paper_id:
+    if run is None or run.seed_paper_id != paper_id or not _may_read_run(run.owner_id, current_user.id):
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "discovery run not found"}})
     try:
         await rerank_with_weights(
@@ -392,6 +403,8 @@ def get_related(paper_id: str, run_id: str, db: DbSession, current_user: Current
     if view.seed_paper_id != paper_id:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "run does not belong to this paper"}})
     run = repo.get_search_run(db, run_id)
+    if run is None or not _may_read_run(run.owner_id, current_user.id):
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "discovery run not found"}})
 
     results = []
     for item in view.results:

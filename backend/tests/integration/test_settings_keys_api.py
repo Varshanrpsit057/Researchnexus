@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.domain.user import LlmCapabilities, LlmTestResult
 from app.main import create_app
+from tests.auth_helpers import sign_in
 
 
 def _make_client(tmp_path: Path, **overrides: object) -> TestClient:
@@ -28,7 +29,7 @@ def _make_client(tmp_path: Path, **overrides: object) -> TestClient:
 
 def _authed_client(tmp_path: Path) -> tuple[TestClient, str]:
     client = _make_client(tmp_path)
-    token = client.post("/api/v1/auth/session", json={"email": "r@example.com", "password": "x"}).json()["token"]
+    token = sign_in(client, "r@example.com")
     return client, token
 
 

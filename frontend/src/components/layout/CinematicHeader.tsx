@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { FlaskIcon, GearSix, SignOut, UploadSimple } from "@phosphor-icons/react/dist/ssr";
 import { useAuth } from "@/lib/auth/auth-context";
 import { CINEMATIC } from "@/lib/cinematic-theme";
@@ -21,8 +21,10 @@ function section(pathname: string): "papers" | "workspaces" | "settings" | null 
  * the responsive collapse (wordmark and "Upload paper" label hide below
  * `sm:`), the current section and the sign-out action stay consistent. */
 export function CinematicHeader() {
-  const { signOut } = useAuth();
+  const { signOut, me } = useAuth();
+  const router = useRouter();
   const current = section(usePathname() ?? "");
+  const who = me?.name || me?.email;
   const navLink = (key: "papers" | "workspaces", href: string, label: string) => {
     const on = current === key;
     return (
@@ -73,8 +75,12 @@ export function CinematicHeader() {
           </Link>
           <button
             type="button"
-            onClick={signOut}
-            aria-label="Sign out"
+            onClick={async () => {
+              await signOut();
+              router.replace("/sign-in");
+            }}
+            aria-label={who ? `Sign out (${who})` : "Sign out"}
+            title={who ? `Signed in as ${who}. Sign out` : "Sign out"}
             className={`shrink-0 rounded-full p-2 transition-colors hover:text-white ${FOCUS}`}
             style={{ color: CINEMATIC.muted }}
           >

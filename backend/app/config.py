@@ -2,17 +2,20 @@
 
 Env-only configuration (no secrets in code), per the global CLAUDE.md rule
 and docs/architecture/ResearchNexus_Implementation_Architecture.md §7.
-`jwt_secret`/`key_vault_secret` default to `None` rather than a placeholder
-value: nothing here should look like a working secret. Code that actually
-needs one (app/security/jwt.py, app/security/key_vault.py) raises a typed,
-clear error when it is unset, the same lazy-optional pattern already used
-for the embeddings/FAISS backends in app/retrieval/*.
+`secret_key`/`key_vault_secret`/`smtp_password` default to `None` rather
+than a placeholder value: nothing here should look like a working secret.
+Code that actually needs one raises a typed, clear error when it is unset,
+and a staging/production server refuses to start without them
+(app/startup_checks.py names what is missing, never a value).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +25,14 @@ class Settings(BaseSettings):
     # Storage
     data_dir: Path = Path("data")
     database_url: str = "sqlite:///./data/researchnexus.db"
+    # Or the PostgreSQL connection in parts -- how ECS hands over an RDS
+    # database whose password RDS keeps (and rotates) in Secrets Manager.
+    # When db_host is set, these build database_url (the password URL-quoted).
+    db_host: str | None = None
+    db_port: int = 5432
+    db_name: str = "researchnexus"
+    db_user: str | None = None
+    db_password: str | None = None
 
     # Upload validation (Architecture §3 Stage S1; API spec §Errors 413/415/422)
     max_pdf_mb: int = 30
@@ -35,13 +46,83 @@ class Settings(BaseSettings):
     chunk_target_tokens: int = 750
     chunk_overlap_tokens: int = 100
 
-    # Auth (Roadmap Phase 1 / Task 1 item 2-3): dev JWT signing.
-    jwt_secret: str | None = None
-    jwt_algorithm: str = "HS256"
-    jwt_expires_minutes: int = 1440
+    # Where this server runs. "development" and "test" allow local-only
+    # conveniences (plain-HTTP cookies, emails printed to the console, the
+    # dev mailbox); "staging" and "production" refuse to start without the
+    # settings a public deployment needs (see app/startup_checks.py). The
+    # default is "production" so a forgotten setting fails closed: start.py
+    # sets "development" for local runs, tests set "test".
+    environment: Literal["development", "test", "staging", "production"] = "production"
+
+    # The secret behind one-time codes and the CSRF token (an HMAC key, at
+    # least 32 characters). RESEARCHNEXUS_JWT_SECRET is still read, so the
+    # local backend/.env made before sessions replaced JWTs keeps working.
+    secret_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RESEARCHNEXUS_SECRET_KEY", "RESEARCHNEXUS_JWT_SECRET", "secret_key", "jwt_secret"),
+    )
 
     # BYOK key vault (Roadmap Phase 1 / Task 1 item 4): a Fernet key.
     key_vault_secret: str | None = None
+
+    # The address people open the app at (links in emails, the allowed
+    # origin of state-changing requests).
+    public_app_url: str = "http://localhost:3000"
+
+    # Sessions: an opaque token in an httpOnly cookie, stored only as a hash.
+    # A session ends after `session_max_age_hours`, or sooner when unused
+    # for `session_idle_hours`.
+    session_max_age_hours: int = 336
+    session_idle_hours: int = 72
+    # Secure cookies (HTTPS only). None = on everywhere but development/test,
+    # where the app is served over plain http://localhost.
+    cookie_secure: bool | None = None
+
+    # Who may create an account: email domains, e.g. ["university.edu"]
+    # (subdomains included). Empty: anyone. Existing accounts are unaffected.
+    signup_allowed_domains: list[str] = []
+
+    # One-time codes (sign-up, sign-in, password reset): six digits, valid
+    # for `otp_ttl_seconds`, `otp_max_attempts` tries each, a new code at
+    # most every `otp_resend_cooldown_seconds`, `otp_max_resends` times.
+    otp_ttl_seconds: int = 300
+    otp_max_attempts: int = 5
+    otp_resend_cooldown_seconds: int = 60
+    otp_max_resends: int = 3
+
+    # Email. "smtp" sends through an SMTP server (Amazon SES's SMTP endpoint
+    # in production); "console" prints messages to the server's own output
+    # (development only); "memory" keeps them in the process (tests only).
+    # None = console in development, memory in test, smtp elsewhere.
+    email_backend: Literal["smtp", "console", "memory"] | None = None
+    email_from: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_starttls: bool = True
+    smtp_timeout_s: float = 10.0
+
+    # Development only: multiplies every sign-in rate limit (repeated local
+    # test runs would otherwise exhaust them). Refused anywhere else
+    # (app/startup_checks.py); tests keep the real limits.
+    auth_rate_limit_scale: float = 1.0
+
+    # Request bodies other than PDF uploads (JSON) are refused above this.
+    max_json_body_kb: int = 1024
+
+    # Logging: "INFO" or "DEBUG" (never prints secrets either way).
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # Connection pool for a server database (PostgreSQL); SQLite ignores it.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout_s: float = 10.0
+    db_pool_recycle_s: int = 1800
+    # Create missing tables at start (development and tests). A deployed
+    # database is changed only by `alembic upgrade head`, run as its own
+    # deploy step; None = on in development/test, off elsewhere.
+    db_auto_create: bool | None = None
 
     # ResearchProfile extraction (Roadmap Phase 3 / Architecture §3 S4): a
     # char budget standing in for a token budget on the LLM prompt, same
@@ -90,6 +171,14 @@ class Settings(BaseSettings):
     # silently). Calibrated on bge-small: papers Semantic Scholar recommends
     # for a seed scored >= 0.71; clearly unrelated fields scored <= 0.61.
     rank_min_relevance: float = 0.62
+    # Where downloaded models live (default: <data_dir>/models). A container
+    # image bakes the model in and points this at it.
+    models_dir: Path | None = None
+    # CPU threads the embedding model may use (None: all cores). Lower it on
+    # a small server so embedding doesn't starve request handling. It runs
+    # on the GPU only when a GPU build of ONNX Runtime is installed; the log
+    # says which provider actually ran ("embedding_model_loaded").
+    embedding_threads: int | None = None
 
     # Ranking (Roadmap Phase 6 / Architecture §3 S9-S10 / Data Model §4).
     # Band cutoffs and the recency half-life are fixed "w0" values -- their
@@ -184,6 +273,37 @@ class Settings(BaseSettings):
     # dev server's own origin. A real deployment overrides this env-only,
     # same as every other setting here.
     cors_allowed_origins: list[str] = ["http://localhost:3000"]
+
+    @model_validator(mode="after")
+    def _database_from_parts(self) -> Settings:
+        if self.db_host:
+            user = quote(self.db_user or "", safe="")
+            password = quote(self.db_password or "", safe="")
+            auth = f"{user}:{password}@" if password else f"{user}@" if user else ""
+            self.database_url = f"postgresql+psycopg://{auth}{self.db_host}:{self.db_port}/{quote(self.db_name, safe='')}"
+        return self
+
+    @property
+    def is_local(self) -> bool:
+        """development or test: the only places local conveniences exist."""
+        return self.environment in ("development", "test")
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.cookie_secure if self.cookie_secure is not None else not self.is_local
+
+    @property
+    def mail_backend(self) -> str:
+        if self.email_backend is not None:
+            return self.email_backend
+        return {"development": "console", "test": "memory"}.get(self.environment, "smtp")
+
+    @property
+    def auto_create_schema(self) -> bool:
+        return self.db_auto_create if self.db_auto_create is not None else self.is_local
+
+    def model_cache_dir(self) -> Path:
+        return self.models_dir if self.models_dir is not None else self.data_dir / "models"
 
     def pdf_storage_dir(self) -> Path:
         d = self.data_dir / "papers"

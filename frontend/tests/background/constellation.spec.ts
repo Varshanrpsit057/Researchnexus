@@ -8,6 +8,7 @@
 // launches Chromium on the real GPU. Explicit Neural network / Fibers /
 // Static choices override Auto. Exactly one effect is ever mounted.
 import { test, expect, type Page } from "@playwright/test";
+import { signInViaApi } from "../auth-helpers";
 
 function background(page: Page) {
   return page.getByTestId("background");
@@ -119,11 +120,7 @@ test.describe("Global background", () => {
   });
 
   test("changing the setting switches the one background in place", async ({ page }) => {
-    await page.goto("/sign-in");
-    await page.getByRole("textbox", { name: "Email" }).fill("playwright@researchnexus.dev");
-    await page.getByRole("textbox", { name: "Password" }).fill("anything");
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForURL(/\/home$/);
+    await signInViaApi(page.request);
     await page.goto("/settings#appearance");
     const group = page.getByRole("group", { name: "Background" });
     await expect(page.getByText("Auto: the graphics here are weak (drawn in software), so the fibers at a lighter setting.")).toBeVisible({ timeout: 10_000 });

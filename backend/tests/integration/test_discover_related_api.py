@@ -28,6 +28,7 @@ from app.services.discovery.pipeline import DiscoveryResult
 from app.services.normalize.canonical import title_hash
 from app.services.ranking.pipeline import RankResult
 from app.services.trail.pipeline import TrailBuildResult
+from tests.auth_helpers import sign_in
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -44,7 +45,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _token(c: TestClient, email: str = "r@example.com") -> str:
-    return c.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    return sign_in(c, email)
 
 
 def _h(t: str) -> dict[str, str]:

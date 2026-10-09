@@ -29,6 +29,9 @@ from urllib.parse import urlparse
 import httpx
 
 from app.external.allowlist import assert_allowed, assert_fulltext_allowed
+from app.telemetry.logging import get_logger
+
+_log = get_logger(__name__)
 
 _USER_AGENT = "ResearchNexus/0.1 (+https://example.invalid/researchnexus)"
 _RETRY_AFTER_CAP_S = 60.0
@@ -181,8 +184,12 @@ class ExternalHttpClient:
         return text
 
     def _report(self, url: str, outcome: str, seconds: float) -> None:
+        host = (urlparse(url).hostname or "").lower()
+        if outcome not in ("ok", "cached"):
+            # counted in production (a CloudWatch metric filter): a source failing for everyone
+            _log.warning("upstream_failed", host=host, outcome=outcome, seconds=round(seconds, 2))
         if self._on_request is not None:
-            self._on_request((urlparse(url).hostname or "").lower(), outcome, seconds)
+            self._on_request(host, outcome, seconds)
 
     async def _send_with_retry(self, url: str, params: dict[str, Any] | None) -> str:
         last_rate_limit: UpstreamRateLimited | None = None

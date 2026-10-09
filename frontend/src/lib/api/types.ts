@@ -26,16 +26,40 @@ export interface TokenUsage {
 
 // --- auth / me ----------------------------------------------------------
 
-export interface SessionResponse {
-  token: string;
-  expires_at: string;
-  /** a new, empty account was made for this email (absent from older servers) */
-  created?: boolean;
+/** A code was emailed (sign-up, sign-in, or a password reset). */
+export interface AuthChallenge {
+  challenge_id: string;
+  purpose: "signup" | "login" | "reset";
+  /** where the code went, partly hidden */
+  destination: string;
+  /** seconds until the code stops working */
+  expires_in: number;
+  /** seconds until another code can be sent */
+  resend_in: number;
+  resends_left: number;
+}
+
+export interface SignedIn {
+  user: MeResponse;
+}
+
+/** A signed-in browser. */
+export interface AuthSession {
+  id: string;
+  current: boolean;
+  created_at: string;
+  last_seen_at: string;
+  user_agent: string | null;
+  ip: string | null;
 }
 
 export interface MeResponse {
   id: string;
   email: string;
+  name: string | null;
+  email_verified: boolean;
+  /** false for an account made before passwords: "Forgot password" sets one */
+  has_password: boolean;
   created_at: string;
   has_working_llm_key: boolean;
   /** The provider the user chose for every LLM stage. */

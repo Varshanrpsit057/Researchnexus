@@ -17,6 +17,7 @@ from app.domain.profile import ProfileField, ProfileList, ResearchProfile
 from app.domain.user import LlmCapabilities, LlmProvider, LlmTestResult
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import sign_in
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -33,7 +34,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _token(c: TestClient, email: str = "r@example.com") -> str:
-    return c.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    return sign_in(c, email)
 
 
 def _h(t: str) -> dict[str, str]:

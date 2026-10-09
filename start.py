@@ -411,15 +411,18 @@ def ensure_backend(install: bool) -> None:
 
 
 def ensure_backend_secrets() -> None:
-    """backend/.env holds the local JWT and key-vault secrets. They are made
-    once, when absent, and never printed. An existing key-vault secret is
-    never replaced: saved LLM keys can't be decrypted without it."""
+    """backend/.env holds the local secret key (one-time codes, CSRF tokens)
+    and key-vault secret. They are made once, when absent, and never
+    printed. An existing key-vault secret is never replaced: saved LLM keys
+    can't be decrypted without it. A secret saved as JWT_SECRET (before
+    sessions replaced JWTs) still serves as the secret key."""
     env_file = BACKEND / ".env"
     text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
     present = {line.split("=", 1)[0].strip() for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#")}
     made: dict[str, str] = {}
-    if "RESEARCHNEXUS_JWT_SECRET" not in present and not os.environ.get("RESEARCHNEXUS_JWT_SECRET"):
-        made["RESEARCHNEXUS_JWT_SECRET"] = secrets.token_urlsafe(32)
+    secret_names = ("RESEARCHNEXUS_SECRET_KEY", "RESEARCHNEXUS_JWT_SECRET")
+    if not any(name in present or os.environ.get(name) for name in secret_names):
+        made["RESEARCHNEXUS_SECRET_KEY"] = secrets.token_urlsafe(48)
     if "RESEARCHNEXUS_KEY_VAULT_SECRET" not in present and not os.environ.get("RESEARCHNEXUS_KEY_VAULT_SECRET"):
         made["RESEARCHNEXUS_KEY_VAULT_SECRET"] = base64.urlsafe_b64encode(os.urandom(32)).decode()  # a Fernet key
     if not made:
@@ -611,7 +614,12 @@ class Server:
 
 
 def backend_server() -> Server:
-    env = {**os.environ, "RESEARCHNEXUS_CORS_ALLOWED_ORIGINS": json.dumps([APP_ORIGIN]),
+    # a local run is development: plain-HTTP cookies, sign-in codes printed
+    # in this terminal (and readable in the dev mailbox), tables made as needed
+    # (sign-in rate limits x10 here only: repeated local test runs would hit them)
+    env = {"RESEARCHNEXUS_ENVIRONMENT": "development", "RESEARCHNEXUS_AUTH_RATE_LIMIT_SCALE": "10", **os.environ,
+           "RESEARCHNEXUS_CORS_ALLOWED_ORIGINS": json.dumps([APP_ORIGIN]),
+           "RESEARCHNEXUS_PUBLIC_APP_URL": APP_ORIGIN,
            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
     # --app-dir puts this checkout's path on the command line, which is how a
     # later start recognises a stale server as ours

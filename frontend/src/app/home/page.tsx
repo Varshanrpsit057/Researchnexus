@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+
 import Link from "next/link";
 import useSWR from "swr";
 import { ArrowRight, CheckCircle, CircleDashed, UploadSimple, Warning } from "@phosphor-icons/react/dist/ssr";
@@ -10,7 +10,6 @@ import { papers as papersApi, workspaces as workspacesApi } from "@/lib/api/endp
 import { COVERAGE_LABEL } from "@/lib/coverage";
 import { authorLine } from "@/lib/discovery-results";
 import { nextStep } from "@/lib/library";
-import { clearNewAccount, peekNewAccount } from "@/lib/recent-accounts";
 import { parseTimestamp } from "@/lib/time";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
 import { Reveal } from "@/components/effects/Reveal";
@@ -31,16 +30,13 @@ function plural(n: number, one: string, many = `${one}s`) {
 
 export default function HomePage() {
   const { ready } = useRequireAuth();
-  const { me, signOut } = useAuth();
-  // said once, right after sign-in made a new account
-  const [newAccount] = useState(peekNewAccount);
-  useEffect(() => clearNewAccount(), []);
+  const { me } = useAuth();
   const wsQ = useSWR(ready ? "workspaces" : null, () => workspacesApi.list());
   const libraryQ = useSWR(ready ? "library" : null, () => papersApi.library());
 
   if (!ready) return null;
 
-  const name = me?.email ? me.email.split("@")[0] : "researcher";
+  const name = me?.name?.split(" ")[0] || (me?.email ? me.email.split("@")[0] : "researcher");
   const workspaces = [...(wsQ.data?.workspaces ?? [])].sort((a, b) => parseTimestamp(b.updated_at).getTime() - parseTimestamp(a.updated_at).getTime());
   const papers = libraryQ.data?.papers ?? [];
   const loaded = Boolean(wsQ.data && libraryQ.data);
@@ -48,22 +44,6 @@ export default function HomePage() {
 
   return (
     <PageShell>
-      {newAccount && (
-        <div
-          role="status"
-          className="mb-8 flex flex-wrap items-center justify-between gap-3 rounded-2xl px-5 py-4 text-[14px]"
-          style={{ background: "rgba(93,240,168,.06)", border: "1px solid rgba(93,240,168,.3)" }}
-        >
-          <p className="max-w-[80ch] leading-relaxed">
-            A new account was made for <span className="font-semibold">{newAccount}</span>. If your papers and workspaces are under another email,
-            sign out and sign in with that one.
-          </p>
-          <button type="button" onClick={signOut} className={`rounded-full px-4 py-2 text-sm font-semibold hover:bg-white/10 ${focusRing}`} style={{ ...quietButton, color: C.ink }}>
-            Sign out
-          </button>
-        </div>
-      )}
-
       <Reveal>
         <h1 className="text-[clamp(28px,3.8vw,44px)] font-extrabold leading-[1.08] tracking-[-0.025em]">
           {fresh ? `Welcome, ${name}.` : `Welcome back, ${name}.`}

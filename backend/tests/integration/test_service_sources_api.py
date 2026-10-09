@@ -12,6 +12,7 @@ import httpx
 from app.config import Settings
 from app.external.http import ExternalHttpClient
 from app.services.sources import SOURCES, check_sources
+from tests.auth_helpers import ANONYMOUS
 from tests.integration.test_fulltext_api import _client
 from tests.integration.test_workspaces_api import _headers, _token
 
@@ -19,7 +20,7 @@ from tests.integration.test_workspaces_api import _headers, _token
 def test_the_sources_say_how_they_are_set_up_and_never_show_a_key(tmp_path: Path) -> None:
     client = _client(tmp_path, openalex_api_key="secret-openalex-key", contact_email="reader@example.com")
     token = _token(client)
-    assert client.get("/api/v1/service/sources").status_code == 401
+    assert client.get("/api/v1/service/sources", headers=ANONYMOUS).status_code == 401
     resp = client.get("/api/v1/service/sources", headers=_headers(token))
     assert resp.status_code == 200
     assert "secret-openalex-key" not in resp.text and "reader@example.com" not in resp.text

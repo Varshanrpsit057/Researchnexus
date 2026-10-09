@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.domain.user import LlmCapabilities, LlmTestResult
 from app.main import create_app
+from tests.auth_helpers import sign_in
 
 _VALID_EXTRACTION_JSON = json.dumps(
     {
@@ -53,7 +54,7 @@ def _make_client(tmp_path: Path, **overrides: object) -> TestClient:
 
 def _authed_client(tmp_path: Path) -> tuple[TestClient, str]:
     client = _make_client(tmp_path)
-    token = client.post("/api/v1/auth/session", json={"email": "researcher@example.com", "password": "x"}).json()["token"]
+    token = sign_in(client, "researcher@example.com")
     return client, token
 
 
@@ -74,7 +75,7 @@ def _upload_and_wait(client: TestClient, token: str, pdf_bytes: bytes) -> str:
 
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        job = client.get(f"/api/v1/jobs/{job_id}").json()
+        job = client.get(f"/api/v1/jobs/{job_id}", headers=_auth_headers(token)).json()
         if job["status"] in ("succeeded", "failed", "partial"):
             assert job["status"] == "succeeded"
             break

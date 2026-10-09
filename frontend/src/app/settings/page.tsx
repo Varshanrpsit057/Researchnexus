@@ -5,17 +5,15 @@ import useSWR, { useSWRConfig } from "swr";
 import {
   Books,
   ChartBar,
-  Copy,
   Globe,
   Info,
   Key,
   PaintBrush,
-  SignOut,
   SlidersHorizontal,
   UserCircle,
   Warning,
 } from "@phosphor-icons/react/dist/ssr";
-import { API_BASE_URL, ApiError } from "@/lib/api/client";
+import { apiBase, ApiError } from "@/lib/api/client";
 import { auth as authApi, llmKeys, service } from "@/lib/api/endpoints";
 import type { CitationFormat, LlmProvider } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -25,9 +23,9 @@ import { usePreference, writePreference, type Preferences } from "@/lib/preferen
 import { useBackground, useBackgroundChoice, writeBackgroundChoice, type BackgroundChoice } from "@/lib/background-mode";
 import { activeSummary, describeTest, providerName, providerRows } from "@/lib/settings";
 import { CinematicPageShell as PageShell } from "@/components/layout/CinematicPageShell";
-import { Timestamp } from "@/components/ui/Timestamp";
-import { C, focusRing, panel, primaryButton, quietButton } from "@/components/cinematic/ui";
+import { C, focusRing, panel, quietButton } from "@/components/cinematic/ui";
 import { KeyForm, LoadFailure, ProviderLine, SmallButton } from "./parts";
+import { AccountPane } from "./account";
 import { DiscoveryPane, LibraryPane, SourcesPane } from "./panes";
 import { UsagePanel } from "./usage";
 
@@ -35,7 +33,7 @@ type SectionId = "account" | "library" | "discovery" | "sources" | "models" | "u
 
 const SECTIONS: { id: SectionId; label: string; title: string; lead: string; icon: ComponentType<{ className?: string; "aria-hidden"?: boolean; weight?: "regular" | "fill" }> }[][] = [
   [
-    { id: "account", label: "Account", title: "Account", lead: "Who is signed in to this ResearchNexus server.", icon: UserCircle },
+    { id: "account", label: "Account", title: "Account", lead: "Your profile, your password, and the devices signed in to your account.", icon: UserCircle },
     {
       id: "library",
       label: "Library & workspaces",
@@ -192,7 +190,7 @@ export default function SettingsPage() {
             {current.lead}
           </p>
           <div className="mt-6">
-            {section === "account" && <AccountPane onOpen={open} announce={setAnnouncement} />}
+            {section === "account" && <AccountPane onAddKey={() => open("models")} announce={setAnnouncement} />}
             {section === "library" && <LibraryPane ready={ready} announce={setAnnouncement} />}
             {section === "discovery" && <DiscoveryPane announce={setAnnouncement} />}
             {section === "sources" && <SourcesPane ready={ready} />}
@@ -204,88 +202,6 @@ export default function SettingsPage() {
         </section>
       </div>
     </PageShell>
-  );
-}
-
-// -- account --------------------------------------------------------------------------
-
-function AccountPane({ onOpen, announce }: { onOpen: (id: SectionId) => void; announce: (text: string) => void }) {
-  const { me, signOut } = useAuth();
-
-  async function copyId() {
-    if (!me) return;
-    try {
-      await navigator.clipboard.writeText(me.id);
-      announce("Account ID copied.");
-    } catch {
-      announce("Couldn't copy; select the ID instead.");
-    }
-  }
-
-  if (!me) {
-    return (
-      <div role="status" className="h-28 rounded-2xl motion-safe:animate-pulse" style={panel}>
-        <span className="sr-only">Loading your account…</span>
-      </div>
-    );
-  }
-  return (
-    <>
-      {!me.has_working_llm_key && (
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl px-5 py-4" style={{ background: "rgba(232,193,92,.07)", border: "1px solid rgba(232,193,92,.35)" }}>
-          <p className="flex items-start gap-2 text-[14px] leading-snug" style={{ color: C.warning }}>
-            <Warning className="mt-0.5 size-4 shrink-0" weight="bold" aria-hidden />
-            No working language model key yet: analysing papers, chat, comparison, gaps and directions need one.
-          </p>
-          <button type="button" onClick={() => onOpen("models")} className={`rounded-full px-4 py-2 text-sm font-semibold ${focusRing}`} style={primaryButton}>
-            Add a key
-          </button>
-        </div>
-      )}
-      <div className="rounded-2xl p-5" style={panel}>
-        <dl className="grid grid-cols-[minmax(0,1fr)] gap-5 sm:grid-cols-2">
-          <Field term="Email">
-            <span className="text-[16px] font-semibold [overflow-wrap:anywhere]">{me.email}</span>
-          </Field>
-          <Field term="Member since">
-            <Timestamp at={me.created_at} style="long" />
-          </Field>
-          <Field term="Account ID">
-            <span className="inline-flex items-center gap-2">
-              <span className="font-mono text-[13px] [overflow-wrap:anywhere]" style={{ color: C.muted }}>
-                {me.id}
-              </span>
-              <button
-                type="button"
-                onClick={copyId}
-                aria-label="Copy the account ID"
-                className={`inline-flex size-11 items-center justify-center rounded-lg hover:bg-white/10 sm:size-8 ${focusRing}`}
-                style={{ color: C.muted }}
-              >
-                <Copy className="size-4" aria-hidden />
-              </button>
-            </span>
-          </Field>
-          <Field term="Sign-in">
-            <span style={{ color: C.muted }}>
-              Local sign-in: the email is the account, whatever its capitals. There is no password to change. Signing in with another email opens
-              a different, separate account.
-            </span>
-          </Field>
-        </dl>
-        <div className="mt-5 border-t pt-4" style={{ borderColor: C.line }}>
-          <button
-            type="button"
-            onClick={signOut}
-            className={`inline-flex min-h-11 items-center gap-2 rounded-full px-4 text-sm font-semibold transition-colors hover:bg-white/10 sm:min-h-9 ${focusRing}`}
-            style={{ ...quietButton, color: C.ink }}
-          >
-            <SignOut className="size-4" aria-hidden />
-            Sign out
-          </button>
-        </div>
-      </div>
-    </>
   );
 }
 
@@ -453,7 +369,9 @@ function ServicePane({ ready }: { ready: boolean }) {
           <>
             <p className="flex items-start gap-2 text-[14px]" style={{ color: C.danger }}>
               <Warning className="mt-0.5 size-4 shrink-0" weight="bold" aria-hidden />
-              Can&apos;t reach the server at {API_BASE_URL}. Start the backend on port 8000, then try again.
+              {/localhost|127\.0\.0\.1/.test(apiBase())
+                ? `Can't reach the server at ${apiBase()}. Start the backend on port 8000 (python start.py), then try again.`
+                : "The server isn't answering right now. Try again in a minute."}
             </p>
             <div className="mt-3">
               <SmallButton onClick={() => healthQ.mutate()}>Try again</SmallButton>
@@ -466,7 +384,7 @@ function ServicePane({ ready }: { ready: boolean }) {
         ) : (
           <dl className="grid grid-cols-[minmax(0,1fr)] gap-5 sm:grid-cols-3">
             <Field term="Server">
-              <span className="font-mono text-[13px]">{API_BASE_URL}</span>
+              <span className="font-mono text-[13px] [overflow-wrap:anywhere]">{apiBase()}</span>
             </Field>
             <Field term="Status">
               <span style={{ color: healthQ.data.status === "ok" ? C.mint : C.warning }}>

@@ -17,6 +17,7 @@ from app.domain.usage import LlmCall
 from app.domain.workspace import AddedBy, ResearchWorkspace, WorkspacePaper, WorkspacePaperRole
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import sign_in
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -32,7 +33,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _sign_in(c: TestClient, email: str) -> tuple[dict[str, str], str]:
-    token = c.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    token = sign_in(c, email)
     headers = {"Authorization": f"Bearer {token}"}
     return headers, c.get("/api/v1/me", headers=headers).json()["id"]
 

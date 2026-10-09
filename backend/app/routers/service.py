@@ -4,9 +4,10 @@ can prefer. Settings shows both."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from app.deps import AppSettings, CurrentUser
+from app.deps import AppSettings, CurrentUser, DbSession
+from app.security import rate_limit
 from app.services.metadata.publishers import TRUSTED_PUBLISHERS, known_publishers
 from app.services.sources import check_sources, describe_sources
 
@@ -20,8 +21,16 @@ def get_sources(settings: AppSettings, current_user: CurrentUser) -> dict[str, o
 
 
 @router.post("/api/v1/service/sources/check")
-async def check_sources_now(settings: AppSettings, current_user: CurrentUser) -> dict[str, object]:
-    """Ask every source one cheap question now (one request each)."""
+async def check_sources_now(settings: AppSettings, current_user: CurrentUser, db: DbSession) -> dict[str, object]:
+    """Ask every source one cheap question now (one request each) -- a few
+    times per person per ten minutes, so it can't be used to flood them."""
+    hit = rate_limit.hit(db, rate_limit.SOURCE_CHECKS_PER_USER, current_user.id)
+    if not hit.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": {"code": "rate_limited", "message": "The sources were just checked. Try again in a few minutes."}},
+            headers={"Retry-After": str(hit.retry_after_s)},
+        )
     return {"results": await check_sources(settings)}
 
 

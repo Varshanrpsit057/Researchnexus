@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.db.models import ResearchProfileORM, SearchRunORM
 from app.db.session import get_session_factory
+from tests.auth_helpers import ANONYMOUS
 from tests.integration.test_fulltext_api import _client, _found
 from tests.integration.test_workspaces_api import _create_ws, _headers, _seed_analysed_paper, _token
 
@@ -42,10 +43,10 @@ def test_a_readers_uploads_are_in_their_library_and_no_one_elses(tmp_path: Path,
     assert again["deduplicated"] is True and again["paper_id"] == up["paper_id"]
     assert [p["id"] for p in _library(client, bob)["papers"]] == [up["paper_id"]]
 
-    # an upload without signing in still works; it is just nobody's
-    anon = client.post("/api/v1/papers/upload", files={"file": ("paper.pdf", normal_paper_pdf_bytes, "application/pdf")})
-    assert anon.status_code == 202
-    assert client.get("/api/v1/papers").status_code == 401
+    # uploading needs an account (it used to be allowed, and credited to nobody)
+    anon = client.post("/api/v1/papers/upload", files={"file": ("paper.pdf", normal_paper_pdf_bytes, "application/pdf")}, headers=ANONYMOUS)
+    assert anon.status_code == 401
+    assert client.get("/api/v1/papers", headers=ANONYMOUS).status_code == 401
 
 
 def test_the_library_holds_the_readers_seeds_analyses_and_workspace_papers(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ from app.domain.profile import Confidence, ProfileField, ResearchProfile, Source
 from app.domain.trail import DetectionMethod, Evidence, RelationshipType, TrailEdge
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import sign_in
 
 SEED_REFERENCES: list[dict[str, Any]] = [
     {"order": 0, "raw_text": "[1] K. Guu et al. REALM: Retrieval-augmented language model pre-training. ICML."},
@@ -50,7 +51,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _token(c: TestClient, email: str = "r@example.com") -> str:
-    return c.post("/api/v1/auth/session", json={"email": email, "password": "x"}).json()["token"]
+    return sign_in(c, email)
 
 
 def _h(t: str) -> dict[str, str]:

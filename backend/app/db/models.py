@@ -5,7 +5,8 @@ Mirrors the `users`, `api_keys`, `papers`, `paper_chunks`, `jobs`,
 `paper_relationships`, `workspaces`, `workspace_papers`, `chat_sessions`,
 `chat_messages`, `citations`, `claims`, `comparisons`,
 `research_gaps`, `research_directions`, `stage_runs` and `llm_calls` tables in
-docs/architecture/ResearchNexus_Data_Model.md §13. Other columns from that
+docs/architecture/ResearchNexus_Data_Model.md §13, plus sign-in's
+`auth_sessions`, `auth_challenges` and `rate_limits` (migration 0021). Other columns from that
 spec belong to later phases and are added when those phases need them, not
 speculatively here.
 """
@@ -25,6 +26,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -48,6 +50,69 @@ class UserORM(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     # the provider every LLM stage uses when its key works (API spec §2 `default_provider`)
     default_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Email + password sign-in (migration 0021). Accounts made before it have
+    # no password: they set one through "Forgot password", keeping their data.
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_verified_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    password_changed_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+# sign-in finds an email whatever its capitalisation (not unique: accounts
+# saved before that may differ only in case)
+Index("ix_users_email_lower", func.lower(UserORM.email))
+
+
+class AuthSessionORM(Base):
+    """A signed-in browser. The token itself lives only in the reader's
+    cookie; this row keeps its SHA-256, so a copy of the database can't be
+    used to sign in."""
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    last_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AuthChallengeORM(Base):
+    """One emailed code in flight: signing up, signing in, or resetting a
+    password. Only an HMAC of the code is kept. A challenge for an email no
+    account has (or, for sign-up, one that already has an account) is a
+    decoy: it answers like a real one, but no code can ever match it."""
+
+    __tablename__ = "auth_challenges"
+    __table_args__ = (Index("ix_auth_challenges_email_purpose", "email", "purpose"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(16))
+    email: Mapped[str] = mapped_column(String(255))
+    user_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    # sign-up: the name and password hash, held until the email is confirmed
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    send_count: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    last_sent_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime())
+    consumed_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class RateLimitORM(Base):
+    """Fixed-window request counters, shared by every server process."""
+
+    __tablename__ = "rate_limits"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    window_start: Mapped[dt.datetime] = mapped_column(UTCDateTime(), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ApiKeyORM(Base):
@@ -74,12 +139,12 @@ class PaperORM(Base):
     title_hash: Mapped[str] = mapped_column(String(64), index=True)
     authors: Mapped[list[str]] = mapped_column(JSON, default=list)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    venue: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    publisher: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    venue: Mapped[str | None] = mapped_column(Text, nullable=True)
+    publisher: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
     abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
     has_full_text: Mapped[bool] = mapped_column(Boolean, default=False)
-    pdf_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    pdf_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     pdf_sha256: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parse_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -95,8 +160,8 @@ class PaperORM(Base):
     # retrieve from), "failed" (found, but couldn't be downloaded or read).
     fulltext_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     fulltext_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    fulltext_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    fulltext_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fulltext_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fulltext_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     fulltext_checked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
@@ -106,7 +171,7 @@ class PaperChunkORM(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    section: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    section: Mapped[str | None] = mapped_column(Text, nullable=True)
     section_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_start: Mapped[int] = mapped_column(Integer)
@@ -114,11 +179,13 @@ class PaperChunkORM(Base):
     kind: Mapped[str] = mapped_column(String(32), default="body")
     text: Mapped[str] = mapped_column(Text)
     token_count: Mapped[int] = mapped_column(Integer)
-    embedding_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class JobORM(Base):
     __tablename__ = "jobs"
+    # a workspace page asks for its latest job of a kind (migration 0023)
+    __table_args__ = (Index("ix_jobs_workspace_kind", "workspace_id", "kind"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -130,6 +197,19 @@ class JobORM(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow, onupdate=_utcnow)
+    # the server process running it (migration 0022): when that process
+    # stops answering, any server can say the job was cut off
+    runner_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+
+
+class JobRunnerORM(Base):
+    """A server process that runs jobs, and when it last said it was alive."""
+
+    __tablename__ = "job_runners"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
+    heartbeat_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
 class ResearchProfileORM(Base):
@@ -139,11 +219,11 @@ class ResearchProfileORM(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     paper_id: Mapped[str] = mapped_column(String(64), ForeignKey("papers.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     grounding: Mapped[str] = mapped_column(String(16), default="full_text")
     profile_json: Mapped[dict] = mapped_column(JSON)
     extraction_confidence: Mapped[str] = mapped_column(String(16), default="low")
-    extraction_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    extraction_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow, onupdate=_utcnow)
 
@@ -274,7 +354,7 @@ class WorkspaceORM(Base):
     source_run_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("search_runs.id", ondelete="SET NULL"), nullable=True
     )
-    combined_index_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    combined_index_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Retired in remediation Phase 5, kept only so the table matches its
     # migrations: nothing reads or writes these. The USD cap and running
     # total rested on a flat-rate estimate (and were never written);
@@ -444,7 +524,7 @@ class ResearchGapORM(Base):
     detection_rule: Mapped[str] = mapped_column(String(48), default="")
     self_support_passed: Mapped[bool] = mapped_column(Boolean, default=False)
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
-    generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generator_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
     # the gap without its paper set (domain ResearchGap.match_key)
     match_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -481,7 +561,7 @@ class ResearchDirectionORM(Base):
     confidence_basis: Mapped[dict] = mapped_column(JSON, default=dict)
     flags: Mapped[list] = mapped_column(JSON, default=list)
     user_state: Mapped[str] = mapped_column(String(16), default="candidate")
-    generator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generator_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=_utcnow)
 
 
@@ -540,7 +620,7 @@ class LlmCallORM(Base):
     job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     feature: Mapped[str] = mapped_column(String(32))
     provider: Mapped[str] = mapped_column(String(32))
-    model: Mapped[str] = mapped_column(String(128))
+    model: Mapped[str] = mapped_column(Text)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cached_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)

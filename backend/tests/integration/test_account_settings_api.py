@@ -15,6 +15,7 @@ from app.db.session import get_session_factory
 from app.domain.user import LlmCapabilities, LlmProvider, LlmTestResult
 from app.llm.session import resolve_llm_session
 from app.main import create_app
+from tests.auth_helpers import sign_in
 
 SECRET_KEY = "sk-live-abcdefghijklmnop-9z8y"
 
@@ -33,7 +34,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, Settings]:
 
 
 def _token(c: TestClient) -> str:
-    return c.post("/api/v1/auth/session", json={"email": "r@example.com", "password": "x"}).json()["token"]
+    return sign_in(c, "r@example.com")
 
 
 def _h(t: str) -> dict[str, str]:

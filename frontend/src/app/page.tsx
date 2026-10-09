@@ -6,6 +6,7 @@ import { motion, useReducedMotion, type Variants } from "motion/react";
 import { ArrowRight, FlaskIcon, MagnifyingGlass } from "@phosphor-icons/react/dist/ssr";
 import { ConfidenceBadge } from "@/components/ui/Badge";
 import { LeaderRow } from "@/components/ui/ConfidenceBasis";
+import { useAuth } from "@/lib/auth/auth-context";
 
 // A fixed, always-dark cinematic palette for this one Persuade-mode surface
 // only -- scoped to this page's own wrapper, never touching the app's
@@ -138,7 +139,16 @@ const SIGNALS = [
 
 const RELATIONSHIP_TYPES = ["similar", "foundational", "competing", "method-extension", "dataset-related", "contradictory", "recent"];
 
+const ACCOUNT_LINKS: Record<string, string> = {
+  "Create account": "/sign-up",
+  "Sign in": "/sign-in",
+  "Your workspace": "/home",
+  Settings: "/settings",
+};
+
 export default function LandingPage() {
+  const { isAuthenticated: signedIn } = useAuth();
+  const startHref = signedIn ? "/home" : "/sign-up";
   return (
     <div style={{ color: INK }} className="min-h-dvh">
       {/* ---------------------------------------------------------------- HERO */}
@@ -173,13 +183,28 @@ export default function LandingPage() {
               Gaps &amp; directions
             </a>
           </div>
-          <Link
-            href="/sign-in"
-            className="rounded-full px-[18px] py-[9px] text-sm font-semibold backdrop-blur-[10px] transition-colors"
-            style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${LINE_STRONG}` }}
-          >
-            Sign in
-          </Link>
+          {signedIn ? (
+            <Link
+              href="/home"
+              className="rounded-full px-[18px] py-[9px] text-sm font-semibold backdrop-blur-[10px] transition-colors hover:bg-white/10"
+              style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${LINE_STRONG}` }}
+            >
+              Open your workspace
+            </Link>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <Link href="/sign-in" className="rounded-full px-3.5 py-[9px] text-sm font-semibold transition-colors hover:text-white" style={{ color: MUTED }}>
+                Sign in
+              </Link>
+              <Link
+                href="/sign-up"
+                className="rounded-full px-[18px] py-[9px] text-sm font-semibold backdrop-blur-[10px] transition-colors hover:bg-white/10"
+                style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${LINE_STRONG}` }}
+              >
+                Create account
+              </Link>
+            </div>
+          )}
         </nav>
 
         <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 text-center" style={{ transform: "translateY(-6vh)" }}>
@@ -222,7 +247,7 @@ export default function LandingPage() {
             transition={{ duration: 0.7, delay: 0.3, ease: [0.22, 0.7, 0.2, 1] }}
             className="mt-9 flex flex-wrap items-center justify-center gap-3.5"
           >
-            <PrimaryButton href="/sign-in">Start Research</PrimaryButton>
+            <PrimaryButton href={startHref}>Start Research</PrimaryButton>
             <OutlineButton href="#workflow">Explore the Workflow</OutlineButton>
           </motion.div>
         </div>
@@ -292,7 +317,7 @@ export default function LandingPage() {
               </p>
             </Reveal>
             <Reveal delay={0.24} className="mt-7">
-              <OutlineButton href="/sign-in">See a real profile</OutlineButton>
+              <OutlineButton href={startHref}>See a real profile</OutlineButton>
             </Reveal>
           </div>
           <Reveal delay={0.16}>
@@ -495,7 +520,7 @@ export default function LandingPage() {
               and a defensible gap — in one session.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3.5">
-              <PrimaryButton href="/sign-in">Start Research</PrimaryButton>
+              <PrimaryButton href={startHref}>Start Research</PrimaryButton>
               <OutlineButton href="#workflow">Explore ResearchNexus</OutlineButton>
             </div>
           </div>
@@ -518,16 +543,27 @@ export default function LandingPage() {
             {[
               { head: "Product", links: ["Discovery", "Ranking", "Comparison"] },
               { head: "Workflow", links: ["Trail", "Graph", "Gaps"] },
-              { head: "Account", links: ["Sign in", "Settings"] },
+              {
+                head: "Account",
+                links: signedIn ? ["Your workspace", "Settings"] : ["Create account", "Sign in"],
+              },
             ].map((col) => (
               <div key={col.head}>
                 <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: MUTED_2 }}>
                   {col.head}
                 </p>
                 <ul className="mt-3 space-y-2 text-sm" style={{ color: MUTED }}>
-                  {col.links.map((l) => (
-                    <li key={l}>{l}</li>
-                  ))}
+                  {col.links.map((l) =>
+                    ACCOUNT_LINKS[l] ? (
+                      <li key={l}>
+                        <Link href={ACCOUNT_LINKS[l]} className="transition-colors hover:text-white">
+                          {l}
+                        </Link>
+                      </li>
+                    ) : (
+                      <li key={l}>{l}</li>
+                    ),
+                  )}
                 </ul>
               </div>
             ))}

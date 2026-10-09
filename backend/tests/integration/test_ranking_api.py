@@ -26,6 +26,7 @@ from app.main import create_app
 from app.retrieval.embeddings import FakeEmbeddingProvider
 from app.services.normalize.canonical import title_hash
 from app.services.ranking.pipeline import RankOptions, rank_search_run
+from tests.auth_helpers import ANONYMOUS, sign_in, signed_in
 from tests.integration.test_discover_related_api import _fake_build_trail, _fake_run_discovery
 
 
@@ -39,11 +40,11 @@ def _client(tmp_path: Path) -> tuple[TestClient, Settings]:
     )
     app = create_app(settings=settings)
     app.dependency_overrides[get_settings] = lambda: settings
-    return TestClient(app), settings
+    return signed_in(TestClient(app)), settings
 
 
 def _headers(c: TestClient) -> dict[str, str]:
-    token = c.post("/api/v1/auth/session", json={"email": "r@example.com", "password": "x"}).json()["token"]
+    token = sign_in(c, "r@example.com")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -185,7 +186,7 @@ def test_reweighing_refuses_another_papers_run_an_unranked_run_and_bad_criteria(
     assert c.post("/api/v1/papers/pap_seed/related/rerank", headers=headers, json={"run_id": "run_unranked", "criteria": good}).status_code == 409
     bad = {**good, "topic": 101}
     assert c.post("/api/v1/papers/pap_seed/related/rerank", headers=headers, json={"run_id": run_id, "criteria": bad}).status_code == 422
-    assert c.post("/api/v1/papers/pap_seed/related/rerank", json={"run_id": run_id, "criteria": good}).status_code == 401
+    assert c.post("/api/v1/papers/pap_seed/related/rerank", json={"run_id": run_id, "criteria": good}, headers=ANONYMOUS).status_code == 401
 
 
 def _set_publishers(by_title: dict[str, str]) -> None:

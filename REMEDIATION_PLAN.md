@@ -203,6 +203,23 @@ Open from this round:
 - Preferred publishers and ranking weights are kept per browser, not per account.
 - Stored papers are read with the improved column detection only once re-read ("Read the PDF again", or the maintenance script).
 
+## Production readiness: real sign-in, PostgreSQL, AWS (requested 2026-10-09)
+The user's brief: production-ready authentication with email two-factor codes, separate login and sign-up pages, a production database, a security audit, configuration and secrets, containers, AWS architecture and deployment, CI/CD with rollback, observability, and the documents to run it -- keeping the design. Details live in the documents named below; this records what changed.
+
+| Area | Done |
+|---|---|
+| Sign-in | Email + password (Argon2id) and an emailed six-digit code for every sign-in; separate `/sign-in`, `/sign-up`, `/forgot-password`; server-side sessions in `HttpOnly`/`Secure`/`__Host-` cookies with CSRF tokens; rate limits in the database; no account enumeration; existing passwordless accounts claim a password through "Forgot password" and keep everything. Settings > Account: name, password change, signed-in devices. [AUTHENTICATION.md](AUTHENTICATION.md) |
+| Authorization | Uploads, papers, profiles and jobs now need a session; jobs and discovery runs are their owner's; a paper's shared profile is editable only by whoever produced it. [SECURITY.md](SECURITY.md) |
+| Database | PostgreSQL support (psycopg 3, pooling, pre-ping, statement timeout); free-text columns TEXT on PostgreSQL (0022); indexes for owner lookups (0023); every migration and every integration test run on PostgreSQL; a backed-up, orphan-aware SQLite -> PostgreSQL copier. Job runners heartbeat, so several backend containers never fail each other's jobs |
+| Hardening | Request ids, access logs, JSON 500s, body-size caps, security headers on the API and the frontend (CSP), docs off in production, start-up validation that names missing settings, `pypdf` and `next` upgraded past their advisories |
+| Delivery | Dockerfiles (non-root, health checks, model baked in), `docker-compose.yml`, CloudFormation for AWS (ECS Fargate, ALB, RDS, EFS, SES, Secrets Manager, CloudWatch alarms; cfn-lint clean), CI with PostgreSQL, audits, the production build and image smoke tests, an OIDC deploy pipeline with migration step and rollback. [DEPLOYMENT.md](DEPLOYMENT.md), [AWS_ARCHITECTURE.md](AWS_ARCHITECTURE.md), [OPERATIONS_AND_ROLLBACK.md](OPERATIONS_AND_ROLLBACK.md), [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md) |
+| Design | The same cinematic world; three restrained React Bits effects (auth headings, the code screen's address, the library figures), each skipped under reduced motion |
+
+Open from this round:
+- Nothing has been deployed to AWS: no account was used. DEPLOYMENT.md lists the remaining steps, all needing an account owner.
+- Text read from a PDF a user uploads is attached to the shared paper record (SECURITY.md, Known limitations).
+- The "recent accounts" list on the sign-in page is gone: with real passwords a mistyped email no longer makes a new account, and the browser's password manager remembers addresses.
+
 Found in Phases 9–16, open:
 - Answers stream once they are verified: the first words of a chat answer arrive after the check, about 6–8 s into a turn on DeepSeek (the stages are shown live before that). Streaming unverified words first would show sentences that may then be withdrawn.
 - Some source text carries U+FFFD where a PDF or a scholarly API lost a character ("Students’" read as "Students�", "[3�6]"); it is shown as stored, never repaired by guess.
@@ -230,4 +247,4 @@ Found in Phase 5, not fixed (outside its scope):
 - Stage runs recorded before Phase 5 carry no tokens (the UI shows none rather than "0"); their usage is in the ledger totals.
 - Key checks from Settings (two ~5-token calls) are not metered.
 
-Found along the way, not yet scheduled: sign-in treats email case as a different account ("Varshan@gmail.com" and "varshan@gmail.com" are two users, each with its own workspaces and key) -- belongs with the time/data-contract work (Phase 4) or its own small fix, and needs a decision on merging the existing duplicate accounts.
+Found along the way (fixed 2026-10-06; sign-in rebuilt 2026-10-09): sign-in treated email case as a different account ("Varshan@gmail.com" and "varshan@gmail.com" are two users, each with its own workspaces and key) -- belongs with the time/data-contract work (Phase 4) or its own small fix, and needs a decision on merging the existing duplicate accounts.

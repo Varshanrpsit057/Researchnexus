@@ -13,6 +13,7 @@ import { RankingCriteriaControls } from "@/components/discovery/RankingCriteriaC
 import { DeleteWorkspaceButton } from "@/components/workspaces/DeleteWorkspace";
 import { C, InlineError, focusRing, panel, primaryButton, quietButton } from "@/components/cinematic/ui";
 import { LoadFailure, SmallButton, WorkspaceRow } from "./parts";
+import CountUp from "@/components/reactbits/CountUp";
 
 type Announce = (text: string) => void;
 
@@ -49,7 +50,9 @@ export function LibraryPane({ ready, announce }: { ready: boolean; announce: Ann
                 {f.hint}
               </span>
             </dt>
-            <dd className="order-first text-right text-[20px] font-bold tabular-nums leading-none">{f.value ?? "…"}</dd>
+            <dd className="order-first text-right text-[20px] font-bold tabular-nums leading-none">
+              {f.value === undefined ? "…" : <CountUp to={f.value} />}
+            </dd>
           </div>
         ))}
       </dl>

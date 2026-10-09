@@ -71,6 +71,7 @@ from app.domain.workspace import (
     WorkspacePaper,
     WorkspacePaperRole,
 )
+from app.jobs.runners import RUNNER_ID
 from app.security.pdf_sanitizer import PdfFileMeta
 from app.services.profile.refine import refine_profile
 
@@ -90,11 +91,31 @@ def _user_domain_from_orm(row: UserORM) -> User:
         auth_subject=row.auth_subject,
         created_at=row.created_at,
         default_provider=LlmProvider(row.default_provider) if row.default_provider else None,
+        name=row.name,
+        email_verified_at=row.email_verified_at,
+        has_password=row.password_hash is not None,
     )
 
 
-def create_user(db: Session, *, user_id: str, email: str) -> User:
-    row = UserORM(id=user_id, email=email, auth_provider="local", auth_subject=email)
+def create_user(
+    db: Session,
+    *,
+    user_id: str,
+    email: str,
+    name: str | None = None,
+    password_hash: str | None = None,
+    email_verified_at: datetime | None = None,
+) -> User:
+    row = UserORM(
+        id=user_id,
+        email=email,
+        auth_provider="local",
+        auth_subject=email,
+        name=name,
+        password_hash=password_hash,
+        email_verified_at=email_verified_at,
+        password_changed_at=email_verified_at if password_hash else None,
+    )
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -125,6 +146,44 @@ def find_user_for_sign_in(db: Session, email: str) -> User | None:
         .first()
     )
     return _user_domain_from_orm(row) if row else None
+
+
+def user_password_hash(db: Session, user_id: str) -> str | None:
+    row = db.get(UserORM, user_id)
+    return row.password_hash if row else None
+
+
+def set_user_password(db: Session, user_id: str, password_hash: str, *, verify_email: bool) -> User | None:
+    """A new password (sign-up, reset, change). `verify_email`: the change
+    came through a code sent to the account's email, so the email is theirs."""
+    row = db.get(UserORM, user_id)
+    if row is None:
+        return None
+    now = datetime.now(timezone.utc)
+    row.password_hash = password_hash
+    row.password_changed_at = now
+    if verify_email and row.email_verified_at is None:
+        row.email_verified_at = now
+    db.commit()
+    db.refresh(row)
+    return _user_domain_from_orm(row)
+
+
+def mark_email_verified(db: Session, user_id: str) -> None:
+    row = db.get(UserORM, user_id)
+    if row is not None and row.email_verified_at is None:
+        row.email_verified_at = datetime.now(timezone.utc)
+        db.commit()
+
+
+def set_user_name(db: Session, user_id: str, name: str | None) -> User | None:
+    row = db.get(UserORM, user_id)
+    if row is None:
+        return None
+    row.name = name
+    db.commit()
+    db.refresh(row)
+    return _user_domain_from_orm(row)
 
 
 def set_default_provider(db: Session, user_id: str, provider: LlmProvider | None) -> User | None:
@@ -474,6 +533,8 @@ def _job_orm_from_domain(job: Job) -> JobORM:
         progress=job.progress,
         result_ref=job.result_ref,
         error=job.error,
+        # run by this process (FastAPI background tasks run where they were accepted)
+        runner_id=RUNNER_ID,
     )
 
 
@@ -562,19 +623,6 @@ def cancel_job(db: Session, job_id: str) -> Job | None:
     return _job_domain_from_orm(row)
 
 
-def fail_interrupted_jobs(db: Session) -> int:
-    """At server start, mark every job still queued or running as failed:
-    jobs run inside the server process, so none of them can still be going
-    -- left alone, a page watching one would wait forever."""
-    rows = db.execute(select(JobORM).where(JobORM.status.in_(_ACTIVE_JOB_STATES))).scalars().all()
-    for row in rows:
-        row.status = JobStatus.FAILED.value
-        row.error = "The server restarted before this finished."
-        row.progress = {**(row.progress or {}), "stage": "interrupted"}
-    db.commit()
-    return len(rows)
-
-
 def active_discover_job(db: Session, owner_id: str, seed_paper_id: str, *, fresh_since: datetime) -> Job | None:
     """The owner's discovery run for this seed that is still going (heard
     from since `fresh_since`), so starting discovery again -- a refresh, a
@@ -660,6 +708,13 @@ def upsert_profile(db: Session, profile: ResearchProfile, *, owner_id: str | Non
     db.commit()
     db.refresh(row)
     return _profile_domain_from_orm(db, row)
+
+
+def profile_owner(db: Session, paper_id: str) -> str | None:
+    """Who produced a paper's shared profile (None for profiles from before owners were kept)."""
+    return db.execute(
+        select(ResearchProfileORM.owner_id).where(ResearchProfileORM.paper_id == paper_id, ResearchProfileORM.workspace_id.is_(None))
+    ).scalar_one_or_none()
 
 
 def get_profile(db: Session, paper_id: str, workspace_id: str | None = None) -> ResearchProfile | None:

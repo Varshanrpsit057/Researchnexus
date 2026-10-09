@@ -1,8 +1,10 @@
 """Database engine/session setup.
 
-SQLite for local/dev/test (Roadmap: "PostgreSQL for research/prod" comes
-later, Data Model §15). FK enforcement is off by default in SQLite, so it
-is turned on per-connection.
+SQLite for local development and tests; PostgreSQL (psycopg 3) for staging
+and production. FK enforcement is off by default in SQLite, so it is turned
+on per-connection. A server database gets a bounded connection pool whose
+connections are checked before use (a database restart or failover leaves
+dead ones behind) and recycled every half hour.
 """
 
 from __future__ import annotations
@@ -17,9 +19,21 @@ from app.db.base import Base
 
 
 def make_engine(settings: Settings) -> Engine:
-    # a writer waits up to 15 s for another writer before giving up
-    connect_args: dict[str, object] = {"check_same_thread": False, "timeout": 15} if settings.database_url.startswith("sqlite") else {}
-    engine = create_engine(settings.database_url, connect_args=connect_args)
+    if settings.database_url.startswith("sqlite"):
+        # a writer waits up to 15 s for another writer before giving up
+        engine = create_engine(settings.database_url, connect_args={"check_same_thread": False, "timeout": 15})
+    else:
+        engine = create_engine(
+            settings.database_url,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout_s,
+            pool_recycle=settings.db_pool_recycle_s,
+            pool_pre_ping=True,
+            # a request never waits more than 10 s to connect; a statement is
+            # cancelled after 60 s rather than holding a connection forever
+            connect_args={"connect_timeout": 10, "options": "-c statement_timeout=60000"},
+        )
 
     if settings.database_url.startswith("sqlite"):
 
@@ -57,7 +71,8 @@ def configure(settings: Settings) -> None:
     if settings.database_url.startswith("sqlite:///"):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
     _engine = make_engine(settings)
-    init_db(_engine)
+    if settings.auto_create_schema:
+        init_db(_engine)
     _SessionFactory = make_session_factory(_engine)
 
 

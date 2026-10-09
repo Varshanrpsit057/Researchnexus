@@ -1,0 +1,786 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  ResearchNexus application stack (one per environment: staging, production).
+  One HTTPS load balancer in front of two ECS Fargate services -- the Next.js
+  frontend and the FastAPI backend (paths /api/* and /health*) -- on one
+  address; PostgreSQL on RDS; uploaded PDFs on EFS; logs and alarms in
+  CloudWatch. Secrets come from Secrets Manager at container start, never
+  from this template. See AWS_ARCHITECTURE.md and DEPLOYMENT.md.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging, production]
+  DomainName:
+    Type: String
+    Description: the app's address, e.g. researchnexus.example.org (DNS points it at the load balancer)
+  CertificateArn:
+    Type: String
+    Description: an issued ACM certificate for DomainName, in this region
+  BackendImage:
+    Type: String
+    Description: ECR image URI with tag, e.g. 123456789012.dkr.ecr.eu-west-1.amazonaws.com/researchnexus/backend:<git sha>
+  FrontendImage:
+    Type: String
+    Description: ECR image URI with tag (built with NEXT_PUBLIC_API_BASE_URL empty)
+  AppSecretArn:
+    Type: String
+    Description: >-
+      Secrets Manager secret (JSON) with SECRET_KEY, KEY_VAULT_SECRET, SMTP_USERNAME and
+      SMTP_PASSWORD (and optionally OPENALEX_API_KEY, SEMANTIC_SCHOLAR_API_KEY, CORE_API_KEY)
+  EmailFrom:
+    Type: String
+    Description: verified SES sender, e.g. "ResearchNexus <no-reply@example.org>"
+  ContactEmail:
+    Type: String
+    Default: ""
+    Description: address the scholarly APIs may contact about this app's traffic (optional)
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: where alarms are emailed (optional; confirm the SNS subscription email)
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+  DbEngineVersion:
+    Type: String
+    Default: "17.6"
+    Description: a PostgreSQL 17 minor version offered in this region (minor upgrades then apply automatically)
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  DbAllocatedStorageGb:
+    Type: Number
+    Default: 20
+    MinValue: 20
+  DbMultiAz:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+  BackendCpu:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096]
+  BackendMemory:
+    Type: Number
+    Default: 2048
+  BackendDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+  FrontendCpu:
+    Type: Number
+    Default: 256
+    AllowedValues: [256, 512, 1024]
+  FrontendMemory:
+    Type: Number
+    Default: 512
+  FrontendDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 180, 365]
+
+Conditions:
+  WantsAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  IsProduction: !Equals [!Ref EnvironmentName, production]
+
+Resources:
+  # --- network: two public subnets (load balancer, containers with outbound
+  # internet for the scholarly APIs, model providers and SES -- no NAT
+  # gateway to pay for) and two private ones (database, file system) ---------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 12]]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}-public-a" }]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 12]]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}-public-b" }]
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 12]]
+      Tags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}-private-a" }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 4, 12]]
+      Tags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}-private-b" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+  # the private subnets keep the VPC's default route table: local traffic only
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS (and HTTP, redirected) from anywhere
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP to HTTPS redirect }
+  FrontendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: the frontend containers, reachable only from the load balancer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 3000, ToPort: 3000, SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup }
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: the backend containers, reachable only from the load balancer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 8000, ToPort: 8000, SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup }
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL, reachable only from the backend
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref BackendSecurityGroup }
+  FileSystemSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EFS (NFS), reachable only from the backend
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 2049, ToPort: 2049, SourceSecurityGroupId: !Ref BackendSecurityGroup }
+
+  # --- database -------------------------------------------------------------
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: private subnets for PostgreSQL
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    # never deleted with the stack: a final snapshot is kept, and deletion protection is on
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "researchnexus-${EnvironmentName}"
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorageGb
+      MaxAllocatedStorage: 200
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: researchnexus
+      MasterUsername: researchnexus
+      # RDS keeps (and can rotate) the password in Secrets Manager; it never appears here
+      ManageMasterUserPassword: true
+      MultiAZ: !Ref DbMultiAz
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      PreferredBackupWindow: "02:00-03:00"
+      PreferredMaintenanceWindow: "sun:03:30-sun:04:30"
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      AutoMinorVersionUpgrade: true
+      EnableCloudwatchLogsExports: [postgresql]
+
+  # --- uploaded PDFs and workspace indexes ---------------------------------------
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      BackupPolicy:
+        Status: ENABLED
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+        - TransitionToPrimaryStorageClass: AFTER_1_ACCESS
+      FileSystemTags: [{ Key: Name, Value: !Sub "researchnexus-${EnvironmentName}-data" }]
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroups: [!Ref FileSystemSecurityGroup]
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnetB
+      SecurityGroups: [!Ref FileSystemSecurityGroup]
+  DataAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      # the container's non-root user (backend/Dockerfile)
+      PosixUser: { Uid: "10001", Gid: "10001" }
+      RootDirectory:
+        Path: /researchnexus
+        CreationInfo: { OwnerUid: "10001", OwnerGid: "10001", Permissions: "0750" }
+
+  # --- containers ---------------------------------------------------------------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "researchnexus-${EnvironmentName}"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/researchnexus/${EnvironmentName}/backend"
+      RetentionInDays: !Ref LogRetentionDays
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/researchnexus/${EnvironmentName}/frontend"
+      RetentionInDays: !Ref LogRetentionDays
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "researchnexus-${EnvironmentName}-task-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-app-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AppSecretArn
+                  - !GetAtt Database.MasterUserSecret.SecretArn
+
+  BackendTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "researchnexus-${EnvironmentName}-backend-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: mount-data
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !GetAtt FileSystem.Arn
+                Condition:
+                  StringEquals:
+                    elasticfilesystem:AccessPointArn: !GetAtt DataAccessPoint.Arn
+
+  FrontendTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "researchnexus-${EnvironmentName}-frontend-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "researchnexus-${EnvironmentName}-backend"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref BackendCpu
+      Memory: !Ref BackendMemory
+      RuntimePlatform: { CpuArchitecture: X86_64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackendTaskRole.Arn
+      Volumes:
+        - Name: data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref DataAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImage
+          Essential: true
+          PortMappings: [{ ContainerPort: 8000, Protocol: tcp }]
+          MountPoints: [{ SourceVolume: data, ContainerPath: /data }]
+          StopTimeout: 60
+          ReadonlyRootFilesystem: false
+          Environment:
+            - { Name: RESEARCHNEXUS_ENVIRONMENT, Value: !Ref EnvironmentName }
+            - { Name: RESEARCHNEXUS_PUBLIC_APP_URL, Value: !Sub "https://${DomainName}" }
+            - { Name: RESEARCHNEXUS_CORS_ALLOWED_ORIGINS, Value: !Sub '["https://${DomainName}"]' }
+            - { Name: RESEARCHNEXUS_DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: RESEARCHNEXUS_DB_PORT, Value: !GetAtt Database.Endpoint.Port }
+            - { Name: RESEARCHNEXUS_DB_NAME, Value: researchnexus }
+            - { Name: RESEARCHNEXUS_DB_USER, Value: researchnexus }
+            - { Name: RESEARCHNEXUS_EMAIL_BACKEND, Value: smtp }
+            - { Name: RESEARCHNEXUS_EMAIL_FROM, Value: !Ref EmailFrom }
+            - { Name: RESEARCHNEXUS_SMTP_HOST, Value: !Sub "email-smtp.${AWS::Region}.amazonaws.com" }
+            - { Name: RESEARCHNEXUS_SMTP_PORT, Value: "587" }
+            - { Name: RESEARCHNEXUS_CONTACT_EMAIL, Value: !Ref ContactEmail }
+            - { Name: RESEARCHNEXUS_EMBEDDING_THREADS, Value: "1" }
+            - { Name: RESEARCHNEXUS_LOG_LEVEL, Value: INFO }
+          Secrets:
+            - { Name: RESEARCHNEXUS_DB_PASSWORD, ValueFrom: !Sub "${Database.MasterUserSecret.SecretArn}:password::" }
+            - { Name: RESEARCHNEXUS_SECRET_KEY, ValueFrom: !Sub "${AppSecretArn}:SECRET_KEY::" }
+            - { Name: RESEARCHNEXUS_KEY_VAULT_SECRET, ValueFrom: !Sub "${AppSecretArn}:KEY_VAULT_SECRET::" }
+            - { Name: RESEARCHNEXUS_SMTP_USERNAME, ValueFrom: !Sub "${AppSecretArn}:SMTP_USERNAME::" }
+            - { Name: RESEARCHNEXUS_SMTP_PASSWORD, ValueFrom: !Sub "${AppSecretArn}:SMTP_PASSWORD::" }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+          HealthCheck:
+            Command: ["CMD-SHELL", "python -c \"import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=4).status == 200 else 1)\""]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  FrontendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "researchnexus-${EnvironmentName}-frontend"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref FrontendCpu
+      Memory: !Ref FrontendMemory
+      RuntimePlatform: { CpuArchitecture: X86_64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt FrontendTaskRole.Arn
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Ref FrontendImage
+          Essential: true
+          PortMappings: [{ ContainerPort: 3000, Protocol: tcp }]
+          ReadonlyRootFilesystem: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FrontendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: frontend
+
+  # --- load balancer: one address; /api and /health go to the backend -------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "researchnexus-${EnvironmentName}"
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        # chat answers stream for up to a few minutes
+        - { Key: idle_timeout.timeout_seconds, Value: "300" }
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: "true" }
+        - { Key: deletion_protection.enabled, Value: !If [IsProduction, "true", "false"] }
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+      HealthCheckPath: /health/ready
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: "200" }
+      TargetGroupAttributes:
+        # long enough for a running request to finish when a container is replaced
+        - { Key: deregistration_delay.timeout_seconds, Value: "60" }
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      TargetType: ip
+      Protocol: HTTP
+      Port: 3000
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: "200" }
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "15" }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig: { Protocol: HTTPS, Port: "443", StatusCode: HTTP_301 }
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+  BackendRoute:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig: { Values: ["/api/*", "/health", "/health/*"] }
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: [BackendRoute, MountTargetA, MountTargetB]
+    Properties:
+      ServiceName: backend
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref BackendTaskDefinition
+      DesiredCount: !Ref BackendDesiredCount
+      HealthCheckGracePeriodSeconds: 120
+      EnableExecuteCommand: false
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        # a release that never becomes healthy is rolled back to the last one that did
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref BackendSecurityGroup]
+      LoadBalancers:
+        - { ContainerName: backend, ContainerPort: 8000, TargetGroupArn: !Ref BackendTargetGroup }
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    DependsOn: [HttpsListener]
+    Properties:
+      ServiceName: frontend
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref FrontendTaskDefinition
+      DesiredCount: !Ref FrontendDesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref FrontendSecurityGroup]
+      LoadBalancers:
+        - { ContainerName: frontend, ContainerPort: 3000, TargetGroupArn: !Ref FrontendTargetGroup }
+
+  # --- alarms ---------------------------------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "researchnexus-${EnvironmentName}-alarms"
+      Subscription: !If
+        - WantsAlarmEmail
+        - [{ Protocol: email, Endpoint: !Ref AlarmEmail }]
+        - !Ref AWS::NoValue
+
+  ServerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: the backend answered with 5xx errors
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt BackendTargetGroup.TargetGroupFullName }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  BackendUnhealthyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: no healthy backend container (database, schema or storage not ready)
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt BackendTargetGroup.TargetGroupFullName }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+  SlowResponsesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: the backend's 90th-percentile response time is over 5 s
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt BackendTargetGroup.TargetGroupFullName }
+      ExtendedStatistic: p90
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  BackendCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: backend CPU above 85% for 15 minutes
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - { Name: ClusterName, Value: !Ref Cluster }
+        - { Name: ServiceName, Value: !GetAtt BackendService.Name }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+  BackendMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: backend memory above 85% for 15 minutes
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - { Name: ClusterName, Value: !Ref Cluster }
+        - { Name: ServiceName, Value: !GetAtt BackendService.Name }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+  DatabaseCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: database CPU above 80% for 15 minutes
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+  DatabaseStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: under 2 GB of database storage left
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+
+  # counted from the backend's structured log lines (app/telemetry, app/middleware.py)
+  UnhandledErrorsMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ $.event = "unhandled_error" }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-UnhandledErrors", MetricValue: "1", DefaultValue: 0 }
+  EmailFailuresMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ $.event = "email_undeliverable" }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-EmailFailures", MetricValue: "1", DefaultValue: 0 }
+  FailedSignInsMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ ($.event = "auth_login_failed") || ($.event = "auth_code_rejected") || ($.event = "auth_rate_limited") }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-FailedSignIns", MetricValue: "1", DefaultValue: 0 }
+  InterruptedJobsMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ $.event = "interrupted_jobs_failed" }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-InterruptedJobs", MetricValue: "$.count", DefaultValue: 0 }
+  JobFailuresMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ $.event = "*_job_failed" }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-JobFailures", MetricValue: "1", DefaultValue: 0 }
+  ProviderFailuresMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '{ $.event = "upstream_failed" }'
+      MetricTransformations:
+        - { MetricNamespace: ResearchNexus, MetricName: !Sub "${EnvironmentName}-ProviderFailures", MetricValue: "1", DefaultValue: 0 }
+
+  UnhandledErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: the backend logged unexpected errors
+      Namespace: ResearchNexus
+      MetricName: !Sub "${EnvironmentName}-UnhandledErrors"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  EmailFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: sign-in emails are failing (SES credentials, sandbox or sending limits)
+      Namespace: ResearchNexus
+      MetricName: !Sub "${EnvironmentName}-EmailFailures"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  FailedSignInsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: an unusual number of failed or rate-limited sign-ins (possible guessing)
+      Namespace: ResearchNexus
+      MetricName: !Sub "${EnvironmentName}-FailedSignIns"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  LoadBalancerDnsName:
+    Description: point DomainName at this (CNAME, or a Route 53 alias)
+    Value: !GetAtt LoadBalancer.DNSName
+  ClusterName:
+    Value: !Ref Cluster
+  BackendTaskDefinitionFamily:
+    Value: !Sub "researchnexus-${EnvironmentName}-backend"
+  BackendSubnets:
+    Description: for the one-off migration task
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  BackendSecurityGroup:
+    Value: !Ref BackendSecurityGroup
+  DatabaseEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DatabaseSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  FileSystemId:
+    Value: !Ref FileSystem
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic

@@ -43,9 +43,10 @@ function collectConsoleErrors(page: Page): string[] {
 }
 
 async function claimAKey(page: Page) {
-  await page.route("**/api/v1/me", async (route: Route) => {
+  await page.route("**/api/v1/auth/session", async (route: Route) => {
     const res = await route.fetch();
-    route.fulfill({ response: res, json: { ...(await res.json()), has_working_llm_key: true } });
+    const body = await res.json();
+    route.fulfill({ response: res, json: { user: { ...body.user, has_working_llm_key: true } } });
   });
 }
 

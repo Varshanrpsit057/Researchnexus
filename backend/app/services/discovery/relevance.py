@@ -23,7 +23,7 @@ _log = get_logger(__name__)
 
 
 def relevance_embedder(settings: Settings) -> EmbeddingProvider | None:
-    embedder = discovery_embedder(settings.discovery_embedder, model_dir=settings.data_dir / "models")
+    embedder = discovery_embedder(settings.discovery_embedder, model_dir=settings.model_cache_dir(), threads=settings.embedding_threads)
     if embedder is None and settings.discovery_embedder != "none":
         _log.warning("discovery_relevance_model_unavailable", embedder=settings.discovery_embedder)
     return embedder

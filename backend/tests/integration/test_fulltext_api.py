@@ -18,6 +18,7 @@ from app.db.session import get_session_factory
 from app.external.http import ExternalHttpClient
 from app.main import create_app
 from app.services.normalize.canonical import title_hash
+from tests.auth_helpers import ANONYMOUS, signed_in
 from tests.integration.test_workspaces_api import _headers, _seed_analysed_paper, _token
 
 
@@ -31,7 +32,7 @@ def _client(tmp_path: Path, **overrides: object) -> TestClient:
     )
     app = create_app(settings=settings)
     app.dependency_overrides[get_settings] = lambda: settings
-    return TestClient(app)
+    return signed_in(TestClient(app))
 
 
 def _sources(monkeypatch: pytest.MonkeyPatch, pdf: bytes, seen: list[str]) -> None:
@@ -85,7 +86,7 @@ def test_a_paper_says_what_text_it_has_and_gets_its_full_text_on_request(
     paper = client.get("/api/v1/papers/pap_arxiv").json()
     assert paper["has_full_text"] is True and paper["sections"] and paper["coverage"]["source"] == "arxiv"
 
-    assert client.post("/api/v1/papers/pap_arxiv/fulltext").status_code == 401
+    assert client.post("/api/v1/papers/pap_arxiv/fulltext", headers=ANONYMOUS).status_code == 401
     assert client.post("/api/v1/papers/pap_missing/fulltext", headers=_headers(token)).status_code == 404
 
 
