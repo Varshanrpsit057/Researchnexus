@@ -205,14 +205,16 @@ def test_the_project_pins_its_ports() -> None:
 def test_a_virtualenv_from_another_computer_is_recognised(tmp_path: Path) -> None:
     """A zipped folder carries backend/.venv along; its pyvenv.cfg names the
     first computer's Python, which isn't on the next one (2026-10-09)."""
-    here = ROOT / "backend" / ".venv"
-    assert start.venv_problem(here) is None  # this computer's own virtualenv runs
+    import venv
 
-    copied = tmp_path / ".venv"
-    scripts = copied / ("Scripts" if start.WINDOWS else "bin")
-    scripts.mkdir(parents=True)
-    exe = "python.exe" if start.WINDOWS else "python"
-    (scripts / exe).write_bytes((here / ("Scripts" if start.WINDOWS else "bin") / exe).read_bytes())
+    here = tmp_path / "made-here"
+    venv.create(here, with_pip=False)
+    assert start.venv_problem(here) is None  # a virtualenv made on this computer runs
+
+    bindir, exe = ("Scripts", "python.exe") if start.WINDOWS else ("bin", "python")
+    copied = tmp_path / "copied"
+    (copied / bindir).mkdir(parents=True)
+    (copied / bindir / exe).write_bytes((here / bindir / exe).read_bytes())
     elsewhere = r"C:\Users\someone-else\AppData\Local\Programs\Python\Python310" if start.WINDOWS else "/home/someone-else/python3.10"
     (copied / "pyvenv.cfg").write_text(f"home = {elsewhere}\ninclude-system-site-packages = false\nversion = 3.10.11\n", encoding="utf-8")
     problem = start.venv_problem(copied)
