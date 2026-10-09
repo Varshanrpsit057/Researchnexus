@@ -14,7 +14,7 @@ WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY app ./app
 # every dependency as a wheel; nothing GPU-only is installed (no torch/CUDA)
-RUN pip install --upgrade pip && pip wheel --wheel-dir /wheels .
+RUN pip install --upgrade pip setuptools && pip wheel --wheel-dir /wheels .
 
 FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -29,7 +29,7 @@ RUN groupadd --system --gid 10001 app \
     && chown app:app /data
 WORKDIR /app
 COPY --from=build /wheels /wheels
-RUN pip install --upgrade pip && pip install --no-deps /wheels/*.whl && rm -rf /wheels
+RUN pip install --upgrade pip setuptools && pip install --no-deps /wheels/*.whl && rm -rf /wheels
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
