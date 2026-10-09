@@ -53,7 +53,7 @@ jobs:
       SHA: ${{ github.event.inputs.git_sha || github.event.workflow_run.head_sha || github.sha }}
       APP_URL: https://${{ vars.APP_DOMAIN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.SHA }}
 
